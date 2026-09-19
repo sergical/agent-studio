@@ -2,8 +2,8 @@
 // AddSkillSheet - Right-side sheet for adding a skill from a source string:
 // parses the Source field live, lists the skill folders a GitHub source
 // actually holds (one skill, or a picker for a folder of them), offers a
-// Method and Destination controls, Universal visibility, a
-// Global/Project Scope, and an optional "Try for 24 hours" trial. Submits to
+// Method and Destination controls, Universal visibility, and a
+// Global/Project Scope. Submits to
 // a background Add Skill operation (`start_add_skill_operation` /
 // `start_add_skills_operation`) so `npx` never runs on the UI thread.
 // ============================================================================
@@ -68,7 +68,6 @@ import {
   parseSkillSource,
   shouldConsumeAddSkillOperation,
   toWireParsedSkillSource,
-  trialSelectionForDestination,
 } from "@skill-studio/lib";
 import type {
   AddSkillOperationEvent,
@@ -100,8 +99,8 @@ const ALL_METHODS = ["dotagents", "skills-sh", "copy"] as const satisfies AddMet
 /**
  * "Pack" isn't a real `AddMethod` - it doesn't run `addSkill`, it runs
  * `importSkillPack` against a share pack's repo (see `skill_pack.rs`'s
- * `import_skill_pack`). Kept out of the shared `AddMethod` type so trial
- * tracking and every other `AddMethod` switch never has to account for it.
+ * `import_skill_pack`). Kept out of the shared `AddMethod` type so every
+ * other `AddMethod` switch never has to account for it.
  */
 type SheetMethod = AddSkillSheetMethod;
 
@@ -152,7 +151,6 @@ interface FormState {
   perHarnesses: PerHarnessDestinationId[];
   scope: InstallScope;
   projectPath: string | null;
-  trial: boolean;
   isSubmitting: boolean;
   submitError: string | null;
 }
@@ -168,7 +166,6 @@ function initialFormState(): FormState {
     perHarnesses: [],
     scope: "global",
     projectPath: null,
-    trial: false,
     isSubmitting: false,
     submitError: null,
   };
@@ -186,7 +183,6 @@ type FormAction =
   | { type: "set_per_harness"; harness: PerHarnessDestinationId; enabled: boolean }
   | { type: "set_scope"; scope: InstallScope }
   | { type: "set_project_path"; path: string | null }
-  | { type: "set_trial"; trial: boolean }
   | { type: "submit_start" }
   | { type: "submit_error"; error: string }
   | { type: "submit_end" };
@@ -217,11 +213,7 @@ function formReducer(state: FormState, action: FormAction): FormState {
     case "set_claude_link":
       return { ...state, claudeLink: action.claudeLink };
     case "set_destination":
-      return {
-        ...state,
-        destination: action.destination,
-        trial: trialSelectionForDestination(action.destination, state.trial),
-      };
+      return { ...state, destination: action.destination };
     case "set_per_harness":
       return {
         ...state,
@@ -233,8 +225,6 @@ function formReducer(state: FormState, action: FormAction): FormState {
       return { ...state, scope: action.scope };
     case "set_project_path":
       return { ...state, projectPath: action.path };
-    case "set_trial":
-      return { ...state, trial: action.trial };
     case "submit_start":
       return { ...state, isSubmitting: true, submitError: null };
     case "submit_error":
@@ -665,7 +655,6 @@ function useAddSkillSubmit(input: {
   disabledHarnesses: AgentId[];
   scope: InstallScope;
   projectPath: string | null;
-  trial: boolean;
   githubEntries: GithubSkillEntry[] | null;
   dispatch: Dispatch<FormAction>;
   closeSheet: () => void;
@@ -681,7 +670,6 @@ function useAddSkillSubmit(input: {
     disabledHarnesses,
     scope,
     projectPath,
-    trial,
     githubEntries,
     dispatch,
     closeSheet,
@@ -704,7 +692,6 @@ function useAddSkillSubmit(input: {
     agents,
     scope,
     projectPath,
-    trial,
     githubEntries,
   });
 
@@ -834,7 +821,6 @@ function useAddSkillSubmit(input: {
           disabled_harnesses: disabledHarnesses,
           scope,
           project_path: projectArg,
-          trial,
         });
       } else {
         queued = await startAddSkillOperation(operationId, {
@@ -845,7 +831,6 @@ function useAddSkillSubmit(input: {
           disabled_harnesses: disabledHarnesses,
           scope,
           project_path: projectArg,
-          trial,
         });
       }
       setOperation((current) => applyAddSkillOperationEvent(current, queued, operationId));
@@ -970,7 +955,6 @@ function ManualTabFields({
   scope,
   projectPath,
   userAddedProjects,
-  trial,
   submitError,
   dispatch,
   onBrowseProject,
@@ -989,7 +973,6 @@ function ManualTabFields({
   scope: InstallScope;
   projectPath: string | null;
   userAddedProjects: string[];
-  trial: boolean;
   submitError: string | null;
   dispatch: Dispatch<FormAction>;
   onBrowseProject: () => void;
@@ -1048,24 +1031,6 @@ function ManualTabFields({
           onClaudeLinkChange={onClaudeLinkChange}
           scope={method === "pack" ? "global" : scope}
         />
-      )}
-
-      {method !== "pack" && (
-        <div className="flex flex-col gap-2">
-          <label className="flex items-center gap-2 text-body text-text-primary">
-            <CheckboxControl
-              checked={trial}
-              disabled={destination === "per-harness"}
-              onCheckedChange={(next) => dispatch({ type: "set_trial", trial: next })}
-            />
-            Try for 24 hours
-          </label>
-          <p className="m-0 text-caption text-text-tertiary">
-            {destination === "per-harness"
-              ? "Trials are available only for Universal installs."
-              : "Removed automatically after 24 h unless you keep it."}
-          </p>
-        </div>
       )}
 
       {submitError && (
@@ -1312,7 +1277,6 @@ export function AddSkillSheet() {
     perHarnesses,
     scope,
     projectPath,
-    trial,
     isSubmitting,
     submitError,
   } = form;
@@ -1398,7 +1362,6 @@ export function AddSkillSheet() {
     disabledHarnesses,
     scope,
     projectPath,
-    trial,
     githubEntries,
     dispatch,
     closeSheet,
@@ -1500,7 +1463,6 @@ export function AddSkillSheet() {
               scope={scope}
               projectPath={projectPath}
               userAddedProjects={userAddedProjects}
-              trial={trial}
               submitError={
                 operation &&
                 (operation.phase === "failed" ||

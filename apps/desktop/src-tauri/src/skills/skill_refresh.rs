@@ -29,7 +29,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use super::agents;
 use super::skill_assembly;
 use super::skill_dto::{Deployment, InstalledSkill};
-use super::skill_fork_registry::{ForkRegistry, TrialScope};
+use super::skill_fork_registry::ForkRegistry;
 use super::skill_harness_disable;
 use super::skill_run_history::{self, SkillRunSummary};
 use super::skill_update_check::{self, UpdateCheckSummary};
@@ -1482,8 +1482,6 @@ pub(crate) fn apply_skill_snapshot_overlays(
         skill.update_commit = None;
         skill.update_commit_at = None;
         skill.fork = None;
-        skill.trial = None;
-        skill.trials.clear();
         skill.parked = false;
         skill.parked_at = None;
         for deployment in &mut skill.deployments {
@@ -1564,57 +1562,6 @@ pub(crate) fn apply_skill_snapshot_overlays(
         });
         skill.update_commit = shared_metadata.and_then(|update| update.latest_commit.clone());
         skill.update_commit_at = shared_metadata.and_then(|update| update.latest_commit_at.clone());
-    }
-
-    // New trial records identify one exact deployment. Version 1 records use
-    // scope/name keys and are accepted only when their stored path and scope
-    // resolve to exactly one current deployment.
-    for skill in skills.iter_mut() {
-        let matches: Vec<_> = fork_registry
-            .trials
-            .values()
-            .filter_map(|trial| {
-                if trial.status == super::skill_fork_registry::TrialStatus::RecoveryRequired
-                    && super::skill_deployment::parse_deployment_id(&trial.deployment_id)
-                        .is_some_and(|parsed| parsed.name == skill.name)
-                {
-                    return Some((trial, trial.deployment_id.clone()));
-                }
-                let candidates: Vec<_> = skill
-                    .deployments
-                    .iter()
-                    .filter(|deployment| {
-                        if !trial.deployment_id.is_empty() {
-                            return deployment.id == trial.deployment_id;
-                        }
-                        let scope_matches = match trial.scope {
-                            TrialScope::Global => deployment.scope == "global",
-                            TrialScope::Project => {
-                                deployment.scope == "project"
-                                    && deployment.project_path.as_deref()
-                                        == trial.project_path.as_deref()
-                            }
-                        };
-                        scope_matches && Path::new(&deployment.path) == trial.skill_dir
-                    })
-                    .collect();
-                (candidates.len() == 1).then(|| (trial, candidates[0].id.clone()))
-            })
-            .collect();
-        skill.trials = matches
-            .into_iter()
-            .map(|(trial, deployment_id)| super::skill_dto::TrialInfo {
-                deployment_id,
-                expires_at: trial.expires_at.clone(),
-                method: trial.method,
-                status: trial.status,
-                scope: trial.scope,
-                project_path: trial.project_path.clone(),
-            })
-            .collect();
-        if skill.trials.len() == 1 {
-            skill.trial = skill.trials.first().cloned();
-        }
     }
 
     // Parked skills have no deployment left for `classify_source_kind` to
@@ -2926,147 +2873,6 @@ mod tests {
     }
 
     #[test]
-    fn build_snapshot_exposes_simultaneous_global_and_project_trials() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let project = tmp.path().join("project");
-        let global_dir = home.join(".agents/skills/foo");
-        let project_dir = project.join(".agents/skills/foo");
-        for skill_dir in [&global_dir, &project_dir] {
-            fs::create_dir_all(skill_dir).unwrap();
-            fs::write(
-                skill_dir.join("SKILL.md"),
-                "---\nname: foo\ndescription: test\n---\nbody",
-            )
-            .unwrap();
-        }
-        let mut registry = super::super::skill_fork_registry::ForkRegistry::default();
-        for (key, scope, project_path, skill_dir) in [
-            ("global/foo", TrialScope::Global, None, global_dir),
-            (
-                "project/foo",
-                TrialScope::Project,
-                Some(project.to_string_lossy().to_string()),
-                project_dir,
-            ),
-        ] {
-            registry.trials.insert(
-                key.to_string(),
-                super::super::skill_fork_registry::TrialRecord {
-                    deployment_id: String::new(),
-                    started_at: "2026-09-05T00:00:00Z".to_string(),
-                    expires_at: "2026-09-06T00:00:00Z".to_string(),
-                    status: super::super::skill_fork_registry::TrialStatus::Active,
-                    method: super::super::skill_fork_registry::AddMethod::Copy,
-                    scope,
-                    project_path,
-                    skill_dir,
-                    deployment_fingerprint: String::new(),
-                    claude_link: None,
-                    claude_link_target: None,
-                },
-            );
-        }
-        registry.projects.added = vec![project.clone()];
-        super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
-
-        let mut invocation_index = SkillInvocationIndex::default();
-        let (snapshot, _) = build_snapshot(
-            &home,
-            &mut invocation_index,
-            BuildPaths {
-                cache_path: &tmp.path().join("cache.json"),
-                runs_root: tmp.path(),
-                update_check_path: &tmp.path().join("update-check.json"),
-            },
-            Utc::now(),
-        );
-
-        let foo = snapshot
-            .skills
-            .iter()
-            .find(|skill| skill.name == "foo")
-            .unwrap();
-        assert_eq!(foo.trials.len(), 2);
-        assert!(foo.trial.is_none());
-        assert!(foo
-            .trials
-            .iter()
-            .any(|trial| trial.scope == TrialScope::Global));
-        assert!(foo
-            .trials
-            .iter()
-            .any(|trial| trial.scope == TrialScope::Project));
-        assert!(foo
-            .trials
-            .iter()
-            .all(|trial| !trial.deployment_id.is_empty()));
-    }
-
-    #[test]
-    fn build_snapshot_surfaces_recovery_when_only_a_claude_replacement_remains() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let replacement = home.join(".claude/skills/foo");
-        fs::create_dir_all(&replacement).unwrap();
-        fs::write(
-            replacement.join("SKILL.md"),
-            "---\nname: foo\ndescription: replacement\n---\nbody",
-        )
-        .unwrap();
-        let missing = home.join(".agents/skills/foo");
-        let deployment_id = super::super::skill_deployment::deployment_id(
-            "foo",
-            "global",
-            super::super::skill_deployment::SkillDestination::Universal,
-            "universal",
-            None,
-            &missing,
-        );
-        let mut registry = super::super::skill_fork_registry::ForkRegistry::default();
-        registry.trials.insert(
-            super::super::skill_fork_registry::deployment_trial_key(&deployment_id),
-            super::super::skill_fork_registry::TrialRecord {
-                deployment_id,
-                started_at: "2026-09-05T00:00:00Z".to_string(),
-                expires_at: "2026-09-06T00:00:00Z".to_string(),
-                status: super::super::skill_fork_registry::TrialStatus::RecoveryRequired,
-                method: super::super::skill_fork_registry::AddMethod::SkillsSh,
-                scope: TrialScope::Global,
-                project_path: None,
-                skill_dir: missing,
-                deployment_fingerprint: "old".to_string(),
-                claude_link: Some(replacement),
-                claude_link_target: Some(PathBuf::from("replacement")),
-            },
-        );
-        super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
-
-        let mut invocation_index = SkillInvocationIndex::default();
-        let (snapshot, _) = build_snapshot(
-            &home,
-            &mut invocation_index,
-            BuildPaths {
-                cache_path: &tmp.path().join("cache.json"),
-                runs_root: tmp.path(),
-                update_check_path: &tmp.path().join("update-check.json"),
-            },
-            Utc::now(),
-        );
-
-        let foo = snapshot
-            .skills
-            .iter()
-            .find(|skill| skill.name == "foo")
-            .unwrap();
-        assert_eq!(foo.trials.len(), 1);
-        assert_eq!(
-            foo.trials[0].status,
-            super::super::skill_fork_registry::TrialStatus::RecoveryRequired
-        );
-    }
-
-    #[test]
     fn differing_owner_updates_keep_only_per_owner_commit_metadata() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
@@ -3495,8 +3301,6 @@ mod tests {
                 frontmatter_fields: BTreeMap::new(),
                 folder_truncated: false,
                 fork: None,
-                trial: None,
-                trials: Vec::new(),
                 parked: false,
                 parked_at: None,
                 invocation: super::super::frontmatter::InvocationPolicy::Both,
@@ -4060,6 +3864,82 @@ mod tests {
                 "targeted classification for {name} diverged from the full scan"
             );
         }
+    }
+
+    /// Flow: a registry written before #278 removed the trial feature still
+    /// has a populated `trials` bucket for a skill whose deployment sits
+    /// untouched on disk (an active trial never moves what it's tracking).
+    /// Expectation: building the snapshot for that home shows it as a
+    /// normal installed skill - present, not parked, with an unbroken
+    /// deployment - since `InstalledSkill` has no trial state left to
+    /// derive. This replaces the intent of the deleted
+    /// `build_snapshot_exposes_simultaneous_global_and_project_trials`,
+    /// which used to assert the trial chip's `trial`/`trials` fields
+    /// directly. Failure: the leftover `trials` bucket confuses
+    /// classification into treating the skill as parked, broken, or absent
+    /// from the snapshot.
+    #[test]
+    fn build_snapshot_shows_a_skill_with_a_pre_removal_trials_bucket_as_a_normal_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let skill_dir = home.join(".agents/skills/find-bugs");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: find-bugs\ndescription: test\n---\nbody",
+        )
+        .unwrap();
+
+        let mut registry = super::super::skill_fork_registry::ForkRegistry::default();
+        registry.unknown.insert(
+            "trials".to_string(),
+            serde_json::json!({
+                "deployment/dep:v1/global/universal/universal/find-bugs/-/x": {
+                    "deployment_id": "dep:v1/global/universal/universal/find-bugs/-/x",
+                    "started_at": "2026-01-01T00:00:00Z",
+                    "expires_at": "2026-01-02T00:00:00Z",
+                    "status": "active",
+                    "method": "copy",
+                    "scope": "global",
+                    "project_path": null,
+                    "skill_dir": skill_dir.to_string_lossy(),
+                    "deployment_fingerprint": "a".repeat(64),
+                    "claude_link": null,
+                    "claude_link_target": null,
+                }
+            }),
+        );
+        super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+
+        let mut invocation_index = SkillInvocationIndex::default();
+        let (snapshot, _report) = build_snapshot(
+            &home,
+            &mut invocation_index,
+            BuildPaths {
+                cache_path: &tmp.path().join("cache.json"),
+                runs_root: tmp.path(),
+                update_check_path: &tmp.path().join("update-check.json"),
+            },
+            Utc::now(),
+        );
+
+        let skill = snapshot
+            .skills
+            .iter()
+            .find(|skill| skill.name == "find-bugs")
+            .expect("a skill with a leftover trials bucket should still appear in the snapshot");
+        assert!(
+            !skill.parked,
+            "a leftover trial record must not park the skill"
+        );
+        assert!(
+            !skill.deployments.is_empty(),
+            "the skill's on-disk deployment must still be found"
+        );
+        assert!(
+            !skill.deployments[0].symlink_is_broken,
+            "a leftover trial record must not mark the deployment as broken"
+        );
     }
 
     fn harness_enabled(settings: &[DiscoverySourceSetting], harness: &str) -> bool {

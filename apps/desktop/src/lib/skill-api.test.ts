@@ -196,15 +196,6 @@ const EXPECTED_WRAPPER_COMMANDS = {
     command: "install_preferences",
     registeredInLibRs: true,
   },
-  // Trial is a deferred feature (see issue-4.4-followup-a.md); kept per unit 4.4's four-name
-  // allowlist test below.
-  keepSkillTrial: { kind: "command", command: "keep_skill_trial", registeredInLibRs: true },
-  restoreTrashedSkill: {
-    kind: "command",
-    command: "restore_trashed_skill",
-    registeredInLibRs: true,
-  },
-  onTrialExpired: { kind: "event", event: "skills://trial-expired" },
   parkSkill: { kind: "command", command: "park_skill", registeredInLibRs: true },
   unparkSkill: { kind: "command", command: "unpark_skill", registeredInLibRs: true },
   setHarnessEnabled: { kind: "command", command: "set_harness_enabled", registeredInLibRs: true },
@@ -348,27 +339,23 @@ describe("skill-api wrapper set", () => {
     }
   });
 
-  it("set_deployment_enabled_trial_wrappers_and_import_tracked_projects_are_removed_or_names_the_leftover", () => {
+  it("set_deployment_enabled_and_trial_wrappers_are_removed_or_names_the_leftover", () => {
     // setDeploymentEnabled: unit 4.4 (#175) removed it end to end - park is the generic off
     // switch now, see docs/action-map/frontend-keep.md.
     expect(skillApiSource).not.toMatch(/\bsetDeploymentEnabled\b/);
 
-    // The other four are an explicit allowlist, not oversights - each has a reason and a
-    // follow-up:
-    // - keepSkillTrial, restoreTrashedSkill, onTrialExpired: the trial feature is deferred
-    //   whole, not this unit's cut - see issue-4.4-followup-a.md.
-    // - importTrackedProjects: registered and reachable from `getTrackedProjects`' consumers'
-    //   own import flow, just not the setDeploymentEnabled-adjacent code this unit touched.
-    for (const kept of [
-      "keepSkillTrial",
-      "restoreTrashedSkill",
-      "onTrialExpired",
-      "importTrackedProjects",
-    ]) {
-      expect(skillApiSource, `${kept} should still be exported`).toMatch(
-        new RegExp(`export (async )?function ${kept}\\b`),
-      );
+    // keepSkillTrial, restoreTrashedSkill, onTrialExpired: #278 removed the trial feature end
+    // to end, folded into park's existing quarantine cap - see docs/action-map/frontend-keep.md.
+    for (const removed of ["keepSkillTrial", "restoreTrashedSkill", "onTrialExpired"]) {
+      expect(skillApiSource).not.toMatch(new RegExp(`\\b${removed}\\b`));
     }
+
+    // importTrackedProjects is the one remaining allowlist entry, not an oversight: registered
+    // and reachable from `getTrackedProjects`' consumers' own import flow, just not the
+    // setDeploymentEnabled-adjacent code unit 4.4 touched.
+    expect(skillApiSource, "importTrackedProjects should still be exported").toMatch(
+      /export (async )?function importTrackedProjects\b/,
+    );
   });
 
   it("dev_harness_mock_answers_every_command_the_kept_wrappers_call_or_names_the_gap", () => {

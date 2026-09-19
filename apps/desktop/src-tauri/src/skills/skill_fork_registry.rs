@@ -5,7 +5,6 @@
 // `agents.lock`, or `.skill-lock.json` itself, those belong to the owning
 // CLI. Tracks which skills have been detached from their ledger ("forked")
 // so local edits survive `dotagents sync` / `npx skills update`, plus a
-// `trials` bucket for "Try for 24 hours" installs (see `skill_trial`), a
 // `parked` bucket for skills disabled globally (see `skill_park`), and a
 // `harness_disabled` bucket for the one per-harness disable that has no
 // native config to read back from (Claude Code - see `skill_harness_disable`).
@@ -41,94 +40,13 @@ pub enum OriginTool {
     SkillsSh,
 }
 
-/// How `add_skill` installed a skill - shared by `AddSkillRequest.method` and
-/// `TrialRecord.method`, since a trial's expiry step needs to know which tool
-/// (if any) owns the skill it's about to remove.
+/// How `add_skill` installed a skill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum AddMethod {
     Dotagents,
     SkillsSh,
     Copy,
-}
-
-/// Which scope a trial (or an `add_skill` request) targeted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum TrialScope {
-    Global,
-    Project,
-}
-
-/// Durable state for trial expiry. `Expiring` prevents an interrupted CLI
-/// removal from matching a later installation at the same path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum TrialStatus {
-    #[default]
-    Active,
-    Expiring,
-    RecoveryRequired,
-}
-
-/// One "Try for 24 hours" install, tracked so `skill_trial`'s expiry loop
-/// knows when to remove it and how.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrialRecord {
-    /// Stable identity of the exact deployment this trial owns. Empty only
-    /// for records written before registry version 2.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub deployment_id: String,
-    pub started_at: String,
-    pub expires_at: String,
-    #[serde(default)]
-    pub status: TrialStatus,
-    pub method: AddMethod,
-    pub scope: TrialScope,
-    #[serde(default)]
-    pub project_path: Option<String>,
-    /// The exact directory `add_skill` created for this trial - expiry
-    /// trashes and removes this path directly instead of recomputing it
-    /// from `scope`/`project_path`, which was wrong for `skills-sh` trials
-    /// (that method never writes the shared `.agents/skills` folder).
-    #[serde(default)]
-    pub skill_dir: PathBuf,
-    /// Recursive content fingerprint recorded immediately after install.
-    /// Empty only for legacy records, which expiry must not mutate.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub deployment_fingerprint: String,
-    /// The per-skill Claude Code symlink `add_skill` created for this trial,
-    /// if any - `None` when Claude Code wasn't selected or the whole-dir
-    /// symlink already covered it.
-    #[serde(default)]
-    pub claude_link: Option<PathBuf>,
-    /// Raw target of `claude_link` at install time. Missing only from legacy
-    /// records, which expiry refuses when a Claude link is present.
-    #[serde(default)]
-    pub claude_link_target: Option<PathBuf>,
-}
-
-/// The `trials` map key for a given scope: `"global/<name>"` or
-/// `"project/<name>"` - lets the same skill name be on trial globally and in
-/// a project at the same time, and lets `keep_skill_trial`/expiry key back
-/// into the map unambiguously.
-pub fn trial_key(scope: TrialScope, name: &str) -> String {
-    match scope {
-        TrialScope::Global => format!("global/{name}"),
-        TrialScope::Project => format!("project/{name}"),
-    }
-}
-
-/// Registry key used by all new trial records.
-pub fn deployment_trial_key(deployment_id: &str) -> String {
-    format!("deployment/{deployment_id}")
-}
-
-/// The skill name embedded in a `trials` map key, e.g. `"global/find-bugs"`
-/// -> `"find-bugs"`. Falls back to the whole key for anything that doesn't
-/// look like one `trial_key` produced (there shouldn't be any).
-pub fn name_from_trial_key(key: &str) -> &str {
-    key.split_once('/').map_or(key, |(_, name)| name)
 }
 
 /// One forked skill's provenance, enough to reinstall it from its origin
@@ -263,9 +181,6 @@ pub struct ForkRegistry {
     pub write_version: u64,
     #[serde(default)]
     pub forks: BTreeMap<String, ForkRecord>,
-    /// "Try for 24 hours" installs, keyed by skill name - see `skill_trial`.
-    #[serde(default)]
-    pub trials: BTreeMap<String, TrialRecord>,
     /// Skills parked (disabled globally) via `skill_park`, keyed by name.
     #[serde(default)]
     pub parked: BTreeMap<String, ParkedRecord>,
@@ -324,7 +239,16 @@ pub struct ForkRegistry {
     pub harnesses: Option<super::harness_first_run::HarnessesChoice>,
     /// Every top-level key this build doesn't know about. Keeps a write from
     /// erasing a field a newer or older build added - the file is shared
-    /// with the CLI and with whichever app version last wrote it.
+    /// with the CLI and with whichever app version last wrote it. This is
+    /// also how a pre-#278 `trials` bucket survives the upgrade: nothing
+    /// reads it anymore, but it round-trips here unread rather than being
+    /// dropped. That is only true for a trial that was still `Active`: its
+    /// deployment was never moved, so the skill stays installed and usable
+    /// exactly as `keep_skill_trial` used to leave it. A trial interrupted
+    /// mid-expiry (`TrialStatus::Expiring`) before the upgrade is neither
+    /// completed nor reverted by this build - its backup sits wherever
+    /// `skill_trial`'s expiry left it in `~/.agents/skills-trash`, and this
+    /// build does not resume or undo that move. Tracked as a follow-up.
     #[serde(flatten)]
     pub unknown: serde_json::Map<String, serde_json::Value>,
 }
@@ -355,7 +279,6 @@ impl Default for ForkRegistry {
             version: default_version(),
             write_version: 0,
             forks: BTreeMap::new(),
-            trials: BTreeMap::new(),
             parked: BTreeMap::new(),
             harness_disabled: BTreeMap::new(),
             packs: BTreeMap::new(),
@@ -505,7 +428,58 @@ mod tests {
             reloaded.forks["find-bugs"].origin_tool,
             OriginTool::Dotagents
         );
-        assert!(reloaded.trials.is_empty());
+    }
+
+    /// The exact shape `skill_trial.rs::record_trial` wrote before #278
+    /// deleted it (see `TrialRecord`), for a global-scope Copy trial that
+    /// was still `Active` when the user upgraded.
+    fn pre_removal_trials_bucket_json() -> serde_json::Value {
+        serde_json::json!({
+            "deployment/dep:v1/global/universal/universal/find-bugs/-/x": {
+                "deployment_id": "dep:v1/global/universal/universal/find-bugs/-/x",
+                "started_at": "2026-01-01T00:00:00Z",
+                "expires_at": "2026-01-02T00:00:00Z",
+                "status": "active",
+                "method": "copy",
+                "scope": "global",
+                "project_path": null,
+                "skill_dir": "/home/user/.agents/skills/find-bugs",
+                "deployment_fingerprint": "a".repeat(64),
+                "claude_link": null,
+                "claude_link_target": null,
+            }
+        })
+    }
+
+    /// Flow: a registry written before #278 removed the trial feature still
+    /// has a populated `trials` bucket on disk (an `Active` trial, not an
+    /// empty map). Expectation: reading and re-writing it keeps that bucket's
+    /// *content* byte-for-byte via the `unknown` catch-all, not merely
+    /// present - the deployment itself was never moved by an active trial,
+    /// so the skill stays installed either way. Failure: the round trip
+    /// drops, reorders, or mutates a field, which would mean the upgrade
+    /// path built during removal is silently rewriting old trial data
+    /// instead of leaving it untouched.
+    #[test]
+    fn a_populated_pre_removal_trials_bucket_survives_the_upgrade_round_trip_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".agents")).unwrap();
+        let trials = pre_removal_trials_bucket_json();
+        std::fs::write(
+            tmp.path().join(".agents/skill-studio.json"),
+            serde_json::to_string(&serde_json::json!({"version": 4, "trials": trials})).unwrap(),
+        )
+        .unwrap();
+
+        let reg = read_fork_registry(tmp.path()).unwrap();
+        write_fork_registry(tmp.path(), &reg).unwrap();
+
+        let reloaded = read_fork_registry(tmp.path()).unwrap();
+        assert_eq!(
+            reloaded.unknown.get("trials"),
+            Some(&trials),
+            "a populated pre-removal trials bucket must round-trip with its content unchanged"
+        );
     }
 
     #[test]
@@ -627,17 +601,6 @@ mod tests {
         std::fs::write(tmp.path().join(".agents/skill-studio.json"), "not json").unwrap();
         let reg = read_fork_registry_or_default(tmp.path());
         assert!(reg.forks.is_empty());
-    }
-
-    #[test]
-    fn trial_key_distinguishes_global_and_project_scope() {
-        let global_key = trial_key(TrialScope::Global, "find-bugs");
-        let project_key = trial_key(TrialScope::Project, "find-bugs");
-        assert_eq!(global_key, "global/find-bugs");
-        assert_eq!(project_key, "project/find-bugs");
-        assert_ne!(global_key, project_key);
-        assert_eq!(name_from_trial_key(&global_key), "find-bugs");
-        assert_eq!(name_from_trial_key(&project_key), "find-bugs");
     }
 
     #[test]

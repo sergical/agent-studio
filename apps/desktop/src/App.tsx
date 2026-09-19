@@ -26,8 +26,6 @@ import {
   getTrackedProjects,
   importTrackedProjects,
   invokeErrorMessage,
-  onTrialExpired,
-  restoreTrashedSkill,
 } from "./lib/skill-api";
 import { clearLegacyProjectPaths, readLegacyProjectPaths } from "./lib/legacy-project-paths";
 import type { ActiveView } from "./store/appStore";
@@ -106,31 +104,6 @@ function App() {
       }
     })();
   }, [setTrackedProjects, addToast]);
-
-  // A trial expiring is driven by the backend's own timer, not a user
-  // action here - surface it as a toast with a Restore action rather than
-  // silently updating the snapshot.
-  useEffect(() => {
-    return onTrialExpired(({ name, trash_path }) => {
-      addToast({
-        type: "warning",
-        title: `Trial ended: ${name} moved to skills-trash`,
-        duration: 15000,
-        action: {
-          label: "Restore",
-          onClick: () => {
-            restoreTrashedSkill(trash_path).catch((err) => {
-              addToast({
-                type: "error",
-                title: "Couldn't restore skill",
-                message: err instanceof Error ? err.message : "Unknown error",
-              });
-            });
-          },
-        },
-      });
-    });
-  }, [addToast]);
 
   /** One skill view - the page it opens, standalone (no kept-alive list underneath). */
   function renderSkillPage(view: Extract<ActiveView, { kind: "skill" }>): React.ReactNode {

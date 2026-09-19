@@ -300,7 +300,6 @@ export function SkillPage({
           <InstalledSkillHeader
             skill={skill}
             deployment={deployment ?? undefined}
-            actions={pageActions}
             frontmatterRepair={selectedFrontmatterRepair}
             onFixYaml={() => setIsFrontmatterRepairOpen(true)}
             onEditManually={startEditing}

@@ -56,7 +56,6 @@ const addRequestSchema = z
   .object({
     scope: z.enum(["global", "project"]),
     project_path: z.string().nullable().optional(),
-    trial: z.boolean(),
     method: z.enum(["dotagents", "skills-sh", "copy"]),
     source: z
       .object({
@@ -309,17 +308,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
       updated_at: new Date().toISOString(),
       modified_at: new Date().toISOString(),
       deployments,
-      trial: request.trial
-        ? {
-            deployment_id: deployments[0].id,
-            expires_at: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
-            method: request.method,
-            scope: isProject ? "project" : "global",
-            project_path: project,
-            status: "active",
-          }
-        : null,
-      trials: [],
     });
   }
 
@@ -405,7 +393,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
         case "doctor":
           return { violations: [], checked: currentSnapshot.skills.length } satisfies DoctorReport;
         case "open_skill_path":
-        case "restore_trashed_skill":
         case "unfork_skill":
           return undefined;
         case "app_version":
@@ -690,23 +677,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
             to_commit: "fixture",
             message: "Already up to date",
           };
-        case "keep_skill_trial": {
-          const { deployment_id } = z.object({ deployment_id: z.string() }).parse(payload.target);
-          await publish({
-            ...currentSnapshot,
-            skills: currentSnapshot.skills.map((item) =>
-              item.trial?.deployment_id === deployment_id
-                ? {
-                    ...item,
-                    trial: null,
-                    trials: item.trials.filter((t) => t.deployment_id !== deployment_id),
-                  }
-                : item,
-            ),
-          });
-          return undefined;
-        }
-
         case "add_skill":
         case "start_add_skill_operation":
         case "start_add_skills_operation": {
