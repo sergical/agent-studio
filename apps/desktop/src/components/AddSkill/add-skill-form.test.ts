@@ -35,6 +35,15 @@ describe("Add Skill form validation", () => {
     ).toBe(false);
   });
 
+  it("never offers pack for a GitHub source while the pack commands are unregistered in lib.rs, catching a regression that reintroduces it", () => {
+    const githubSource = parseSkillSource("https://github.com/owner/repo");
+    const withDotagents = availableAddSkillMethods(githubSource, methodDefaults(true));
+    const withoutDotagents = availableAddSkillMethods(githubSource, methodDefaults(false));
+
+    expect(withDotagents).not.toContain("pack");
+    expect(withoutDotagents).not.toContain("pack");
+  });
+
   it("accepts normal sources with a valid install method", () => {
     const gitSource = parseSkillSource("git:https://example.com/skills.git");
     const localSource = parseSkillSource("~/skills/find-bugs");
