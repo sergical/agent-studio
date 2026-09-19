@@ -117,7 +117,7 @@ This feature map provides:
 - **Remove** - uninstall from global or project scope (confirmation dialog)
 - **Fork** - detach from ledger to allow local edits (dotagents/skills-sh only)
 - **Unfork** - discard fork, reinstall from origin
-- **Pull upstream** - three-way merge for forked skills
+- **Pull upstream** - conflict markers and editor open for forked skills (no auto-merge)
 - **Park** - move to `skills-parked/` (global disable)
 - **Unpark** - restore from parked (collision reconciliation)
 - **Enable/disable per-harness** - toggle via harness's own mechanism

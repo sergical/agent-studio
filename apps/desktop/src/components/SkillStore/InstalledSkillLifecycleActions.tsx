@@ -18,6 +18,7 @@ import {
 import { ProjectDirectorySelect } from "./ProjectDirectorySelect";
 import { ScopeToggleGroup } from "./ScopeToggleGroup";
 import { removeSkill, updateSkill } from "../../lib/skill-api";
+import { useAppStore } from "../../store/appStore";
 import {
   skillLifecycleScopeSelection,
   skillMutableLifecycleScopes,
@@ -98,6 +99,7 @@ function useSkillLifecycleMutations(
   onInstallComplete: (result: SkillInstallCompletion) => void,
   onRemoveComplete: () => void,
 ) {
+  const addToast = useAppStore((state) => state.addToast);
   const [isRemoving, setIsRemoving] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
@@ -112,10 +114,12 @@ function useSkillLifecycleMutations(
       .then(() => {
         onRemoveComplete();
       })
-      .catch(() => {
-        // Swallowed here too: this row has nowhere to show a remove error
-        // (no toast wiring), matching the old `InstallResult.success` check
-        // that also left a failed removal silent.
+      .catch((error) => {
+        addToast({
+          type: "error",
+          title: "Remove failed",
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
       })
       .finally(() => {
         setIsRemoving(false);
