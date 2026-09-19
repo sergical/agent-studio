@@ -299,7 +299,7 @@ fn dotagents_currency(
             installed_commit,
             latest_commit: None,
             latest_commit_at: None,
-            error: None,
+            error: Some(format!("no commits for {} in {repo}", entry.path)),
         },
         Err(e) => OutdatedRecord::unknown_with_error(installed_commit, e.message.clone()),
     }
@@ -348,7 +348,7 @@ fn fork_currency(
             installed_commit,
             latest_commit: None,
             latest_commit_at: None,
-            error: None,
+            error: Some(format!("no commits for {} in {}", record.path, record.repo)),
         },
         Err(e) => OutdatedRecord::unknown_with_error(installed_commit, e.message.clone()),
     }
@@ -899,16 +899,18 @@ resolved_commit = "old-sha"
         assert_eq!(record.error.as_deref(), Some("network unreachable"));
     }
 
-    /// Flow: a forked skill (ported from the desktop's
-    /// `forked_skill_is_a_candidate_pinned_to_its_base_commit_and_wins_over_the_ledger`).
-    /// Expectation: the record is pinned to the registry's `base_commit`,
-    /// not the ledger's `resolved_commit` for the same name - a fork wins
-    /// over the ledger, matching `classify_owner`'s `Fork` precedence.
+    /// Flow: a forked skill, already classified `SourceKind::Fork` (ported
+    /// from the desktop's
+    /// `forked_skill_is_a_candidate_pinned_to_its_base_commit_and_wins_over_the_ledger`,
+    /// minus its dotagents ledger fixture - that fixture's precedence claim
+    /// belongs to `ops::outdated_target`'s own test, since this function
+    /// never reads the ledger for a target already classified `Fork`).
+    /// Expectation: the record is pinned to the registry's `base_commit`.
     /// A failure here means `SourceKind::Fork` fell back to `NotTracked`
-    /// (the arm this test's edit replaced) or read the ledger's commit
-    /// instead of the registry's.
+    /// (the arm this test's edit replaced) or read something other than the
+    /// registry's `base_commit`.
     #[test]
-    fn forked_skill_is_pinned_to_its_base_commit_and_wins_over_the_ledger() {
+    fn forked_skill_is_pinned_to_its_base_commit() {
         struct DatedCommit;
         impl CommitLookup for DatedCommit {
             fn latest_commit(
@@ -925,15 +927,6 @@ resolved_commit = "old-sha"
 
         let fs = FixtureBuilder::new()
             .dir("/home/.agents")
-            .file(
-                "/home/.agents/agents.lock",
-                br#"
-[skills.find-bugs]
-source = "getsentry/find-bugs"
-resolved_path = "skills/find-bugs"
-resolved_commit = "ledger-sha"
-"#,
-            )
             .file(
                 "/home/.agents/skill-studio.json",
                 br#"{
@@ -994,5 +987,73 @@ resolved_commit = "ledger-sha"
         let record = &result["find-bugs"];
         assert_eq!(record.currency, Currency::NotTracked);
         assert_eq!(record.error, None);
+    }
+
+    /// Flow: a dotagents skill and a forked skill both have a
+    /// `CommitLookup` that succeeds but reports no commits for the path
+    /// (`Ok(None)` - a real path with no history yet, not a failure).
+    /// Expectation: both resolve to `Currency::Unknown` with a non-`None`
+    /// `error` naming the repo/path that had no commits, not a silent
+    /// `Unknown` a caller can't explain.
+    /// A failure here means `Ok(None)` was read as "nothing to report"
+    /// instead of "the check could not confirm currency", so the UI would
+    /// show `Unknown` with no way to tell it apart from a fresh, unchecked
+    /// row.
+    #[test]
+    fn a_commit_lookup_with_no_commits_gives_unknown_with_an_error_naming_the_path() {
+        let fs = FixtureBuilder::new()
+            .dir("/home/.agents")
+            .file(
+                "/home/.agents/agents.lock",
+                br#"
+[skills.find-bugs]
+source = "getsentry/find-bugs"
+resolved_path = "skills/find-bugs"
+resolved_commit = "old-sha"
+"#,
+            )
+            .file(
+                "/home/.agents/skill-studio.json",
+                br#"{
+                    "forks": {
+                        "forked-skill": {
+                            "deployment_id": "",
+                            "skill_dir": "",
+                            "repo": "getsentry/forked-skill",
+                            "path": "skills/forked-skill",
+                            "base_commit": "base-sha"
+                        }
+                    }
+                }"#,
+            )
+            .build_fs();
+        let targets = vec![
+            OutdatedTarget {
+                name: "find-bugs".to_string(),
+                source_kind: SourceKind::Dotagents,
+                plugin: None,
+            },
+            OutdatedTarget {
+                name: "forked-skill".to_string(),
+                source_kind: SourceKind::Fork,
+                plugin: None,
+            },
+        ];
+        let result = outdated(
+            &fs,
+            Path::new("/home"),
+            &targets,
+            &FakeTreeLookup::default(),
+            &NoCommits,
+            &NoPlugins,
+        );
+
+        let dotagents_record = &result["find-bugs"];
+        assert_eq!(dotagents_record.currency, Currency::Unknown);
+        assert!(dotagents_record.error.is_some());
+
+        let fork_record = &result["forked-skill"];
+        assert_eq!(fork_record.currency, Currency::Unknown);
+        assert!(fork_record.error.is_some());
     }
 }
