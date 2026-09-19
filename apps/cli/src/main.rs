@@ -1006,13 +1006,15 @@ fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode
             skill_studio_core::ErrorCode::InvalidRequest,
             "--name is required for --method dotagents or skills-sh: it is the skill slug the repo publishes",
         );
-        let envelope = ResultEnvelope::<skill_studio_core::dto::InstallOutcome>::from_result(
+        return early_error(
             Operation::Install,
             &rt.scope,
             &ctx,
-            Err(err),
+            err,
+            json,
+            time,
+            output::print_install_outcome_table,
         );
-        return finish(&envelope, json, time, output::print_install_outcome_table);
     }
     let name = args.name.clone().unwrap_or_else(|| {
         std::path::Path::new(&args.source)
@@ -1027,13 +1029,15 @@ fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode
     {
         Ok(harnesses) => harnesses,
         Err(err) => {
-            let envelope = ResultEnvelope::<skill_studio_core::dto::InstallOutcome>::from_result(
+            return early_error(
                 Operation::Install,
                 &rt.scope,
                 &ctx,
-                Err(err),
-            );
-            return finish(&envelope, json, time, output::print_install_outcome_table);
+                err,
+                json,
+                time,
+                output::print_install_outcome_table,
+            )
         }
     };
     let files = if matches!(method, InstallMethod::Copy) {
@@ -1041,14 +1045,15 @@ fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode
             Ok(files) => files,
             Err(e) => {
                 let err = skill_studio_core::CoreError::io(&args.source, e);
-                let envelope =
-                    ResultEnvelope::<skill_studio_core::dto::InstallOutcome>::from_result(
-                        Operation::Install,
-                        &rt.scope,
-                        &ctx,
-                        Err(err),
-                    );
-                return finish(&envelope, json, time, output::print_install_outcome_table);
+                return early_error(
+                    Operation::Install,
+                    &rt.scope,
+                    &ctx,
+                    err,
+                    json,
+                    time,
+                    output::print_install_outcome_table,
+                );
             }
         }
     } else {
@@ -1253,19 +1258,15 @@ fn run_update(args: UpdateArgs<'_>, time: bool) -> ExitCode {
         (InstallMethod::Copy, Some(dir)) => match read_install_files(dir) {
             Ok(files) => files,
             Err(err) => {
-                let envelope =
-                    ResultEnvelope::<skill_studio_core::dto::UpdateAllOutcome>::from_result(
-                        operation,
-                        &rt.scope,
-                        &ctx,
-                        Err(err),
-                    );
-                return finish(
-                    &envelope,
+                return early_error(
+                    operation,
+                    &rt.scope,
+                    &ctx,
+                    err,
                     json,
                     time,
                     output::print_update_all_outcome_table,
-                );
+                )
             }
         },
         (InstallMethod::Copy, None) => {
@@ -1273,14 +1274,11 @@ fn run_update(args: UpdateArgs<'_>, time: bool) -> ExitCode {
                 skill_studio_core::ErrorCode::InvalidRequest,
                 "update --method copy needs --source-dir",
             );
-            let envelope = ResultEnvelope::<skill_studio_core::dto::UpdateAllOutcome>::from_result(
+            return early_error(
                 operation,
                 &rt.scope,
                 &ctx,
-                Err(err),
-            );
-            return finish(
-                &envelope,
+                err,
                 json,
                 time,
                 output::print_update_all_outcome_table,
@@ -1868,4 +1866,22 @@ fn finish<T: serde::Serialize + ops::Outcome>(
     }
     print_timing(time, envelope.timings.as_ref());
     code
+}
+
+/// A `run_*` command's early exit for a client-side validation failure
+/// (a bad flag combination, an unreadable `--source-dir`) caught before the
+/// op itself ever runs: wraps `err` in the same `ResultEnvelope` shape a
+/// failed op would produce, so a caller sees one consistent error report
+/// either way.
+fn early_error<T: serde::Serialize + ops::Outcome>(
+    operation: Operation,
+    scope: &skill_studio_core::NormalizedScope,
+    ctx: &OpContext,
+    err: skill_studio_core::CoreError,
+    json: bool,
+    time: bool,
+    print_table: impl FnOnce(&ResultEnvelope<T>),
+) -> ExitCode {
+    let envelope = ResultEnvelope::<T>::from_result(operation, scope, ctx, Err(err));
+    finish(&envelope, json, time, print_table)
 }
