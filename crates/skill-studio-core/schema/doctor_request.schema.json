@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DoctorRequest",
+  "description": "Request for `doctor`. Empty: a doctor pass always runs over the whole\nscope the running `Runtime` already knows, not one skill at a time.",
+  "type": "object"
+}

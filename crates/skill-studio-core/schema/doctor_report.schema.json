@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DoctorReport",
+  "description": "Result of `doctor`: one pass over every lifecycle invariant in\n`docs/action-map/lifecycle-states.md`'s Invariants section, over the\nwhole scope (every root `scan` knows, every registry and lockfile\nentry, the quarantine dirs, the journal), independent of any single\ncommand's own rollback logic.",
+  "type": "object",
+  "properties": {
+    "violations": {
+      "description": "Every violation found; empty means a healthy scope.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DoctorViolation"
+      }
+    },
+    "checked": {
+      "description": "Skills the pass examined for invariants 1-4 (link, registry,\nlockfile, two-states); invariants 5 (quarantine) and 6 (journal)\ncheck one directory and one journal each regardless of skill count,\nso this does not add them in.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "violations",
+    "checked"
+  ],
+  "$defs": {
+    "DoctorViolation": {
+      "description": "One violation of a [`crate::doctor::DoctorInvariant`] found by `doctor`,\nprojected from `crate::doctor::DoctorViolation` into a serializable\nshape: `skill` folds into `detail`'s message text rather than a\nseparate field, since every existing violation message already names\nthe skill when it has one (see each `doctor::check_*` function).",
+      "type": "object",
+      "properties": {
+        "invariant": {
+          "description": "Which invariant is violated.",
+          "$ref": "#/$defs/DoctorInvariant"
+        },
+        "path": {
+          "description": "Path of the offending entry, when the invariant names one.",
+          "type": "string"
+        },
+        "detail": {
+          "description": "Message for a person.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "invariant",
+        "path",
+        "detail"
+      ]
+    },
+    "DoctorInvariant": {
+      "description": "One of the six doctor invariants from `lifecycle-states.md`. Carries\n`Serialize`/`Deserialize`/`JsonSchema` (unlike the rest of this\ndetect-only module) because `ops::doctor`'s [`crate::dto::DoctorReport`]\ncrosses the CLI/desktop/MCP boundary and needs to name which invariant a\nviolation is.",
+      "oneOf": [
+        {
+          "description": "1. Every link resolves inside its root.",
+          "type": "string",
+          "const": "link_resolves_in_root"
+        },
+        {
+          "description": "2. Every registry entry has a folder.",
+          "type": "string",
+          "const": "registry_entry_has_folder"
+        },
+        {
+          "description": "3. Every lockfile entry has a folder.",
+          "type": "string",
+          "const": "lockfile_entry_has_folder"
+        },
+        {
+          "description": "4. No folder is in two states at once.",
+          "type": "string",
+          "const": "no_folder_in_two_states"
+        },
+        {
+          "description": "5. Quarantine stays within its retention cap.",
+          "type": "string",
+          "const": "quarantine_within_cap"
+        },
+        {
+          "description": "6. The journal has no open plan at rest.",
+          "type": "string",
+          "const": "journal_has_no_open_plan"
+        }
+      ]
+    }
+  }
+}

@@ -81,6 +81,8 @@ export type {
   UpdateOutcome,
   UpdateAllOutcome,
   UpdateAllItem,
+  DoctorReport,
+  DoctorViolation,
 } from "./skill-types.generated";
 
 import type { Deployment, InstalledSkill, SkillSearchResult } from "./skill-types.generated";
