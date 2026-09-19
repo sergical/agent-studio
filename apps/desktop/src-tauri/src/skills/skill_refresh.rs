@@ -3866,6 +3866,82 @@ mod tests {
         }
     }
 
+    /// Flow: a registry written before #278 removed the trial feature still
+    /// has a populated `trials` bucket for a skill whose deployment sits
+    /// untouched on disk (an active trial never moves what it's tracking).
+    /// Expectation: building the snapshot for that home shows it as a
+    /// normal installed skill - present, not parked, with an unbroken
+    /// deployment - since `InstalledSkill` has no trial state left to
+    /// derive. This replaces the intent of the deleted
+    /// `build_snapshot_exposes_simultaneous_global_and_project_trials`,
+    /// which used to assert the trial chip's `trial`/`trials` fields
+    /// directly. Failure: the leftover `trials` bucket confuses
+    /// classification into treating the skill as parked, broken, or absent
+    /// from the snapshot.
+    #[test]
+    fn build_snapshot_shows_a_skill_with_a_pre_removal_trials_bucket_as_a_normal_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let skill_dir = home.join(".agents/skills/find-bugs");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: find-bugs\ndescription: test\n---\nbody",
+        )
+        .unwrap();
+
+        let mut registry = super::super::skill_fork_registry::ForkRegistry::default();
+        registry.unknown.insert(
+            "trials".to_string(),
+            serde_json::json!({
+                "deployment/dep:v1/global/universal/universal/find-bugs/-/x": {
+                    "deployment_id": "dep:v1/global/universal/universal/find-bugs/-/x",
+                    "started_at": "2026-01-01T00:00:00Z",
+                    "expires_at": "2026-01-02T00:00:00Z",
+                    "status": "active",
+                    "method": "copy",
+                    "scope": "global",
+                    "project_path": null,
+                    "skill_dir": skill_dir.to_string_lossy(),
+                    "deployment_fingerprint": "a".repeat(64),
+                    "claude_link": null,
+                    "claude_link_target": null,
+                }
+            }),
+        );
+        super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+
+        let mut invocation_index = SkillInvocationIndex::default();
+        let (snapshot, _report) = build_snapshot(
+            &home,
+            &mut invocation_index,
+            BuildPaths {
+                cache_path: &tmp.path().join("cache.json"),
+                runs_root: tmp.path(),
+                update_check_path: &tmp.path().join("update-check.json"),
+            },
+            Utc::now(),
+        );
+
+        let skill = snapshot
+            .skills
+            .iter()
+            .find(|skill| skill.name == "find-bugs")
+            .expect("a skill with a leftover trials bucket should still appear in the snapshot");
+        assert!(
+            !skill.parked,
+            "a leftover trial record must not park the skill"
+        );
+        assert!(
+            !skill.deployments.is_empty(),
+            "the skill's on-disk deployment must still be found"
+        );
+        assert!(
+            !skill.deployments[0].symlink_is_broken,
+            "a leftover trial record must not mark the deployment as broken"
+        );
+    }
+
     fn harness_enabled(settings: &[DiscoverySourceSetting], harness: &str) -> bool {
         settings
             .iter()

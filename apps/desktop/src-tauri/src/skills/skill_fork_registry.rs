@@ -242,10 +242,13 @@ pub struct ForkRegistry {
     /// with the CLI and with whichever app version last wrote it. This is
     /// also how a pre-#278 `trials` bucket survives the upgrade: nothing
     /// reads it anymore, but it round-trips here unread rather than being
-    /// dropped, so an in-progress trial's bookkeeping is never lost. The
-    /// deployment itself was never moved by an active trial, so the skill
-    /// stays installed and usable exactly as `keep_skill_trial` used to
-    /// leave it.
+    /// dropped. That is only true for a trial that was still `Active`: its
+    /// deployment was never moved, so the skill stays installed and usable
+    /// exactly as `keep_skill_trial` used to leave it. A trial interrupted
+    /// mid-expiry (`TrialStatus::Expiring`) before the upgrade is neither
+    /// completed nor reverted by this build - its backup sits wherever
+    /// `skill_trial`'s expiry left it in `~/.agents/skills-trash`, and this
+    /// build does not resume or undo that move. Tracked as a follow-up.
     #[serde(flatten)]
     pub unknown: serde_json::Map<String, serde_json::Value>,
 }
@@ -427,21 +430,44 @@ mod tests {
         );
     }
 
+    /// The exact shape `skill_trial.rs::record_trial` wrote before #278
+    /// deleted it (see `TrialRecord`), for a global-scope Copy trial that
+    /// was still `Active` when the user upgraded.
+    fn pre_removal_trials_bucket_json() -> serde_json::Value {
+        serde_json::json!({
+            "deployment/dep:v1/global/universal/universal/find-bugs/-/x": {
+                "deployment_id": "dep:v1/global/universal/universal/find-bugs/-/x",
+                "started_at": "2026-01-01T00:00:00Z",
+                "expires_at": "2026-01-02T00:00:00Z",
+                "status": "active",
+                "method": "copy",
+                "scope": "global",
+                "project_path": null,
+                "skill_dir": "/home/user/.agents/skills/find-bugs",
+                "deployment_fingerprint": "a".repeat(64),
+                "claude_link": null,
+                "claude_link_target": null,
+            }
+        })
+    }
+
     /// Flow: a registry written before #278 removed the trial feature still
-    /// has a `trials` bucket on disk. Expectation: reading and re-writing it
-    /// keeps that bucket intact via the `unknown` catch-all, so an
-    /// in-progress trial's bookkeeping isn't silently dropped on upgrade -
-    /// the deployment itself was never moved by an active trial, so the
-    /// skill stays installed either way. Failure: the key goes missing after
-    /// a round trip, which would mean the upgrade path built during removal
-    /// erases old trial data instead of just ignoring it.
+    /// has a populated `trials` bucket on disk (an `Active` trial, not an
+    /// empty map). Expectation: reading and re-writing it keeps that bucket's
+    /// *content* byte-for-byte via the `unknown` catch-all, not merely
+    /// present - the deployment itself was never moved by an active trial,
+    /// so the skill stays installed either way. Failure: the round trip
+    /// drops, reorders, or mutates a field, which would mean the upgrade
+    /// path built during removal is silently rewriting old trial data
+    /// instead of leaving it untouched.
     #[test]
-    fn a_pre_removal_trials_bucket_survives_the_upgrade_round_trip() {
+    fn a_populated_pre_removal_trials_bucket_survives_the_upgrade_round_trip_unchanged() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".agents")).unwrap();
+        let trials = pre_removal_trials_bucket_json();
         std::fs::write(
             tmp.path().join(".agents/skill-studio.json"),
-            r#"{"version":4,"trials":{"global/find-bugs":{"started_at":"2026-01-01T00:00:00Z","expires_at":"2026-01-02T00:00:00Z","method":"copy","scope":"global"}}}"#,
+            serde_json::to_string(&serde_json::json!({"version": 4, "trials": trials})).unwrap(),
         )
         .unwrap();
 
@@ -449,9 +475,10 @@ mod tests {
         write_fork_registry(tmp.path(), &reg).unwrap();
 
         let reloaded = read_fork_registry(tmp.path()).unwrap();
-        assert!(
-            reloaded.unknown.get("trials").is_some(),
-            "a pre-removal trials bucket must survive the upgrade instead of being erased"
+        assert_eq!(
+            reloaded.unknown.get("trials"),
+            Some(&trials),
+            "a populated pre-removal trials bucket must round-trip with its content unchanged"
         );
     }
 
