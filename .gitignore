@@ -27,3 +27,8 @@ lerna-debug.log*
 
 # Cargo workspace build output
 /target/
+
+# cargo-mutants scratch output (unit 5.2); CI uploads its own copy as an
+# artifact instead of committing it.
+/mutants.out/
+/mutants.out.old/
