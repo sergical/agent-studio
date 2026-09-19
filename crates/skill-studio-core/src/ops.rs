@@ -281,7 +281,7 @@ impl Outcome for crate::dto::InstallPreferences {}
 /// `outdated`'s per-skill currency map carries no event and is never
 /// partial - a lookup failure resolves the affected skill to `Unknown`
 /// rather than raising.
-impl Outcome for std::collections::BTreeMap<String, crate::skill_update_check::Currency> {}
+impl Outcome for std::collections::BTreeMap<String, crate::skill_update_check::OutdatedRecord> {}
 /// `sweep_quarantine` has no outcome payload of its own - it either prunes
 /// the cap or returns an error - so it wraps in an envelope over `()`,
 /// taking every `Outcome` default (always `Ok`, no event).
@@ -3252,7 +3252,7 @@ pub fn outdated(
     tree_lookup: &dyn crate::skill_update_check::SourceTreeLookup,
     commit_lookup: &dyn crate::skill_update_check::CommitLookup,
     plugin_lookup: &dyn crate::skill_update_check::PluginManifestLookup,
-) -> Result<BTreeMap<String, crate::skill_update_check::Currency>, CoreError> {
+) -> Result<BTreeMap<String, crate::skill_update_check::OutdatedRecord>, CoreError> {
     let inventory = scan(rt, ctx, req)?;
     let targets: Vec<crate::skill_update_check::OutdatedTarget> = inventory
         .skills
@@ -3275,11 +3275,25 @@ pub fn outdated(
 /// skills-sh beats in-repo beats manual, via `SourceKind`'s derived `Ord`),
 /// not by whichever deployment `scan` happened to list first - matching
 /// `apps/desktop`'s `provenance::classify_source_kind` precedence.
+///
+/// `Fork` is checked first, ahead of that `Ord`-driven pick: a fork detaches
+/// a skill from whatever ledger/link it was cut from, so a per-harness link
+/// left behind (classified `Manual`) or a same-named dotagents/skills-sh row
+/// must never outrank the fork's own pinned-commit currency rule. `Fork` is
+/// deliberately last in `SourceKind`'s `Ord` for unrelated precedence
+/// reasons elsewhere, so `min_by_key` alone would pick the wrong deployment
+/// here.
 fn outdated_target(skill: &InstalledSkillDto) -> Option<crate::skill_update_check::OutdatedTarget> {
     let deployment = skill
         .deployments
         .iter()
-        .min_by_key(|deployment| deployment.source_kind)?;
+        .find(|deployment| deployment.source_kind == SourceKind::Fork)
+        .or_else(|| {
+            skill
+                .deployments
+                .iter()
+                .min_by_key(|deployment| deployment.source_kind)
+        })?;
     let plugin = deployment
         .plugin
         .as_ref()
@@ -6103,6 +6117,31 @@ mod tests {
         };
         let target = outdated_target(&skill).expect("a deployed skill always yields a target");
         assert_eq!(target.source_kind, SourceKind::Dotagents);
+    }
+
+    /// Flow: a forked skill whose per-harness link is still on disk, so
+    /// `scan` also reports a `Manual` deployment for the same skill name.
+    /// Expectation: `outdated_target` still classifies it as
+    /// `SourceKind::Fork`, not `Manual` - `Fork` sorts last in `SourceKind`'s
+    /// derived `Ord`, so the shared `min_by_key` precedence alone would pick
+    /// `Manual` here.
+    /// A failure here means the fork-first check was dropped, so a fork with
+    /// a leftover per-harness link silently loses its currency rule and
+    /// reports `NotTracked` forever, or names the wrong method it picked
+    /// instead.
+    #[test]
+    fn a_forked_skill_with_a_leftover_manual_link_is_still_classified_as_fork_or_names_the_method_it_picked(
+    ) {
+        let skill = InstalledSkillDto {
+            name: SkillName("find-bugs".to_string()),
+            description: None,
+            deployments: vec![
+                minimal_deployment(SourceKind::Manual, None),
+                minimal_deployment(SourceKind::Fork, None),
+            ],
+        };
+        let target = outdated_target(&skill).expect("a deployed skill always yields a target");
+        assert_eq!(target.source_kind, SourceKind::Fork);
     }
 
     mod scan_tests {
