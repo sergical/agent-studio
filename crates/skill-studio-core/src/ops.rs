@@ -45,8 +45,8 @@ use crate::lock_file;
 use crate::ops_install;
 use crate::ownership;
 use crate::ports::{
-    acquire_exclusive, acquire_shared, Clock, DirEntryFacts, ExclusiveGuard, FileKind,
-    HistoryAccess, OpContext, PlanStatus, Runtime, ScopeFs, ScopedReads,
+    acquire_shared, Clock, DirEntryFacts, ExclusiveGuard, FileKind, HistoryAccess, OpContext,
+    PlanStatus, Runtime, ScopeFs, ScopedReads,
 };
 use crate::scope::{EffectiveScope, NormalizedScope};
 use crate::SCHEMA_VERSION;
@@ -117,6 +117,10 @@ pub enum Operation {
     InstallPreferences,
     /// Unit 5.3: run all six lifecycle invariants over the whole scope.
     Doctor,
+    /// Unit 3.4: per-install-method currency ("update available").
+    Outdated,
+    /// Unit 3.9b: prune the quarantine cap without a `remove` call.
+    SweepQuarantine,
 }
 
 /// Outcome status of one call.
@@ -274,6 +278,14 @@ impl Outcome for crate::dto::InstallOutcome {
     }
 }
 impl Outcome for crate::dto::InstallPreferences {}
+/// `outdated`'s per-skill currency map carries no event and is never
+/// partial - a lookup failure resolves the affected skill to `Unknown`
+/// rather than raising.
+impl Outcome for std::collections::BTreeMap<String, crate::skill_update_check::Currency> {}
+/// `sweep_quarantine` has no outcome payload of its own - it either prunes
+/// the cap or returns an error - so it wraps in an envelope over `()`,
+/// taking every `Outcome` default (always `Ok`, no event).
+impl Outcome for () {}
 
 /// The envelope every surface returns.
 ///
@@ -673,7 +685,8 @@ fn scan_one_target(
     // and matching its `NotFound`, is a real directory listing saved, not
     // just the same cost moved elsewhere.
     if !root_dir_missing(sc.fs, &target.path) {
-        match timed_read_root_entries(sc, &target.path) {
+        let reserved = crate::harness::reserved_skills_root_entry(target.harness.as_ref());
+        match timed_read_root_entries(sc, &target.path, reserved) {
             Ok(names) => process_entries(
                 &EntryContext {
                     fs: sc.fs,
@@ -737,7 +750,9 @@ fn scan_move_aside_dir(
     if root_dir_missing(sc.fs, &move_aside_dir) {
         return Ok(());
     }
-    if let Ok(names) = timed_read_root_entries(sc, &move_aside_dir) {
+    // No reserved name applies here: the holding directory is Skill
+    // Studio's own, not the harness's root.
+    if let Ok(names) = timed_read_root_entries(sc, &move_aside_dir, None) {
         process_entries(
             &EntryContext {
                 fs: sc.fs,
@@ -927,12 +942,21 @@ fn scan_one_plugin_target(
 /// Lists a root directory's visible skill-shaped entries (dirs and
 /// symlinks), sorted for a deterministic scan order. Dot-prefixed entries
 /// (including [`MOVE_ASIDE_DIR_NAME`] itself) are never a skill; the caller
-/// walks that holding directory separately.
+/// walks that holding directory separately. `reserved` is the entry name
+/// the root's own harness owns, from
+/// [`crate::harness::reserved_skills_root_entry`]: Claude Code's `synced`
+/// folder is the vendor's, so it is skipped even when it holds a
+/// `SKILL.md` (`docs/action-map/harnesses/claude-code.md`: "`synced` under
+/// `~/.claude/skills` is reserved; the scanner must skip it").
 /// As [`read_root_entries`], accumulating the read's duration onto
 /// `sc.timings.dir_walk` (the scan step this call is part of).
-fn timed_read_root_entries(sc: &ScanCtx, dir: &Path) -> std::io::Result<Vec<DirEntryFacts>> {
+fn timed_read_root_entries(
+    sc: &ScanCtx,
+    dir: &Path,
+    reserved: Option<&str>,
+) -> std::io::Result<Vec<DirEntryFacts>> {
     let start = sc.rt.ports.clock.monotonic();
-    let result = read_root_entries(sc.fs, dir);
+    let result = read_root_entries(sc.fs, dir, reserved);
     ScanTimings::add(
         &sc.timings.dir_walk,
         sc.rt.ports.clock.monotonic().saturating_sub(start),
@@ -940,11 +964,16 @@ fn timed_read_root_entries(sc: &ScanCtx, dir: &Path) -> std::io::Result<Vec<DirE
     result
 }
 
-fn read_root_entries(fs: &dyn ScopeFs, dir: &Path) -> std::io::Result<Vec<DirEntryFacts>> {
+fn read_root_entries(
+    fs: &dyn ScopeFs,
+    dir: &Path,
+    reserved: Option<&str>,
+) -> std::io::Result<Vec<DirEntryFacts>> {
     let entries = fs.read_dir(dir)?;
     let mut names: Vec<_> = entries
         .into_iter()
         .filter(crate::ports::is_skill_shaped_entry)
+        .filter(|entry| reserved != Some(entry.name.as_str()))
         .collect();
     names.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(names)
@@ -1885,21 +1914,12 @@ fn codex_rehome_table_decor_blocks(
 /// `ExclusiveGuard` instead of raw `std::fs`. Idempotent: disabling an
 /// already-disabled row, or enabling one that isn't disabled, is a no-op
 /// write.
-pub fn set_codex_skill_disabled(
-    rt: &Runtime,
-    ctx: &OpContext,
-    skill_md_path: &Path,
-    disabled: bool,
-) -> Result<(), CoreError> {
-    let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)?;
-    set_codex_skill_disabled_with(rt, ctx, &guard, skill_md_path, disabled)
-}
-
-/// The lease-holding half of [`set_codex_skill_disabled`]. The caller
-/// already holds the root's exclusive lease - the desktop command's
-/// `WriteLease`, or a `MutationSession` - so this must not acquire a second
-/// one; advisory locks do not nest in-process, and a second `acquire_exclusive`
-/// on the same root self-deadlocks until the lease times out.
+///
+/// The caller passes in the root's exclusive lease it already holds - the
+/// desktop command's `WriteLease`, or a `MutationSession` - because this
+/// must not acquire a second one; advisory locks do not nest in-process,
+/// and a second `acquire_exclusive` on the same root self-deadlocks until
+/// the lease times out.
 pub fn set_codex_skill_disabled_with(
     rt: &Runtime,
     ctx: &OpContext,
@@ -1916,7 +1936,7 @@ pub fn set_codex_skill_disabled_with(
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
-/// The in-memory half of [`set_codex_skill_disabled`], split out so
+/// The in-memory half of [`set_codex_skill_disabled_with`], split out so
 /// [`codex_rewrite_skill_path`] can reuse the row lookup and decor-rehoming
 /// without re-deriving them. Errors rather than panics when `skills` or
 /// `skills.config` already exists in `config.toml` under a type the user
@@ -2014,7 +2034,7 @@ fn codex_write_disabled_row(
 /// disabled at its new path instead of leaving a stale row that no longer
 /// matches anything on disk (the bug `docs/action-map/harnesses/codex.md`
 /// names).
-pub fn codex_rewrite_skill_path(
+pub(crate) fn codex_rewrite_skill_path(
     rt: &Runtime,
     ctx: &OpContext,
     guard: &ExclusiveGuard,
@@ -2055,99 +2075,6 @@ fn codex_write_config_document(
         .map_err(|e| CoreError::io(&parent, e))?;
     let scoped_path = crate::ports::confine(&rt.scope, fs, &path)?;
     fs.write_atomic(guard, &scoped_path, doc.to_string().as_bytes())
-        .map_err(|e| CoreError::io(&path, e))
-}
-
-/// `<skill_dir>/agents/openai.yaml` - Codex's own invocation-policy sidecar,
-/// next to `SKILL.md`.
-fn codex_openai_yaml_path(skill_dir: &Path) -> PathBuf {
-    skill_dir.join("agents").join("openai.yaml")
-}
-
-/// Sets or clears `policy.allow_implicit_invocation: false` in a Codex
-/// deployment's `agents/openai.yaml`, preserving any other top-level keys.
-/// Creates the file (and its `agents/` directory) when setting the key on a
-/// skill that didn't have one; deletes the file entirely when clearing the
-/// key leaves it empty, rather than leaving a stray `{}`. Ported from the
-/// desktop's former `skill_invocation.rs::patch_codex_openai_yaml`, onto
-/// `ScopeFs` and an `ExclusiveGuard`.
-pub fn set_codex_sidecar_implicit_invocation(
-    rt: &Runtime,
-    ctx: &OpContext,
-    skill_dir: &Path,
-    user_only: bool,
-) -> Result<(), CoreError> {
-    ctx.checkpoint()?;
-    let fs = rt.ports.fs.as_ref();
-    let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)?;
-    let path = codex_openai_yaml_path(skill_dir);
-    let mut root: serde_yaml::Mapping = match fs.read_capped(&path, SKILL_MD_MAX_BYTES) {
-        Ok(bytes) => {
-            let text = String::from_utf8(bytes).map_err(|e| {
-                CoreError::new(
-                    ErrorCode::InvalidRequest,
-                    format!("{} is not valid UTF-8: {e}", path.display()),
-                )
-                .at(&path)
-            })?;
-            match serde_yaml::from_str(&text) {
-                Ok(serde_yaml::Value::Mapping(m)) => m,
-                Ok(_) | Err(_) => {
-                    return Err(CoreError::new(
-                        ErrorCode::InvalidRequest,
-                        format!("{} is not a YAML mapping", path.display()),
-                    )
-                    .at(&path));
-                }
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_yaml::Mapping::new(),
-        Err(e) => return Err(CoreError::io(&path, e)),
-    };
-
-    let policy_key = serde_yaml::Value::String("policy".to_string());
-    let allow_key = serde_yaml::Value::String("allow_implicit_invocation".to_string());
-    let mut policy = match root.get(&policy_key) {
-        Some(serde_yaml::Value::Mapping(m)) => m.clone(),
-        _ => serde_yaml::Mapping::new(),
-    };
-
-    if user_only {
-        policy.insert(allow_key, serde_yaml::Value::Bool(false));
-        root.insert(policy_key, serde_yaml::Value::Mapping(policy));
-    } else {
-        policy.remove(&allow_key);
-        if policy.is_empty() {
-            root.remove(&policy_key);
-        } else {
-            root.insert(policy_key, serde_yaml::Value::Mapping(policy));
-        }
-        if root.is_empty() {
-            if fs.symlink_metadata(&path).is_ok() {
-                let scoped_path = crate::ports::confine(&rt.scope, fs, &path)?;
-                fs.remove_file(&guard, &scoped_path)
-                    .map_err(|e| CoreError::io(&path, e))?;
-            }
-            return Ok(());
-        }
-    }
-
-    let Some(parent) = path.parent() else {
-        unreachable!("openai.yaml always has a parent");
-    };
-    let parent = parent.to_path_buf();
-    let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
-    fs.create_dir_all(&guard, &scoped_parent)
-        .map_err(|e| CoreError::io(&parent, e))?;
-    let yaml = serde_yaml::to_string(&serde_yaml::Value::Mapping(root)).map_err(|e| {
-        CoreError::new(
-            ErrorCode::InvalidRequest,
-            format!("Failed to serialize {}: {e}", path.display()),
-        )
-        .at(&path)
-    })?;
-    let scoped_path = crate::ports::confine(&rt.scope, fs, &path)?;
-    fs.write_atomic(&guard, &scoped_path, yaml.as_bytes())
         .map_err(|e| CoreError::io(&path, e))
 }
 
@@ -4775,7 +4702,7 @@ pub(crate) fn find_all_links<'a>(
 
 pub use crate::ops_doctor::doctor;
 pub use crate::ops_install::{install, install_preferences};
-pub use crate::ops_remove::remove;
+pub use crate::ops_remove::{remove, sweep_quarantine};
 pub use crate::ops_update::{update, update_all};
 
 /// Moves a universal deployment's directory into the parked root.

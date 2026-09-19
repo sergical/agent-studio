@@ -315,6 +315,32 @@ mod tests {
     use skill_studio_core::skill_uses::InvocationHeatmap;
     use std::collections::BTreeMap;
 
+    #[test]
+    fn skills_sh_remove_args_selects_global_flag() {
+        assert_eq!(
+            skills_sh_remove_args_for_scope("foo", InstallScope::Global),
+            vec!["skills", "remove", "foo", "--yes", "--global"]
+        );
+        assert_eq!(
+            skills_sh_remove_args_for_scope("foo", InstallScope::Project),
+            vec!["skills", "remove", "foo", "--yes"]
+        );
+    }
+
+    #[test]
+    fn dotagents_remove_args_selects_project_mode() {
+        use super::super::commands::dotagents_remove_args;
+
+        assert_eq!(
+            dotagents_remove_args("foo", InstallScope::Project),
+            vec!["-y", "@sentry/dotagents", "--project", "remove", "foo"]
+        );
+        assert_eq!(
+            dotagents_remove_args("foo", InstallScope::Global),
+            vec!["-y", "@sentry/dotagents", "remove", "foo"]
+        );
+    }
+
     fn dep(id: &str, name: &str, path: &str, scope: &str, dest: SkillDestination) -> Deployment {
         Deployment {
             id: id.to_string(),

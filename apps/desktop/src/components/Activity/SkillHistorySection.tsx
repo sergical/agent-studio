@@ -21,7 +21,11 @@ import type { SkillEvent } from "@skill-studio/lib";
 import { listSkillEvents, openSkillPath, restoreSkillEvent } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import { HARNESS_LABELS } from "../../lib/harness-labels";
-import { canRestoreSkillEvent, shouldOfferForceRestore } from "./skill-history-restore-policy";
+import {
+  canRestoreSkillEvent,
+  kindLabel,
+  shouldOfferForceRestore,
+} from "./skill-history-restore-policy";
 
 const HARNESS_LABEL_BY_ID = new Map<string, string>(HARNESS_LABELS);
 
@@ -48,11 +52,6 @@ function iconForKind(kind: string, className: string) {
     default:
       return <HistoryIcon {...props} />;
   }
-}
-
-/** "unlink harness" from "unlink_harness", for kinds with no friendlier label. */
-function kindLabel(kind: string): string {
-  return kind.replace(/_/g, " ");
 }
 
 /** What a restore's confirm dialog names as "what will be put back" - the inverse of the event's own kind. */

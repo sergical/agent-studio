@@ -29,6 +29,11 @@ pub use skills::*;
 /// can run it off the UI thread. A failure opening the store returns `None`
 /// rather than aborting startup; every event command surfaces that as an
 /// ordinary `Err`.
+///
+/// Never called when [`skills::data_folder_status::check_and_migrate`]
+/// (unit 6.3) already refused the folder as newer than this build - `run()`
+/// checks that first, so a version this app doesn't understand is never
+/// opened.
 fn open_event_store(app: &tauri::App) -> Option<skills::event_store::EventStore> {
     let app_data = app
         .path()
@@ -222,6 +227,24 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Unit 6.3: check the data folder's schema_version before
+            // anything else in setup - every branch below either spawns a
+            // background thread or manages state a Tauri command can read,
+            // and any of those could touch `app_data_dir` before a later
+            // check_and_migrate call would have run. Migrates forward in
+            // place when older, and names a blocking message when newer so
+            // `open_event_store` below is skipped rather than opening a
+            // folder this build doesn't understand.
+            let data_folder_message = app
+                .path()
+                .app_data_dir()
+                .ok()
+                .as_deref()
+                .and_then(skills::data_folder_status::check_and_migrate);
+            app.manage(skills::data_folder_status::DataFolderStatusState(
+                std::sync::Mutex::new(data_folder_message.clone()),
+            ));
+
             let refresh_state = skills::skill_refresh::init(app.handle());
             app.manage(refresh_state);
             app.manage(skills::skill_add_operation::AddSkillOperationState::default());
@@ -246,7 +269,11 @@ pub fn run() {
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
             skills::skill_trial::spawn_trial_expiry_loop(app.handle().clone());
 
-            let event_store = open_event_store(app);
+            let event_store = if data_folder_message.is_some() {
+                None
+            } else {
+                open_event_store(app)
+            };
             app.manage(skills::event_commands::EventStoreState(
                 std::sync::Mutex::new(event_store),
             ));
@@ -276,6 +303,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             skills::app_version::app_version,
+            skills::data_folder_status::data_folder_status,
             skills::add_method_defaults::get_add_method_defaults,
             // Skills.sh integration
             skills::commands::search_skills,
@@ -316,7 +344,7 @@ pub fn run() {
             skills::skill_park::park_skill,
             skills::skill_park::unpark_skill,
             skills::skill_harness_disable::set_harness_enabled,
-            skills::skill_harness_disable::set_deployment_enabled,
+            skills::skill_harness_disable::restore_moved_deployment,
             skills::skill_invocation::set_skill_invocation,
             skills::commands::set_plugin_enabled,
             skills::commands::uninstall_plugin,

@@ -16,14 +16,19 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
 use crate::dotagents_ledger::{self, DotagentsSkill};
 use crate::error::CoreError;
 use crate::identity::SourceKind;
 use crate::lock_file::{self, SkillLockFile};
 use crate::ports::ScopeFs;
 
-/// One skill's currency, keyed by name in [`outdated`]'s result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One skill's currency, keyed by name in [`outdated`]'s result. Wire-visible:
+/// `ops::outdated`'s CLI subcommand and MCP tool return this map directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Currency {
     /// The installed side matches the newest side.
     UpToDate,

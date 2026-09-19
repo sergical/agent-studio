@@ -86,6 +86,21 @@ function LocationRowSwitch({
     );
   }
 
+  if (row.switchDisabledReason) {
+    return (
+      <TooltipControl content={row.switchDisabledReason}>
+        <span className="inline-flex">
+          <SwitchControl
+            checked={row.switchOn}
+            disabled
+            onCheckedChange={() => undefined}
+            ariaLabel={row.switchDisabledReason}
+          />
+        </span>
+      </TooltipControl>
+    );
+  }
+
   const pluginDisabledByClaudeLabel =
     row.kind === "plugin" && row.deployment?.disabled_by === "claude-plugin-disabled"
       ? `Off because the ${row.deployment.plugin?.name ?? "plugin"} plugin is disabled in Claude Code.`

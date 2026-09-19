@@ -87,3 +87,30 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.ref_name }}" "$dsym_zip" --clobber
+
+  # Unit 6.3: prints the rollback rehearsal checklist once per release
+  # (not once per `build` matrix leg) so the release author has one place
+  # to record it. This is a summary, not a gate - nothing here blocks the
+  # release or waits on wall-clock time; the release author fills in the
+  # result by hand, after actually running the steps against a machine
+  # that ran the previous tag, and copies this section into the release
+  # notes (`docs/action-map/release-readiness.md` carries the same steps).
+  rehearsal-summary:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print the n-1 over n rollback rehearsal checklist
+        run: |
+          {
+            echo "## Rollback rehearsal (n-1 over n)"
+            echo
+            echo "Run by hand on a Mac that already ran the previous tag, before announcing this release:"
+            echo
+            echo "- [ ] Install the previous tag's signed DMG and launch it at least once."
+            echo "- [ ] Install this tag's signed DMG over it (same Applications path)."
+            echo "- [ ] Launch, confirm the app opens to the normal skill list, not the newer-data-folder message."
+            echo "- [ ] Note the app data folder's \`schema_version\` before and after (\`~/Library/Application Support/<bundle id>/schema_version\`)."
+            echo "- [ ] Reinstall the previous tag's DMG over this one (the rollback), launch, and record what the user sees."
+            echo
+            echo "Result: (fill in)"
+          } >> "$GITHUB_STEP_SUMMARY"

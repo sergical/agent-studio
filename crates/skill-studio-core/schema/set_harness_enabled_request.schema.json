@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SetHarnessEnabledRequest",
+  "description": "Request to turn a skill's per-harness native switch on or off.",
+  "type": "object",
+  "properties": {
+    "skill": {
+      "description": "The skill to toggle.",
+      "$ref": "#/$defs/SkillName"
+    },
+    "harness": {
+      "description": "The harness whose native switch to flip.",
+      "$ref": "#/$defs/AgentIdentity"
+    },
+    "enabled": {
+      "description": "`true` enables the skill for this harness; `false` disables it.",
+      "type": "boolean"
+    },
+    "project_path": {
+      "description": "The project the targeted row is scoped to; `None` for the global row.\nClaude Code's switch is a per-scope symlink slot\n(`<project>/.claude/skills/<name>` vs `<home>/.claude/skills/<name>`),\nso this picks which slot a project-scoped skill's toggle touches.\nEvery other harness's switch is keyed by name alone and ignores it.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "skill",
+    "harness",
+    "enabled"
+  ],
+  "$defs": {
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    },
+    "AgentIdentity": {
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
+      "type": "string"
+    }
+  }
+}

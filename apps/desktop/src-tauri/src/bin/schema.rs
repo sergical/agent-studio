@@ -10,7 +10,8 @@
 use schemars::generate::SchemaSettings;
 use schemars::JsonSchema;
 use skill_studio_core::dto::{
-    CommandHealth, FixSkillOutcome, InstallPreferences, UpdateAllOutcome, UpdateOutcome,
+    CommandHealth, FixSkillOutcome, InstallPreferences, RemoveOutcome, UpdateAllOutcome,
+    UpdateOutcome,
 };
 use skill_studio_core::harness::HarnessReport;
 use skill_studio_core::skill_uses::{InvocationHeatmap, SkillInvocation, SkillTrigger};
@@ -72,6 +73,7 @@ struct WireTypes {
     harness_report: HarnessReport,
     harnesses_choice: HarnessesChoice,
     fix_skill_outcome: FixSkillOutcome,
+    remove_outcome: RemoveOutcome,
     update_outcome: UpdateOutcome,
     update_all_outcome: UpdateAllOutcome,
 }

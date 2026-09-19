@@ -22,14 +22,14 @@ import {
 } from "@skill-studio/ui";
 import { formatTokens } from "@skill-studio/lib";
 import type { AgentId, InstalledSkill, InvocationPolicy } from "@skill-studio/lib";
-import { setDeploymentEnabled, setHarnessEnabled } from "../../lib/skill-api";
+import { restoreMovedDeployment, setHarnessEnabled } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import { HarnessStack } from "../SkillList/HarnessStack";
 import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
 import { SwitchControl } from "../ui/SwitchControl";
 import { buildInstalledSkillSourceLedgerModel } from "./installed-skill-source-ledger-model";
 import { setInvocationForFile } from "./skill-location-actions";
-import { canToggleHarness } from "./skill-location-helpers";
+import { canOfferHarnessSwitchForRow, harnessSwitchOffTitle } from "./skill-location-helpers";
 import {
   buildInvocationFiles,
   buildScopeGroups,
@@ -110,17 +110,12 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
 
   const toggleHarness = async (harness: AgentId, row: AgentLocationRow, enabled: boolean) => {
     setPendingHarness(harness);
-    // Hoisted out of the try below - the compiler can't optimize a logical expression computed
-    // inside a try/catch statement.
-    const useDeploymentToggle =
-      row.deployment != null &&
-      (row.deployment.disabled_by === "studio-moved" || !canToggleHarness(row.deployment));
     try {
       if (row.kind === "reader") {
         await setHarnessEnabled(row.lifecycleTarget, harness, enabled);
       } else if (row.deployment) {
-        if (useDeploymentToggle) {
-          await setDeploymentEnabled({ deployment_id: row.deployment.id }, enabled);
+        if (row.deployment.disabled_by === "studio-moved") {
+          await restoreMovedDeployment({ deployment_id: row.deployment.id });
         } else {
           await setHarnessEnabled({ deployment_id: row.deployment.id }, harness, enabled);
         }
@@ -199,14 +194,16 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
               ) : (
                 reachedHarnesses.map((h) => {
                   const row = rowForHarness(h.harness);
+                  const offerSwitch = row != null && canOfferHarnessSwitchForRow(row);
                   return (
                     <div key={h.harness} className="flex h-7 items-center justify-between gap-2">
                       <span className="truncate text-small text-text-secondary">{h.label}</span>
                       <SwitchControl
                         checked={row?.switchOn ?? true}
-                        disabled={!row?.hasSwitch || pendingHarness === h.harness}
+                        disabled={!offerSwitch || pendingHarness === h.harness}
                         onCheckedChange={(next) => row && toggleHarness(h.harness, row, next)}
                         ariaLabel={`Enabled for ${h.label}`}
+                        title={offerSwitch || !row ? undefined : harnessSwitchOffTitle(row)}
                       />
                     </div>
                   );

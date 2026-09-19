@@ -96,4 +96,5 @@ tempfile = "3"
 [dev-dependencies]
 skill-studio-core = { path = "../../../crates/skill-studio-core", features = ["testing"] }
 skill-studio = { path = ".", features = ["testing"] }
+skill-studio-mcp = { path = "../../mcp" }
 similar = "2"

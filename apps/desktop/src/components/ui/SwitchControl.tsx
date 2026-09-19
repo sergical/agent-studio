@@ -11,6 +11,8 @@ interface SwitchControlProps {
   onCheckedChange: (checked: boolean) => void;
   disabled?: boolean;
   ariaLabel?: string;
+  /** Shown as a native tooltip - used to explain a disabled switch, e.g. "no off switch here". */
+  title?: string;
 }
 
 export function SwitchControl({
@@ -18,6 +20,7 @@ export function SwitchControl({
   onCheckedChange,
   disabled: disabledProp,
   ariaLabel,
+  title,
 }: SwitchControlProps) {
   const disabled = disabledProp ?? false;
   return (
@@ -27,6 +30,7 @@ export function SwitchControl({
       onCheckedChange={onCheckedChange}
       disabled={disabled}
       aria-label={ariaLabel}
+      title={title}
       className="data-checked:bg-accent-solid data-unchecked:border-text-tertiary data-unchecked:bg-bg-active"
     />
   );

@@ -1490,11 +1490,11 @@ pub mod fixtures {
 
     /// A minimal spec-valid `SKILL.md`: frontmatter `name` matches `name`,
     /// and `description` is a non-empty, sub-1024-char sentence.
-    fn skill_md(name: &str) -> String {
+    pub(crate) fn skill_md(name: &str) -> String {
         format!("---\nname: {name}\ndescription: Helps with {name} for fixture-driven tests.\n---\nBody text for {name}.\n")
     }
 
-    fn skill(builder: FixtureBuilder, dir: &str, name: &str) -> FixtureBuilder {
+    pub(crate) fn skill(builder: FixtureBuilder, dir: &str, name: &str) -> FixtureBuilder {
         // The skill directory itself must be a declared dir, not just
         // implied by its `SKILL.md` file: `FixtureFs::read_dir` lists only
         // the direct children it was explicitly told about, so a root's

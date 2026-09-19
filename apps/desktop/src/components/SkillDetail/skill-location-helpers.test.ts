@@ -2,10 +2,21 @@
 // Skill Studio - skill location helper tests
 // ============================================================================
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
-import { sharedFolderSwitchPolicy } from "./skill-location-helpers";
+import { SwitchControl } from "../ui/SwitchControl";
+import {
+  canOfferHarnessSwitch,
+  canOfferHarnessSwitchForRow,
+  harnessSwitchOffTitle,
+  NO_OFF_SWITCH_TITLE,
+  REGISTRY_COPY_NO_SWITCH_TITLE,
+  sharedFolderSwitchPolicy,
+} from "./skill-location-helpers";
 import { buildScopeGroups, rowMenu } from "./skill-location-status";
+import type { AgentLocationRow } from "./skill-location-status";
 
 function sharedDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
@@ -96,5 +107,136 @@ describe("sharedFolderSwitchPolicy", () => {
         (entry) => entry.action.kind,
       ),
     ).not.toContain("park");
+  });
+});
+
+describe("canOfferHarnessSwitch", () => {
+  it("harness_rail_toggle_is_disabled_for_a_copy_that_cannot_park_or_names_the_row", () => {
+    const projectCopy = sharedDeployment({
+      id: "dep:v1/project/claude-code/find-bugs",
+      agent: "Claude Code",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.claude/skills/find-bugs",
+      is_symlink: false,
+      backing: { kind: "independent" },
+      disabled: false,
+      disabled_by: null,
+    });
+
+    // A project-scope copy has no native per-skill disable and was never
+    // moved aside, so the Harnesses rail must not offer a switch for it -
+    // `park`/`unpark` only ever target the Global Universal deployment.
+    expect(canOfferHarnessSwitch(projectCopy)).toBe(false);
+  });
+
+  it("studio_moved_row_keeps_its_switch_or_names_the_missing_native_disable", () => {
+    const movedCopy = sharedDeployment({
+      id: "dep:v1/project/pi/find-bugs",
+      agent: "pi",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.pi/skills/find-bugs",
+      backing: { kind: "independent" },
+      disabled: true,
+      disabled_by: "studio-moved",
+    });
+
+    expect(canOfferHarnessSwitch(movedCopy)).toBe(true);
+  });
+
+  it("studio_moved_copy_row_has_no_switch_or_names_the_row", () => {
+    const registryCopy = sharedDeployment({
+      id: "dep:v1/project/pi/find-bugs",
+      agent: "pi",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.pi/skills/find-bugs",
+      owner_kind: "copy",
+      backing: { kind: "independent" },
+      disabled: true,
+      disabled_by: "studio-moved",
+    });
+
+    // `restore_moved_deployment` refuses a Copy-owned row outright
+    // (`refuse_registry_copy_restore`), so the switch must not pretend it
+    // has a way back either.
+    expect(canOfferHarnessSwitch(registryCopy)).toBe(false);
+    const row: AgentLocationRow = {
+      kind: "copy",
+      harness: "pi",
+      harnessLabel: "pi",
+      path: registryCopy.path,
+      caption: "",
+      conditions: [],
+      level: null,
+      deployment: registryCopy,
+      lifecycleTarget: { deployment_id: registryCopy.id },
+      hasSwitch: false,
+      switchOn: false,
+      invocation: null,
+    };
+    expect(harnessSwitchOffTitle(row)).toBe(REGISTRY_COPY_NO_SWITCH_TITLE);
+
+    // `canToggleHarness` alone would read a disabled claude-code/codex/open-code
+    // row as switchable regardless of ownership, so the Copy-owned guard must
+    // run ahead of that branch too, not just the studio-moved fallback.
+    const registryCopyOnClaudeCode = sharedDeployment({
+      id: "dep:v1/project/claude-code/find-bugs",
+      agent: "Claude Code",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.claude/skills/find-bugs",
+      owner_kind: "copy",
+      backing: { kind: "independent" },
+      disabled: true,
+      disabled_by: "studio-moved",
+    });
+    expect(canOfferHarnessSwitch(registryCopyOnClaudeCode)).toBe(false);
+  });
+});
+
+// `SkillPropertiesRail`'s Harnesses popover renders `SwitchControl` inline
+// (no standalone row component to import), so this exercises the rail's
+// exact disabled/title wiring - `canOfferHarnessSwitchForRow` +
+// `NO_OFF_SWITCH_TITLE` - against the same `SwitchControl` it renders.
+describe("harness rail switch (canOfferHarnessSwitchForRow + NO_OFF_SWITCH_TITLE)", () => {
+  it("harness_rail_switch_is_disabled_for_a_copy_that_cannot_park_or_names_the_row", () => {
+    const deployment = sharedDeployment({
+      id: "dep:v1/project/claude-code/find-bugs",
+      agent: "Claude Code",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.claude/skills/find-bugs",
+      backing: { kind: "independent" },
+    });
+    const row: AgentLocationRow = {
+      kind: "copy",
+      harness: "claude-code",
+      harnessLabel: "Claude Code",
+      path: deployment.path,
+      caption: "",
+      conditions: [],
+      level: null,
+      deployment,
+      lifecycleTarget: { deployment_id: deployment.id },
+      hasSwitch: false,
+      switchOn: false,
+      invocation: null,
+    };
+    const offerSwitch = canOfferHarnessSwitchForRow(row);
+    expect(offerSwitch).toBe(false);
+
+    const markup = renderToStaticMarkup(
+      createElement(SwitchControl, {
+        checked: row.switchOn,
+        disabled: !offerSwitch,
+        onCheckedChange: () => undefined,
+        ariaLabel: "Enabled for Claude Code",
+        title: offerSwitch ? undefined : NO_OFF_SWITCH_TITLE,
+      }),
+    );
+    expect(markup).toContain(`title="${NO_OFF_SWITCH_TITLE}"`);
+    expect(markup).toContain("disabled=");
   });
 });

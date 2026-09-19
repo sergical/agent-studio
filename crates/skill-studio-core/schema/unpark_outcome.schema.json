@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UnparkOutcome",
+  "description": "Result of `unpark`.",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "description": "The `unpark` event.",
+      "$ref": "#/$defs/EventId"
+    },
+    "deployment_id": {
+      "description": "The deployment that was restored.",
+      "$ref": "#/$defs/DeploymentId"
+    },
+    "restored_path": {
+      "description": "Where the directory now lives, under the universal root.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "deployment_id",
+    "restored_path"
+  ],
+  "$defs": {
+    "EventId": {
+      "description": "History event id (ULID string).\n\nInvariant: lexical order equals creation order inside one store.",
+      "type": "string"
+    },
+    "DeploymentId": {
+      "description": "Opaque deployment id.\n\nInvariant: the string starts with `dep:v1/`. Its internal layout is a core\ndetail; adapters and the UI compare it as a string and never split it.",
+      "type": "string"
+    }
+  }
+}

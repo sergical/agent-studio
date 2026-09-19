@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InstallPreferencesRequest",
+  "description": "Request for `install_preferences`: which scope's saved preference to\nread. Defaults to the global root, so a caller that only ever installs\nglobally sends nothing.",
+  "type": "object",
+  "properties": {
+    "scope": {
+      "description": "`Global` reads the scope home's preference; `Project` reads one\nproject's.",
+      "$ref": "#/$defs/RootScope",
+      "default": {
+        "scope": "global"
+      }
+    }
+  },
+  "$defs": {
+    "RootScope": {
+      "description": "Where a root lives.",
+      "oneOf": [
+        {
+          "description": "Under the scope home.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "type": "string",
+              "const": "global"
+            }
+          },
+          "required": [
+            "scope"
+          ]
+        },
+        {
+          "description": "Under one tracked project.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "type": "string",
+              "const": "project"
+            },
+            "project": {
+              "$ref": "#/$defs/ProjectRef"
+            }
+          },
+          "required": [
+            "scope",
+            "project"
+          ]
+        }
+      ]
+    },
+    "ProjectRef": {
+      "description": "Absolute path of a tracked project directory.\n\nInvariant: the path is canonical inside a [`crate::scope::NormalizedScope`].\nWire values are the lexical path the caller gave.",
+      "type": "string"
+    }
+  }
+}

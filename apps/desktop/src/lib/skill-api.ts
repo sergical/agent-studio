@@ -19,7 +19,6 @@ import type {
   DiscoverySourceSetting,
   ImportResult,
   InstallPreferences,
-  InstallResult,
   InstallScope,
   FixSkillOutcome,
   ForkRecord,
@@ -37,6 +36,7 @@ import type {
   PaginatedSkillsResponse,
   ProjectFolder,
   PullResult,
+  RemoveOutcome,
   SkillDetails,
   SkillEvent,
   SkillSnapshot,
@@ -274,11 +274,12 @@ export async function importTrackedProjects(
 }
 
 /**
- * Remove a skill using npx skills CLI. `projectPath` is `null` for a global
- * removal, or the project directory to remove from - validated on the Rust
- * side against the current snapshot and used as the CLI's working directory.
+ * Remove one deployment through `skill_studio_core::ops::remove` (unit
+ * 3.9b): quarantines a Copy/Fork folder (see `quarantine_path`) or shells
+ * out for Dotagents/SkillsSh. Rejects on failure - unlike the old
+ * `InstallResult` shape, there is no `success`/`error` pair to check.
  */
-export async function removeSkill(target: LifecycleTarget): Promise<InstallResult> {
+export async function removeSkill(target: LifecycleTarget): Promise<RemoveOutcome> {
   return callCommand("remove_skill", { target });
 }
 
@@ -629,17 +630,13 @@ export async function setHarnessEnabled(
 }
 
 /**
- * Enable or disable one deployment that has no native per-harness switch, by
- * renaming its directory into (or out of) a sibling `.skill-studio-disabled/`
- * holding directory in the same skills root - the universal fallback for
- * plain directory copies and project-scope symlinks. Refused for shared-root
- * and plugin-provided deployments.
+ * Restore a deployment the old (unit-4.4-removed) move-aside disable left
+ * under `.skill-studio-disabled/` - the scanner still reports those rows as
+ * `disabled_by: "studio-moved"`. Refused for a target that was not moved
+ * aside by Skill Studio.
  */
-export async function setDeploymentEnabled(
-  target: LifecycleTarget,
-  enabled: boolean,
-): Promise<void> {
-  return callCommand("set_deployment_enabled", { target, enabled });
+export async function restoreMovedDeployment(target: LifecycleTarget): Promise<void> {
+  return callCommand("restore_moved_deployment", { target });
 }
 
 /**
@@ -780,4 +777,17 @@ export function onSkillSnapshot(cb: (snapshot: SkillSnapshot) => void): Promise<
  */
 export async function appVersion(): Promise<AppVersion> {
   return callCommand("app_version");
+}
+
+// ============================================================================
+// Data Folder Version API
+// ============================================================================
+
+/**
+ * The blocking message unit 6.3's startup check set, if the app data
+ * folder is newer than this build understands. `null` means the data
+ * layer opened normally.
+ */
+export async function dataFolderStatus(): Promise<string | null> {
+  return callCommand("data_folder_status");
 }

@@ -3,7 +3,7 @@
 This area turns a skill deployment on or off, per harness or per reader.
 It also repairs or converts the symlinks that carry a skill to disk.
 
-Commands: `set_deployment_enabled`, `set_harness_enabled`, `set_reader_enabled`, `set_plugin_enabled`, `materialize_harness_root`, `materialize_harness_root_then_disable`, `repair_skill_link`, `make_skill_independent_copy`.
+Commands: `set_harness_enabled`, `set_reader_enabled`, `set_plugin_enabled`, `restore_moved_deployment`, `materialize_harness_root`, `materialize_harness_root_then_disable`, `repair_skill_link`, `make_skill_independent_copy`.
 There is no `set_skill_visibility` command.
 The closest control, `UniversalVisibilitySelector` in the Add Skill sheet, only holds local state until `add_skill` or `set_harness_enabled` runs.
 See Gaps for what this gap means.
@@ -12,14 +12,10 @@ UI entry points: `SkillLocationsCard.tsx` (enabled switch per row), `SkillLocati
 
 ## Current state
 
-`set_deployment_enabled` (`skill_harness_disable.rs:811`) moves a deployment into or out of `<root>/.skill-studio-disabled/`.
-For a Copy owner, it moves the Copy's directory and rewrites the copies map instead.
-It takes `ForkMutationLock`, records a pending `move_aside_disable` or `move_aside_restore` event, does the move, and finishes the event.
-It refuses a shared Universal deployment with "Park the skill instead", a plugin target, and a destination that already exists.
-On a Copy-path registry failure it re-inserts the record and reverses the move.
-The symlink case creates the new link before removing the old one.
-It journals with a `MoveBack` inverse, so it is one of the eight write commands with a durable backup and inverse (`docs/spec-event-store.md:75-83`).
-Tests at `skill_harness_disable.rs:1497-1731` cover the round trip, the shared-root refusal, and registry-failure rollback.
+`set_deployment_enabled` is gone (removed in unit 4.4); it is not a live command.
+It used to move a deployment into or out of `<root>/.skill-studio-disabled/` as a generic per-row off switch.
+That switch is now split across three narrower paths instead: `park`/`unpark` (core `ops.rs`) is the off switch for the Global Universal deployment only - it refuses every other row; `set_harness_enabled` below is the off switch for a harness with a native per-skill disable (Codex, OpenCode, Claude Code); and a row with neither - no native disable and not the Global Universal deployment - has no off switch, so `SkillPropertiesRail`'s Harnesses popover renders its switch disabled (`canOfferHarnessSwitch` in `skill-location-helpers.ts`).
+A row `set_deployment_enabled` moved aside before the removal still reports `disabled_by: "studio-moved"`; the one Tauri command left for it is `restore_moved_deployment` (`skill_harness_disable.rs`), which reuses the old restore-side move helper to bring the folder back and has no disable side - there is no way to newly move a row aside this way anymore. See `issue-4.4-followup-a.md` for a planned migration that retires `.skill-studio-disabled/` entirely.
 
 `set_harness_enabled` (`skill_harness_disable.rs:741`) is a different code path for the default per-harness toggle.
 Codex writes `~/.codex/config.toml`.

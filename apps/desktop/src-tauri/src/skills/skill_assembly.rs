@@ -637,6 +637,7 @@ mod tests {
                 skill_folder_hash: "abc".to_string(),
                 installed_at: "2024-01-01T00:00:00Z".to_string(),
                 updated_at: "2024-02-01T00:00:00Z".to_string(),
+                extra: serde_json::Map::new(),
             },
         );
 
@@ -663,6 +664,7 @@ mod tests {
                 skill_folder_hash: "abc".to_string(),
                 installed_at: "2024-01-01T00:00:00Z".to_string(),
                 updated_at: "2024-01-01T00:00:00Z".to_string(),
+                extra: serde_json::Map::new(),
             },
         );
 

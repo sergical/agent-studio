@@ -41,6 +41,12 @@ pub struct InstalledSkillEntry {
     /// ISO-8601 last-update timestamp.
     #[serde(rename = "updatedAt")]
     pub updated_at: String,
+    /// Every other key the entry carries, kept verbatim. `npx skills` owns
+    /// this file and writes keys this reader does not model (`dismissed`,
+    /// `lastSelectedAgents`, and whatever a newer release adds); without a
+    /// catch-all a read/write round trip through the core would drop them.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The lock file's top-level shape.
