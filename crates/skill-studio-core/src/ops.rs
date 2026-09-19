@@ -115,6 +115,8 @@ pub enum Operation {
     Install,
     /// Group 3: read the saved or defaulted install method/harnesses.
     InstallPreferences,
+    /// Unit 5.3: run all six lifecycle invariants over the whole scope.
+    Doctor,
     /// Unit 3.4: per-install-method currency ("update available").
     Outdated,
     /// Unit 3.9b: prune the quarantine cap without a `remove` call.
@@ -234,6 +236,11 @@ impl Outcome for crate::dto::FixSkillOutcome {
 impl Outcome for crate::dto::ConflictReport {
     fn found_issues(&self) -> bool {
         !self.conflicts.is_empty()
+    }
+}
+impl Outcome for crate::dto::DoctorReport {
+    fn found_issues(&self) -> bool {
+        !self.violations.is_empty()
     }
 }
 impl Outcome for crate::dto::RemoveOutcome {
@@ -4693,6 +4700,7 @@ pub(crate) fn find_all_links<'a>(
         .collect()
 }
 
+pub use crate::ops_doctor::doctor;
 pub use crate::ops_install::{install, install_preferences};
 pub use crate::ops_remove::{remove, sweep_quarantine};
 pub use crate::ops_update::{update, update_all};

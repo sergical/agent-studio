@@ -493,6 +493,43 @@ pub struct ConflictReport {
     pub conflicts: Vec<ConflictSummary>,
 }
 
+/// Request for `doctor`. Empty: a doctor pass always runs over the whole
+/// scope the running `Runtime` already knows, not one skill at a time.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct DoctorRequest {}
+
+/// One violation of a [`crate::doctor::DoctorInvariant`] found by `doctor`,
+/// projected from `crate::doctor::DoctorViolation` into a serializable
+/// shape: `skill` folds into `detail`'s message text rather than a
+/// separate field, since every existing violation message already names
+/// the skill when it has one (see each `doctor::check_*` function).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DoctorViolation {
+    /// Which invariant is violated.
+    pub invariant: crate::doctor::DoctorInvariant,
+    /// Path of the offending entry, when the invariant names one.
+    pub path: PathBuf,
+    /// Message for a person.
+    pub detail: String,
+}
+
+/// Result of `doctor`: one pass over every lifecycle invariant in
+/// `docs/action-map/lifecycle-states.md`'s Invariants section, over the
+/// whole scope (every root `scan` knows, every registry and lockfile
+/// entry, the quarantine dirs, the journal), independent of any single
+/// command's own rollback logic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DoctorReport {
+    /// Every violation found; empty means a healthy scope.
+    pub violations: Vec<DoctorViolation>,
+    /// Skills the pass examined for invariants 1-4 (link, registry,
+    /// lockfile, two-states); invariants 5 (quarantine) and 6 (journal)
+    /// check one directory and one journal each regardless of skill count,
+    /// so this does not add them in.
+    pub checked: u32,
+}
+
 /// Whether a history event can be restored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "restorable")]
