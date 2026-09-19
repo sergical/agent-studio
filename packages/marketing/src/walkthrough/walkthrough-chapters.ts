@@ -11,8 +11,8 @@ export const chapters = [
   },
   {
     id: "install",
-    title: "Try a skill for a day.",
-    copy: "Install a skill in your project for 24 hours. Keep it if it helps. Skill Studio removes the trial if you don't.",
+    title: "Park a skill you don't need yet.",
+    copy: "Move a skill out of every agent's folder without deleting it. Unpark it any time to bring it right back.",
   },
   {
     id: "activity",

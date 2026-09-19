@@ -1,48 +1,50 @@
 # Park, fork, and trial
 
-This area moves a skill out of active use without deleting it (park), detaches it from its provider so local edits survive an update (fork), and tracks a time-boxed install that expires on its own (trial).
+> **The trial feature was removed in #285.** Installing a skill no longer offers a
+> time-boxed 24-hour trial; the only way to switch a skill off without deleting it
+> is park. The sections that describe the trial below are kept for history and
+> marked removed. Park and fork are current.
 
-Commands: park_skill, unpark_skill, fork_skill, unfork_skill, pull_fork_upstream, keep_skill_trial, the trial expiry loop and skills://trial-expired.
-UI entry points: header Park/Unpark/Fork/Un-fork/Pull latest, Locations card Unpark, InstalledSkillHeader Keep, trial toast Restore.
+This area moves a skill out of active use without deleting it (park) and detaches it from its provider so local edits survive an update (fork).
+
+Commands: park_skill, unpark_skill, fork_skill, unfork_skill, pull_fork_upstream.
+UI entry points: header Park/Unpark/Fork/Un-fork/Pull latest, Locations card Unpark.
 
 ## Current state
 
-| Command            | Journal | Concurrency                              | Partial-state risk                                         |
-| ------------------ | ------- | ---------------------------------------- | ---------------------------------------------------------- |
-| park_skill         | no      | per-root lease                           | crash between the rename and the registry write            |
-| unpark_skill       | no      | per-root lease                           | unparked skill with a missing Claude link                  |
-| fork_skill         | no      | per-root lease                           | detached but empty skill dir if manual recovery is skipped |
-| pull_fork_upstream | no      | per-root lease                           | crash between two renames inside the swap                  |
-| unfork_skill       | no      | per-root lease                           | stale fork record pointing at a reinstalled skill          |
-| keep_skill_trial   | no      | per-root lease                           | none noted, the registry write is atomic                   |
-| trial expiry loop  | no      | per-root lease, taken by the loop itself | none noted beyond the trash-and-drop it performs           |
+| Command            | Journal | Concurrency    | Partial-state risk                                         |
+| ------------------ | ------- | -------------- | ---------------------------------------------------------- |
+| park_skill         | no      | per-root lease | crash between the rename and the registry write            |
+| unpark_skill       | no      | per-root lease | unparked skill with a missing Claude link                  |
+| fork_skill         | no      | per-root lease | detached but empty skill dir if manual recovery is skipped |
+| pull_fork_upstream | no      | per-root lease | crash between two renames inside the swap                  |
+| unfork_skill       | no      | per-root lease | stale fork record pointing at a reinstalled skill          |
 
-`park_skill` removes the per-skill Claude link, renames `~/.agents/skills/<name>` to `~/.agents/skills-parked/<name>`, inserts a `ParkedRecord`, retargets any trial, then writes the registry (skill_park.rs:463 → 210, :242, :254, :278).
+`park_skill` removes the per-skill Claude link, renames `~/.agents/skills/<name>` to `~/.agents/skills-parked/<name>`, inserts a `ParkedRecord`, then writes the registry (skill_park.rs:463 → 210, :242, :254, :278).
 A rename failure restores the link.
 A registry-write failure renames the folder back and restores the link too, but that recovery uses `let _ =` — a best-effort write with no check that it succeeded (:244, :280).
 `unpark_skill` compares the shared dir against the parked copy: an identical reinstall drops the parked copy, a divergent one moves it to `skills-trash` instead of overwriting it, and otherwise it renames the parked dir back and restores the Claude link, also best effort (skill_park.rs:498 → 308, :348, :352, :369, :385).
 
-`fork_skill` fetches the upstream tree into `<app_data>/skill-studio/forks-snapshot/<name>`, writes a `ForkRecord` and drops trials, copies the live tree to a recovery dir, runs the ledger CLI removal, restores the shared dir from the recovery copy if the CLI wiped it, then removes the recovery dir (skill_fork.rs:960 → 780, :803, :836, :888, :918, :931, :939).
+`fork_skill` fetches the upstream tree into `<app_data>/skill-studio/forks-snapshot/<name>`, writes a `ForkRecord`, copies the live tree to a recovery dir, runs the ledger CLI removal, restores the shared dir from the recovery copy if the CLI wiped it, then removes the recovery dir (skill_fork.rs:960 → 780, :803, :836, :888, :918, :931, :939).
 `rollback_fork_before_detach` undoes as much of this as it can depending on how far the call got.
 A restore failure after a successful detach is only reported with the recovery path, not retried (:683, :932).
 `pull_fork_upstream` rebuilds staging-live and staging-base, writing conflict markers (never merging) into any file both sides changed, then swaps in the result: live renamed to a backup, staging-live moved in, old base renamed to a backup, staging-base moved in, registry written, both backups deleted; a conflicting file is opened in the user's editor after the swap, and a failure to open it is reported as a message on the still-successful pull rather than an error (skill_fork.rs:1404 → 1236, :1286, :1311, :1157).
 Each swap step rolls back the prior renames on failure, but this is manual step-by-step rollback, not a single transaction.
 A crash between two renames is a named partial-state risk (:1181–1224).
-`unfork_skill` reinstalls from origin — overwriting local edits — before it clears the fork and trial records (skill_fork.rs:1471 → 1443, :1456).
+`unfork_skill` reinstalls from origin — overwriting local edits — before it clears the fork record (skill_fork.rs:1471 → 1443, :1456).
 A registry-write failure after a successful reinstall leaves a stale fork record pointing at a skill that is no longer forked (:1458).
 
-`keep_skill_trial` only rewrites `~/.agents/skill-studio.json` to drop the trial entries and never touches the folder (skill_trial.rs:843, :86).
-The trial expiry loop runs 15 seconds after startup and then every 5 minutes: it takes `ForkMutationLock`, rebuilds the snapshot, moves expired trials to the trash, drops their registry records, and emits `skills://trial-expired` with the name and trash path (skill_trial.rs:828, lib.rs:133).
-The frontend listens for that event and shows a 15-second warning toast with a Restore button that calls `restore_trashed_skill` (App.tsx:89).
+> **Removed in #285:** `keep_skill_trial`, the trial expiry loop, and the
+> `skills://trial-expired` toast with its Restore button no longer exist. A
+> pre-#285 `trials` bucket left over in `~/.agents/skill-studio.json` round-trips
+> unchanged and is otherwise ignored (`skill_fork_registry.rs`).
 
 None of park, unpark, fork, pull, or unfork writes a journal event — `make_skill_independent_copy` is the only command in the whole map that does.
 All five hold the same process-wide `ForkMutationLock`.
 On the frontend, the header exposes Park/Unpark and Fork/Un-fork with toast feedback and, for Un-fork only, a confirm dialog ("Discard your changes and reinstall from {origin}?") (SkillPageHeaderActions.tsx:68, 72).
 The Locations card exposes a separate Unpark control (SkillLocationsCard.tsx:99).
 The row menu exposes Park (SkillLocationMenu.tsx:874).
-`InstalledSkillHeader`'s Keep button calls `keep_skill_trial` (:103).
 Tests cover the rename-rollback and registry-rollback paths for park, unpark, fork, and pull in detail.
-keep_skill_trial has one test.
 
 ## Changes in the Claude stack (#73 to #134)
 
@@ -70,7 +72,7 @@ The registry read-modify-write inside each of these commands runs under that lea
 `unfork_skill` records its journal event, and takes the backup, before it runs the reinstall that discards local edits, so a registry-write failure after the reinstall does not leave a stale fork record — the event's inverse can at least tell the user what happened.
 `park_skill` and `unpark_skill`'s best-effort recovery writes (`let _ =`) are replaced with checked writes that fall back to the journal's own repair path on failure, not a second silent write.
 Success feedback for park, fork, and pull only shows once the registry write commits, not before.
-Every one of these six commands gets a crash-window test matching the coverage `make_skill_independent_copy` already has, and the trial expiry loop — which already takes the lock, rebuilds the snapshot, and writes the registry in one pass — gets the same journal treatment as the rest, since it is a background writer with the same partial-state risk as the foreground ones.
+Every one of these five commands gets a crash-window test matching the coverage `make_skill_independent_copy` already has.
 
 ## Gaps
 
@@ -81,10 +83,9 @@ Every one of these six commands gets a crash-window test matching the coverage `
 - pull_fork_upstream's four-step rename swap is manual step-by-step rollback, not one transaction.
   A crash between two renames is a named, unrepaired partial-state risk.
 - unfork_skill's registry write happens after the CLI reinstall already discarded local edits, so a write failure leaves a stale fork record with no compensating step.
-- All six commands share one process-wide ForkMutationLock.
+- All five commands share one process-wide ForkMutationLock.
   There is no per-skill or per-scope lease.
 - The registry read-modify-write inside each command has no lock beyond the whole-call ForkMutationLock, so the read and the write are not atomic with respect to the lease boundary described in the desired state.
-- The trial expiry loop performs the same kind of multi-step write (move to trash, drop registry record) as the foreground commands but has no journal event and no direct crash-window test.
 - Backups and quarantine directories (`skills-trash`, fork snapshots, recovery dirs) accumulate with no retention limit.
-  The app never deletes trash entries except during trial expiry.
-- keep_skill_trial, park_skill, unpark_skill, fork_skill, pull_fork_upstream, and unfork_skill have rollback-path tests but no crash-window (kill-mid-write, restart-and-reconcile) tests like make_independent_copy's crash-recovery suite.
+  The app never deletes trash entries.
+- park_skill, unpark_skill, fork_skill, pull_fork_upstream, and unfork_skill have rollback-path tests but no crash-window (kill-mid-write, restart-and-reconcile) tests like make_independent_copy's crash-recovery suite.
