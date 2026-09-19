@@ -20,6 +20,12 @@ jobs:
     permissions:
       contents: write
     strategy:
+      # tauri-action's own `latest.json` merge (from `includeUpdaterJson`) is
+      # a non-atomic download-edit-upload against the same release: two
+      # matrix legs finishing at once can each read the other's not-yet-
+      # uploaded state and clobber it. One leg at a time keeps that merge
+      # race-free.
+      max-parallel: 1
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     steps:
@@ -33,33 +39,90 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Compute the release version
+        # A pre-release tag's base version (e.g. "0.1.0" from
+        # "v0.1.0-rc.1") is what CHANGELOG.md and the committed
+        # tauri.conf.json/package.json versions carry - see
+        # check-version-matches-tag.sh. The full tag version is what the
+        # built app itself reports, stamped in below via
+        # tauri.release.conf.json so rc.1 < rc.2 < 0.1.0 in semver for the
+        # updater. A plain "vX.Y.Z" tag has no suffix, so full == base.
+        run: |
+          set -euo pipefail
+          full="${GITHUB_REF_NAME#v}"
+          base="${full%%-*}"
+          echo "RELEASE_VERSION=$full" >> "$GITHUB_ENV"
+          echo "RELEASE_BASE_VERSION=$base" >> "$GITHUB_ENV"
       - name: Check CHANGELOG.md has a section for this tag
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          grep -qE "^## v${version}( |$)" CHANGELOG.md || {
-            echo "CHANGELOG.md has no section for v${version}"
+          grep -qE "^## v${RELEASE_BASE_VERSION}( |$)" CHANGELOG.md || {
+            echo "CHANGELOG.md has no section for v${RELEASE_BASE_VERSION}"
             exit 1
           }
+      - name: Stamp the release version into the release-only Tauri config
+        run: |
+          set -euo pipefail
+          jq --arg v "$RELEASE_VERSION" '.version = $v' apps/desktop/src-tauri/tauri.release.conf.json > /tmp/tauri.release.conf.json
+          mv /tmp/tauri.release.conf.json apps/desktop/src-tauri/tauri.release.conf.json
+      - name: Configure Apple code signing
+        # Apple's own tooling (tauri-bundler's sign.rs) checks these
+        # variables with `var_os`, so an empty string still counts as
+        # "set" and `security import`s an empty file. They must be
+        # entirely ABSENT from the build step's environment when the
+        # certificate secret is empty, which is why this step (not the
+        # build step's own `env:`) is the only place that ever writes them,
+        # and only inside this `if`. `$GITHUB_ENV` receives them - never
+        # `echo`d to stdout - and the heredoc form guards a multi-line
+        # secret (the .p12 is base64, expected to be one line, but this
+        # doesn't assume it).
+        run: |
+          set -euo pipefail
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            delimiter="$(openssl rand -hex 16)"
+            {
+              echo "APPLE_CERTIFICATE<<$delimiter"
+              echo "$APPLE_CERTIFICATE"
+              echo "$delimiter"
+              echo "APPLE_CERTIFICATE_PASSWORD<<$delimiter"
+              echo "$APPLE_CERTIFICATE_PASSWORD"
+              echo "$delimiter"
+              echo "APPLE_SIGNING_IDENTITY=Developer ID Application"
+              echo "KEYCHAIN_PASSWORD<<$delimiter"
+              echo "$APPLE_KEYCHAIN_PASSWORD"
+              echo "$delimiter"
+              echo "APPLE_ID<<$delimiter"
+              echo "$APPLE_ID"
+              echo "$delimiter"
+              echo "APPLE_PASSWORD<<$delimiter"
+              echo "$APPLE_APP_SPECIFIC_PASSWORD"
+              echo "$delimiter"
+              echo "APPLE_TEAM_ID<<$delimiter"
+              echo "$APPLE_TEAM_ID"
+              echo "$delimiter"
+            } >> "$GITHUB_ENV"
+            echo "Apple code signing secrets present - build will sign and notarize."
+          else
+            echo "Apple code signing secrets are unset - building an unsigned rehearsal."
+          fi
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Injected into build.rs via SKILL_STUDIO_COMMIT so the built app
           # and CLI report the commit they were built from (unit 6.6).
           SKILL_STUDIO_COMMIT: ${{ github.sha }}
-          # Developer ID Application certificate, exported as a .p12 and
-          # base64-encoded, plus the credentials tauri-action needs to
-          # unlock it and to submit the build to Apple for notarization.
-          # Left unset for an unsigned rehearsal build (see unit 6.2): with
-          # no APPLE_SIGNING_IDENTITY, tauri-action bundles and publishes
-          # without ever trying to import a certificate or notarize.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 != '' && 'Developer ID Application' || '' }}
-          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Apple's APPLE_CERTIFICATE/APPLE_SIGNING_IDENTITY/etc. are
+          # deliberately NOT set here - see "Configure Apple code signing"
+          # above, which appends them to $GITHUB_ENV (so they still reach
+          # this step) only when the certificate secret is non-empty.
+          #
           # Minisign key pair for the in-app updater (unit 6.2): the public
           # half is committed in tauri.conf.json; the private half signs
           # every updater artifact tauri-action builds here.
@@ -67,7 +130,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
-          args: --target ${{ matrix.target }}
+          # tauri.release.conf.json (stamped with this run's version above)
+          # turns on createUpdaterArtifacts only for this CI build - see
+          # that file's own comment for why it isn't in the base config.
+          args: --target ${{ matrix.target }} --config src-tauri/tauri.release.conf.json
           tagName: ${{ github.ref_name }}
           releaseName: "Skill Studio ${{ github.ref_name }}"
           releaseDraft: false

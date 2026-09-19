@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Fails when the version in apps/desktop/src-tauri/tauri.conf.json or
-# apps/desktop/package.json does not equal the given tag with its leading
-# "v" stripped. The release workflow runs this before the build so a
-# forgotten version bump never reaches a tagged release.
+# apps/desktop/package.json does not equal the given tag's base version
+# (leading "v" stripped, and any "-<suffix>" pre-release suffix stripped).
+# The release workflow runs this before the build so a forgotten version
+# bump never reaches a tagged release. A pre-release tag like
+# "v0.1.0-rc.1" is expected to match a committed "0.1.0" - the full
+# "0.1.0-rc.1" only ever appears as the built app's own version, stamped in
+# separately via tauri.release.conf.json (see release.yml).
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -11,7 +15,8 @@ if [[ $# -ne 1 ]]; then
 fi
 
 tag="$1"
-expected="${tag#v}"
+full="${tag#v}"
+expected="${full%%-*}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tauri_conf="$repo_root/apps/desktop/src-tauri/tauri.conf.json"
