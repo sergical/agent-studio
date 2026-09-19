@@ -145,12 +145,52 @@ fn use_names(rest: &str) -> Vec<String> {
     }
 }
 
-/// Drops a `//` line comment, so a doc comment naming an op (`ops::park`)
-/// or a commented-out variant never counts as a declaration.
-fn strip_line_comment(line: &str) -> &str {
-    match line.find("//") {
-        Some(at) => &line[..at],
-        None => line,
+/// Drops a `//` line comment and any `/* ... */` block comment - including
+/// one that opens on this line and closes on a later one, tracked via
+/// `in_block_comment` across the caller's line loop - so a doc comment
+/// naming an op (`ops::park`), a `/* Park { */` decoy, or a whole variant
+/// wrapped in `/* ... */` never counts as a declaration. Leading whitespace
+/// before any comment is preserved, since `cli_subcommand_names` reads
+/// indentation from the stripped line.
+fn strip_comments(line: &str, in_block_comment: &mut bool) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    loop {
+        if *in_block_comment {
+            match rest.find("*/") {
+                Some(end) => {
+                    *in_block_comment = false;
+                    rest = &rest[end + 2..];
+                }
+                None => return out,
+            }
+            continue;
+        }
+        let line_comment = rest.find("//");
+        let block_comment = rest.find("/*");
+        match (line_comment, block_comment) {
+            (Some(l), Some(b)) if l < b => {
+                out.push_str(&rest[..l]);
+                return out;
+            }
+            (Some(l), None) => {
+                out.push_str(&rest[..l]);
+                return out;
+            }
+            (_, Some(b)) => {
+                out.push_str(&rest[..b]);
+                if let Some(end) = rest[b + 2..].find("*/") {
+                    rest = &rest[b + 2 + end + 2..];
+                } else {
+                    *in_block_comment = true;
+                    return out;
+                }
+            }
+            (None, None) => {
+                out.push_str(rest);
+                return out;
+            }
+        }
     }
 }
 
@@ -177,6 +217,7 @@ fn snake_case(variant: &str) -> String {
 fn cli_subcommand_names(cli_main: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut in_enum = false;
+    let mut in_block_comment = false;
     for line in cli_main.lines() {
         if line.starts_with("enum Command {") {
             in_enum = true;
@@ -188,7 +229,8 @@ fn cli_subcommand_names(cli_main: &str) -> Vec<String> {
         if line == "}" {
             break;
         }
-        let line = strip_line_comment(line);
+        let line = strip_comments(line, &mut in_block_comment);
+        let line = line.as_str();
         if line.len() - line.trim_start().len() != 4 {
             continue;
         }
@@ -204,14 +246,30 @@ fn cli_subcommand_names(cli_main: &str) -> Vec<String> {
     names
 }
 
+/// Net change in paren nesting depth from every `(` and `)` on `line`.
+fn paren_delta(line: &str) -> i32 {
+    line.chars().fold(0, |depth, ch| match ch {
+        '(' => depth + 1,
+        ')' => depth - 1,
+        _ => depth,
+    })
+}
+
 /// Every `#[tool]`-attributed method name inside `apps/mcp/src/lib.rs`'s
 /// `#[tool_router] impl` - the tools the server actually publishes.
 fn mcp_tool_names(mcp_lib: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut in_router = false;
     let mut under_tool_attribute = false;
-    for line in mcp_lib.lines() {
-        let line = strip_line_comment(line).trim();
+    // Depth of `#[tool(` 's parens while inside a multi-line attribute; a
+    // "fn " that shows up in the attribute's own argument list (e.g. its
+    // `description` string literal) must not be read as the method
+    // signature, so lines here are skipped until the attribute closes.
+    let mut attribute_paren_depth: i32 = 0;
+    let mut in_block_comment = false;
+    for raw_line in mcp_lib.lines() {
+        let line = strip_comments(raw_line, &mut in_block_comment);
+        let line = line.trim();
         if line == "#[tool_router]" {
             in_router = true;
             continue;
@@ -219,15 +277,23 @@ fn mcp_tool_names(mcp_lib: &str) -> Vec<String> {
         if !in_router {
             continue;
         }
-        if line == "#[tool]" || line.starts_with("#[tool(") {
+        if !under_tool_attribute && (line == "#[tool]" || line.starts_with("#[tool(")) {
             under_tool_attribute = true;
-        } else if under_tool_attribute {
-            // The attribute may span several lines; the method's signature
-            // is the first `fn` after it.
-            if let Some((_, rest)) = line.split_once("fn ") {
-                names.push(fn_name(rest));
-                under_tool_attribute = false;
-            }
+            attribute_paren_depth = paren_delta(line);
+            continue;
+        }
+        if !under_tool_attribute {
+            continue;
+        }
+        if attribute_paren_depth > 0 {
+            attribute_paren_depth += paren_delta(line);
+            continue;
+        }
+        // The attribute has closed; the method's signature is the first
+        // `fn` on or after this line.
+        if let Some((_, rest)) = line.split_once("fn ") {
+            names.push(fn_name(rest));
+            under_tool_attribute = false;
         }
     }
     names
@@ -316,6 +382,31 @@ fn ops_functions_have_a_cli_subcommand_and_an_mcp_tool_or_names_the_gap() {
             alias.surface,
         );
     }
+}
+
+/// A whole variant block-commented out with `/* ... */` must not count as a
+/// live subcommand: catches a regression to `//`-only comment stripping,
+/// which would read the interior `Park { ... }` lines as real declarations
+/// and report a removed subcommand as still present (a false green).
+#[test]
+fn cli_subcommand_names_skips_a_variant_wrapped_in_a_block_comment() {
+    let cli_main = "enum Command {\n    Scan,\n/*\n    Park {\n        deployment_id: String,\n    },\n*/\n    Real,\n}\n";
+    assert_eq!(
+        cli_subcommand_names(cli_main),
+        vec!["scan".to_string(), "real".to_string()],
+    );
+}
+
+/// A decoy "fn " inside a multi-line `#[tool(...)]` attribute's own
+/// `description` string must not be read as the method name: catches a
+/// regression where the first "fn " after the attribute opens is taken
+/// unconditionally, which would report a removed tool as still present (a
+/// false green) or a real tool's name as the decoy text (a false red for
+/// the actual tool).
+#[test]
+fn mcp_tool_names_ignores_a_decoy_fn_inside_a_multiline_tool_attributes_description() {
+    let mcp_lib = "#[tool_router]\nimpl Server {\n#[tool(\n    description = \"first run scan, then fn decoy() if needed\"\n)]\npub fn real_tool(&self, req: Req) -> Res {}\n}\n";
+    assert_eq!(mcp_tool_names(mcp_lib), vec!["real_tool".to_string()]);
 }
 
 /// `schema` (dumps every DTO's JSON schema to disk) and `watch` (a
