@@ -962,6 +962,211 @@ mod tests {
         );
     }
 
+    /// Given `ensure_dir`'s own creation call hits a real I/O error - not
+    /// the benign "the directory already exists" race the `AlreadyExists`
+    /// arm exists for - when a plan begins, then that error must fail the
+    /// plan rather than be swallowed as if the directory were already
+    /// there; on failure the panic names the plan that began anyway.
+    #[test]
+    fn ensure_dir_propagates_a_real_creation_error_or_swallows_it_as_already_exists() {
+        let fixture = FixtureBuilder::new().dir("/journal").build_fs();
+        let failing = FailingFs::wrap(Arc::new(fixture));
+        // Fails the very first `fsops_create_dir` call `begin` makes -
+        // creating `/journal/plans`, which does not exist yet - with a
+        // generic error, not `AlreadyExists`.
+        failing.fail_next_create_dir();
+        let journal = journal_over(Arc::new(failing));
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        let id = PlanId("01PLANENSUREDIRFAIL000001".into());
+        let result = PlanWriter::begin(
+            &journal,
+            &g,
+            id,
+            Utc::now(),
+            "a real creation error",
+            PathBuf::from("/root"),
+            Vec::new(),
+        );
+        assert!(
+            result.is_err(),
+            "an injected fsops_create_dir failure must fail begin, or this test proves nothing about swallowing it as AlreadyExists",
+        );
+    }
+
+    /// Given `ensure_dir` is called on a single missing directory (not one
+    /// requiring recursion into a missing parent, unlike the `begin`-driven
+    /// test above), when its own `fsops_create_dir` call hits a real I/O
+    /// error, then that error must be returned rather than swallowed as
+    /// `AlreadyExists`; on failure the panic names the outcome `ensure_dir`
+    /// gave instead.
+    #[test]
+    fn ensure_dir_on_a_single_missing_directory_propagates_a_real_creation_error() {
+        let fixture = FixtureBuilder::new().dir("/journal").build_fs();
+        let failing = FailingFs::wrap(Arc::new(fixture));
+        failing.fail_next_create_dir();
+        let journal = journal_over(Arc::new(failing));
+
+        let result = journal.ensure_dir(Path::new("/journal/plans"));
+
+        assert!(
+            result.is_err(),
+            "an injected fsops_create_dir failure must propagate as an error, not be treated \
+             as the directory already existing: got {result:?}"
+        );
+    }
+
+    /// Given a directory that already exists on disk, when `ensure_dir`'s
+    /// own existence check races with a concurrent creator and reports it
+    /// missing anyway - so `ensure_dir` calls `fsops_create_dir` on a
+    /// directory that is really already there - then the resulting
+    /// `AlreadyExists` error must be swallowed as a no-op, not surfaced as a
+    /// failure; on failure the panic names the outcome `ensure_dir` gave
+    /// instead.
+    #[test]
+    fn ensure_dir_swallows_a_genuine_already_exists_race_as_a_no_op() {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/journal/plans")
+            .build_fs();
+        let failing = FailingFs::wrap(Arc::new(fixture));
+        // Makes the existence check on `/journal/plans` report "missing"
+        // even though it is really there, so `ensure_dir` proceeds to
+        // `fsops_create_dir`, which then hits a genuine `AlreadyExists`.
+        failing.fail_symlink_metadata_for(PathBuf::from("/journal/plans"));
+        let journal = journal_over(Arc::new(failing));
+
+        let result = journal.ensure_dir(Path::new("/journal/plans"));
+
+        assert!(
+            result.is_ok(),
+            "a real AlreadyExists from fsops_create_dir must be swallowed as a no-op, not \
+             surfaced as a failure: got {result:?}"
+        );
+    }
+
+    /// Given `all()`'s own `read_dir` call hits a real I/O error - not the
+    /// benign "no plans directory has been created yet" case the `NotFound`
+    /// arm exists for - when `all()` runs, then that error must propagate
+    /// rather than be read as "no plans exist"; on failure the panic names
+    /// the empty list `all()` returned instead of the error.
+    #[test]
+    fn all_propagates_a_real_read_dir_error_or_reads_it_as_no_plans() {
+        let fixture = FixtureBuilder::new().dir("/journal").build_fs();
+        let failing = FailingFs::wrap(Arc::new(fixture));
+        failing.fail_read_dir_for(PathBuf::from("/journal/plans"));
+        let journal = journal_over(Arc::new(failing));
+
+        journal.all().expect_err(
+            "an injected read_dir failure must propagate, or this test proves nothing about reading it as an empty plans directory",
+        );
+    }
+
+    /// Given a backup [`Journal::write_backup`] already wrote to disk, when
+    /// [`Journal::remove_backup`] runs, then the backup's bytes are gone
+    /// from disk; on failure the panic names the backup path still present.
+    #[test]
+    fn remove_backup_deletes_the_backup_bytes_from_disk_or_leaves_them_in_place() {
+        let fs: Arc<dyn ScopeFs> = Arc::new(FixtureBuilder::new().dir("/journal").build_fs());
+        let journal = journal_over(fs.clone());
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        let id = PlanId("01PLANREMOVEBACKUP0000001".into());
+        journal
+            .write_backup(&g, &id, "skill/SKILL.md", b"backup bytes")
+            .expect("write the backup");
+        let backup_path =
+            Path::new("/journal/plans/01PLANREMOVEBACKUP0000001/backups/skill/SKILL.md");
+        assert!(
+            fs.symlink_metadata(backup_path).is_ok(),
+            "the backup must exist on disk before removal, or this test proves nothing"
+        );
+
+        journal
+            .remove_backup(&g, &id, "skill/SKILL.md")
+            .expect("remove the existing backup");
+
+        assert!(
+            fs.symlink_metadata(backup_path).is_err(),
+            "remove_backup must delete the backup's bytes from disk, not just return Ok"
+        );
+    }
+
+    /// Given a backup that was never written, when [`Journal::remove_backup`]
+    /// runs against it anyway - the shape [`trim_backups`] hits for a
+    /// backup already trimmed by an earlier pass - then removal is a no-op,
+    /// not an error; on failure the panic names the spurious error raised
+    /// for a backup that was already gone.
+    #[test]
+    fn remove_backup_on_an_already_removed_backup_is_a_no_op_or_names_the_spurious_error() {
+        let fs: Arc<dyn ScopeFs> = Arc::new(FixtureBuilder::new().dir("/journal").build_fs());
+        let journal = journal_over(fs);
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        let id = PlanId("01PLANREMOVEBACKUPTWICE01".into());
+        journal
+            .remove_backup(&g, &id, "never-written.bin")
+            .expect("removing a backup that was never written must be a no-op, not an error");
+    }
+
+    /// Given two `write_file` steps against files that share a leaf name,
+    /// when each is recorded, then their backups get distinct relative
+    /// names that each carry the file's own leaf - not a blank name that
+    /// would make every backup collide on the same path; on failure the
+    /// panic names the two (indistinguishable) relative names recorded.
+    #[test]
+    fn record_write_file_names_each_backup_after_its_own_leaf_or_leaves_them_blank_and_colliding() {
+        let fs: Arc<dyn ScopeFs> = Arc::new(FixtureBuilder::new().dir("/journal").build_fs());
+        let journal = journal_over(fs);
+        let lease = FakeLease::default();
+        let g = guard(&lease);
+
+        let id = PlanId("01PLANBACKUPNAME000000001".into());
+        let plan = PlanWriter::begin(
+            &journal,
+            &g,
+            id.clone(),
+            Utc::now(),
+            "two backups with the same leaf name",
+            PathBuf::from("/root"),
+            Vec::new(),
+        )
+        .expect("begin");
+
+        plan.record_write_file(Path::new("/root/a/SKILL.md"), Some(b"a"))
+            .expect("record the first backup");
+        plan.record_write_file(Path::new("/root/b/SKILL.md"), Some(b"b"))
+            .expect("record the second backup");
+
+        let record = journal
+            .all()
+            .expect("read the plan back")
+            .into_iter()
+            .find(|p| p.id == id)
+            .expect("the plan begun above");
+        let names: Vec<&str> = record.backups.iter().map(|b| b.relative.as_str()).collect();
+        assert_eq!(
+            names.len(),
+            2,
+            "both write_file steps must have recorded a backup entry"
+        );
+        assert_ne!(
+            names[0], names[1],
+            "two backups must get distinct relative names, not both blank"
+        );
+        for name in &names {
+            assert!(
+                name.ends_with("SKILL.md"),
+                "the relative name must carry the file's own leaf name, was {name:?}"
+            );
+        }
+
+        plan.finish(PlanStatus::Done).expect("finish");
+    }
+
     /// Given a plan, when it is begun and then finished, then its status
     /// reads `Pending` after `begin` and `Done` only after `finish`; on
     /// failure the panic names whichever transition did not happen.

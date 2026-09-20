@@ -1132,4 +1132,165 @@ mod tests {
         assert_eq!(parsed.entries[&absent_key].relative_path, "");
         assert_eq!(parsed.entries[&absent_key].fingerprint, "absent");
     }
+
+    #[test]
+    fn pending_lists_only_rows_still_pending_or_drops_them_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scope = scope_for(tmp.path());
+        let guard = guard_for(tmp.path(), &scope);
+        let db_path = tmp.path().join("history").join("events.sqlite3");
+        let mut store = SqliteHistoryStore::open(&db_path).unwrap();
+
+        let finished = EventId::from_ulid(ulid::Ulid::new());
+        store
+            .record(
+                &guard,
+                &finished,
+                &draft(EventKind::Install, "alpha", serde_json::json!({}), None),
+            )
+            .unwrap();
+        store
+            .finish(&guard, &finished, EventStatus::Done, None)
+            .unwrap();
+
+        let still_pending = EventId::from_ulid(ulid::Ulid::new());
+        store
+            .record(
+                &guard,
+                &still_pending,
+                &draft(EventKind::Install, "beta", serde_json::json!({}), None),
+            )
+            .unwrap();
+
+        let rows = store.pending().unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+            vec![still_pending],
+            "pending() must list only the row still pending, not the finished one and not \
+             an empty list"
+        );
+    }
+
+    #[test]
+    fn read_manifest_marks_an_absent_path_with_no_fingerprint_and_a_backed_up_dir_as_a_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scope = scope_for(tmp.path());
+        let guard = guard_for(tmp.path(), &scope);
+        let db_path = tmp.path().join("history").join("events.sqlite3");
+        let mut store = SqliteHistoryStore::open(&db_path).unwrap();
+
+        let present_dir = tmp.path().join("skills").join("alpha");
+        fs::create_dir_all(&present_dir).unwrap();
+        fs::write(present_dir.join("SKILL.md"), b"hello").unwrap();
+        let absent = tmp.path().join("skills").join("gone");
+
+        let id = EventId::from_ulid(ulid::Ulid::new());
+        let written = store
+            .backup_paths(&guard, &id, &[present_dir.clone(), absent.clone()])
+            .unwrap();
+
+        let manifest = store.read_manifest(&written.backup_dir).unwrap();
+        let present_entry = manifest
+            .entries
+            .iter()
+            .find(|e| e.original == present_dir)
+            .expect("the backed-up directory must round-trip");
+        let absent_entry = manifest
+            .entries
+            .iter()
+            .find(|e| e.original == absent)
+            .expect("the absent path must round-trip");
+
+        assert!(
+            present_entry.fingerprint.is_some(),
+            "a path that existed at backup time must keep a fingerprint, or this test proves \
+             nothing about reading the on-disk `\"absent\"` marker as `None`"
+        );
+        assert!(
+            present_entry.is_dir,
+            "a backed-up directory's copy is itself a directory on disk, or this test proves \
+             nothing about reading that shape back as `is_dir`"
+        );
+        assert!(
+            absent_entry.fingerprint.is_none(),
+            "an absent path's on-disk `\"absent\"` marker must read back as no fingerprint, \
+             not as a real one"
+        );
+        assert!(
+            !absent_entry.is_dir,
+            "an absent path has no relative copy on disk and must never read as a directory"
+        );
+    }
+
+    #[test]
+    fn read_backup_bytes_returns_the_copys_real_bytes_or_an_empty_or_placeholder_buffer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scope = scope_for(tmp.path());
+        let guard = guard_for(tmp.path(), &scope);
+        let db_path = tmp.path().join("history").join("events.sqlite3");
+        let mut store = SqliteHistoryStore::open(&db_path).unwrap();
+
+        let present = tmp.path().join("skills").join("SKILL.md");
+        fs::create_dir_all(present.parent().unwrap()).unwrap();
+        fs::write(&present, b"the real backed-up bytes").unwrap();
+
+        let id = EventId::from_ulid(ulid::Ulid::new());
+        let written = store
+            .backup_paths(&guard, &id, std::slice::from_ref(&present))
+            .unwrap();
+        let entry = &written.entries[0];
+
+        let bytes = store
+            .read_backup_bytes(&written.backup_dir, &entry.relative)
+            .unwrap();
+        assert_eq!(
+            bytes, b"the real backed-up bytes",
+            "read_backup_bytes must return the copy's real bytes, not an empty or \
+             placeholder buffer"
+        );
+    }
+
+    #[test]
+    fn read_backup_files_walks_every_file_under_a_backed_up_dir_or_returns_none_of_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scope = scope_for(tmp.path());
+        let guard = guard_for(tmp.path(), &scope);
+        let db_path = tmp.path().join("history").join("events.sqlite3");
+        let mut store = SqliteHistoryStore::open(&db_path).unwrap();
+
+        let present_dir = tmp.path().join("skills").join("alpha");
+        fs::create_dir_all(present_dir.join("nested")).unwrap();
+        fs::write(present_dir.join("SKILL.md"), b"top").unwrap();
+        fs::write(present_dir.join("nested").join("more.md"), b"nested").unwrap();
+
+        let id = EventId::from_ulid(ulid::Ulid::new());
+        let written = store
+            .backup_paths(&guard, &id, std::slice::from_ref(&present_dir))
+            .unwrap();
+        let entry = &written.entries[0];
+
+        let mut files = store
+            .read_backup_files(&written.backup_dir, &entry.relative)
+            .unwrap();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        let names: Vec<_> = files.iter().map(|(path, _)| path.clone()).collect();
+        assert_eq!(
+            names,
+            vec![
+                PathBuf::from("SKILL.md"),
+                PathBuf::from("nested").join("more.md"),
+            ],
+            "read_backup_files must walk every file under the backed-up directory, not return \
+             none of them"
+        );
+        assert_eq!(
+            files
+                .iter()
+                .find(|(p, _)| p == Path::new("SKILL.md"))
+                .unwrap()
+                .1,
+            b"top",
+            "each entry's bytes must be the real file contents, not a placeholder"
+        );
+    }
 }

@@ -282,4 +282,185 @@ mod tests {
             .unwrap();
         assert_eq!(second.keys(), keys.as_slice());
     }
+
+    /// Given the current process's own pid, when [`pid_alive`] checks it,
+    /// then it reports alive; on failure the panic names the pid the check
+    /// missed.
+    #[test]
+    fn pid_alive_reports_the_current_process_alive_or_names_the_pid_it_missed() {
+        assert!(
+            pid_alive(std::process::id()),
+            "the current process must report alive, or this test proves nothing about \
+             detecting a live pid"
+        );
+    }
+
+    /// Given a child process that has already exited, when [`pid_alive`]
+    /// checks its (now stale) pid, then it reports dead; on failure the
+    /// panic names the exited pid still treated as holding the lease.
+    #[test]
+    fn pid_alive_reports_an_exited_process_dead_or_treats_it_as_still_holding_the_lease() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn a short-lived child");
+        let pid = child.id();
+        child.wait().expect("wait for the child to exit");
+
+        assert!(
+            !pid_alive(pid),
+            "an exited process's pid ({pid}) must report dead, or this test proves nothing \
+             about detecting a stale lease holder"
+        );
+    }
+
+    /// Writes a fake holder record naming `pid`, the same shape
+    /// [`write_holder`] leaves but for a pid this test controls rather than
+    /// the current process.
+    fn write_fake_holder(file: &File, pid: u32) {
+        let mut file = file;
+        file.set_len(0).expect("truncate the lock file");
+        file.seek(SeekFrom::Start(0)).expect("seek to the start");
+        write!(file, "{pid}|0").expect("write the fake holder record");
+        file.sync_all().expect("flush the fake holder record");
+    }
+
+    /// Given another `FileLease` holds an exclusive lease, when this
+    /// process asks for the same key with a generous wait, then it succeeds
+    /// once the holder drops - not right away, and not because the caller
+    /// gave up too soon; on failure the panic names the error the wait
+    /// budget produced instead of a lease.
+    #[test]
+    fn acquire_waits_out_a_short_lived_holder_within_its_own_deadline_or_gives_up_too_soon() {
+        let dir = tempfile::tempdir().unwrap();
+        let lease_root = dir.path().to_path_buf();
+        let keys = vec![key("short-lived-holder")];
+
+        let holder_lease = FileLease::new(lease_root.clone());
+        let held = holder_lease
+            .acquire(&keys, LeaseMode::Exclusive, Duration::from_millis(100))
+            .expect("the first holder must acquire cleanly");
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            drop(held);
+        });
+
+        let waiting_lease = FileLease::new(lease_root);
+        let result = waiting_lease.acquire(&keys, LeaseMode::Exclusive, Duration::from_secs(2));
+        releaser.join().expect("join the releasing thread");
+
+        assert!(
+            result.is_ok(),
+            "a caller with a two-second wait must still get the lease once an 80ms holder \
+             drops, or this test proves nothing about the wait budget being honoured; got \
+             {:?}",
+            result.as_ref().err()
+        );
+    }
+
+    /// Given a lease file the OS still (briefly) locks but whose recorded
+    /// holder pid has already exited - the exact shape a crash leaves
+    /// behind, since the OS releases the advisory lock as part of tearing
+    /// the dead process down - when `acquire` runs with *no* wait budget at
+    /// all, then it still takes the lease over rather than reporting it
+    /// busy: the bridge past that OS teardown gap does not depend on the
+    /// caller's own wait; on failure the panic names the busy error
+    /// returned instead.
+    #[test]
+    fn acquire_takes_over_a_dead_holders_lease_even_with_no_wait_budget_or_reports_it_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let lease = FileLease::new(dir.path().to_path_buf());
+        let keys = vec![key("dead-holder-no-wait")];
+        fs::create_dir_all(dir.path()).unwrap();
+        let path = lease.lock_path(&keys[0]);
+
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn a short-lived child");
+        let dead_pid = child.id();
+        child.wait().expect("wait for the child to exit");
+
+        // Hold the OS lock ourselves - not through `FileLease::acquire`, so
+        // the holder record below keeps naming the dead pid rather than
+        // this test process.
+        let holder_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open the lock file");
+        assert!(
+            try_lock(&holder_file, LeaseMode::Exclusive).expect("lock the file ourselves"),
+            "the test must hold the OS lock itself before simulating a stale holder"
+        );
+        write_fake_holder(&holder_file, dead_pid);
+
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            drop(holder_file);
+        });
+
+        let result = lease.acquire(&keys, LeaseMode::Exclusive, Duration::from_millis(0));
+        releaser.join().expect("join the releasing thread");
+
+        assert!(
+            result.is_ok(),
+            "a dead holder's lease must be taken over even with a zero wait budget, or this \
+             test proves nothing about the stale-takeover bridge running independently of the \
+             caller's own wait; got {:?}",
+            result.as_ref().err()
+        );
+    }
+
+    /// Given the same dead-holder shape as the test above, but the OS lock
+    /// stays held well past the stale-takeover bridge's own timeout, when
+    /// `acquire` runs, then it reports the lease busy once that timeout
+    /// elapses rather than bridging forever regardless of how long the OS
+    /// takes to finish releasing; on failure the panic names the lease
+    /// `acquire` returned instead of the busy error.
+    #[test]
+    fn acquire_gives_up_the_stale_takeover_bridge_after_its_own_timeout_or_bridges_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        let lease = FileLease::new(dir.path().to_path_buf());
+        let keys = vec![key("dead-holder-past-bridge-timeout")];
+        fs::create_dir_all(dir.path()).unwrap();
+        let path = lease.lock_path(&keys[0]);
+
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn a short-lived child");
+        let dead_pid = child.id();
+        child.wait().expect("wait for the child to exit");
+
+        let holder_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open the lock file");
+        assert!(
+            try_lock(&holder_file, LeaseMode::Exclusive).expect("lock the file ourselves"),
+            "the test must hold the OS lock itself before simulating a stale holder"
+        );
+        write_fake_holder(&holder_file, dead_pid);
+
+        // Held well past `STALE_TAKEOVER_TIMEOUT` (500ms), so the bridge
+        // must have given up and reported busy before this release ever
+        // happens.
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(650));
+            drop(holder_file);
+        });
+
+        let result = lease.acquire(&keys, LeaseMode::Exclusive, Duration::from_millis(100));
+        releaser.join().expect("join the releasing thread");
+
+        assert!(
+            matches!(result, Err(ref e) if e.code == ErrorCode::ScopeBusy),
+            "the stale-takeover bridge must give up once its own timeout elapses, not keep \
+             bridging until the OS lock actually releases; got {:?}",
+            result.as_ref().err()
+        );
+    }
 }
