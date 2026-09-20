@@ -5817,6 +5817,82 @@ mod tests {
         assert_eq!(part.exit_status(), 4);
     }
 
+    /// Given a complete, issue-free `Ok` result, when `exit_status` reads
+    /// it, then it exits `0`, not the issues-found exit code every `Ok`
+    /// result would get if the guard never actually checked `found_issues`;
+    /// on failure the panic names the exit code it got instead.
+    #[test]
+    fn an_ok_result_with_no_issues_exits_0_not_the_issues_found_code() {
+        let inv = Inventory {
+            skills: vec![],
+            projects: vec![],
+            completeness: Completeness::Complete,
+            observations: vec![],
+            unread_roots: vec![],
+            timings: vec![],
+        };
+        let env = ResultEnvelope::from_result(
+            Operation::Scan,
+            &scope(),
+            &OpContext::uncancellable(CorrelationId("c-ok".into())),
+            Ok(inv),
+        );
+        assert_eq!(env.status, OpStatus::Ok);
+        assert_eq!(
+            env.exit_status(),
+            0,
+            "an Ok result with no issues must exit 0, not the issues-found exit code"
+        );
+    }
+
+    /// `FixSkillOutcome::found_issues` is true exactly when at least one of
+    /// `unrepaired`/`conflicts` is non-empty, never for either reason alone
+    /// omitted and never unconditionally; on failure the panic names the
+    /// case (both empty, only unrepaired, only conflicts) it got wrong.
+    #[test]
+    fn fix_skill_outcome_found_issues_is_true_when_either_list_is_nonempty_or_names_the_case_it_missed(
+    ) {
+        use crate::dto::{ConflictSummary, FixSkillOutcome, UnrepairedIssue, UnrepairedIssueKind};
+
+        let clean = FixSkillOutcome {
+            skill: SkillName("x".into()),
+            applied: Vec::new(),
+            unrepaired: Vec::new(),
+            conflicts: Vec::new(),
+        };
+        assert!(
+            !clean.found_issues(),
+            "no unrepaired issues and no conflicts must report no issues found"
+        );
+
+        let only_unrepaired = FixSkillOutcome {
+            unrepaired: vec![UnrepairedIssue {
+                path: PathBuf::from("/h/skill/SKILL.md"),
+                message: "still broken".into(),
+                kind: UnrepairedIssueKind::Link,
+            }],
+            ..clean.clone()
+        };
+        assert!(
+            only_unrepaired.found_issues(),
+            "an unrepaired issue alone must report issues found"
+        );
+
+        let only_conflicts = FixSkillOutcome {
+            conflicts: vec![ConflictSummary {
+                skill: SkillName("x".into()),
+                message: "two copies differ".into(),
+                path_a: PathBuf::from("/h/skill-a"),
+                path_b: PathBuf::from("/h/skill-b"),
+            }],
+            ..clean
+        };
+        assert!(
+            only_conflicts.found_issues(),
+            "a conflict alone must report issues found"
+        );
+    }
+
     #[test]
     fn capabilities_rejects_unknown_harnesses_and_resolves_tools() {
         use crate::harness::HarnessCatalog;
@@ -6155,6 +6231,143 @@ mod tests {
         assert_eq!(target.source_kind, SourceKind::Fork);
     }
 
+    /// A canonical deployment whose `owner_kind` cannot be repointed (here
+    /// `Plugin`) must not source a takeover, even when a verified `LinkedTo`
+    /// deployment resolves to the exact same path; on failure the panic
+    /// names the `owner_kind` the linked deployment was left with.
+    #[test]
+    fn propagate_verified_linked_owners_ignores_a_canonical_owner_that_is_not_mutable() {
+        let shared_path = PathBuf::from("/agents/skills/write-tests");
+        let canonical_id = DeploymentId::parse("dep:v1/g/-/universal/-/canonical").unwrap();
+        let linked_id = DeploymentId::parse("dep:v1/g/-/claude-code/-/linked").unwrap();
+        let mut skill = InstalledSkillDto {
+            name: SkillName("write-tests".to_string()),
+            description: None,
+            deployments: vec![
+                DeploymentDto {
+                    id: canonical_id.clone(),
+                    destination: SkillDestination::Universal,
+                    backing: BackingRelationship::Canonical,
+                    owner_kind: LifecycleOwnerKind::Plugin,
+                    ..minimal_deployment(SourceKind::Plugin, None)
+                },
+                DeploymentDto {
+                    id: linked_id.clone(),
+                    destination: SkillDestination::Universal,
+                    backing: BackingRelationship::LinkedTo,
+                    link_target: Some(shared_path.clone()),
+                    owner_kind: LifecycleOwnerKind::Copy,
+                    ..minimal_deployment(SourceKind::Manual, None)
+                },
+            ],
+        };
+        let resolved_paths = HashMap::from([
+            (canonical_id, shared_path.clone()),
+            (linked_id, shared_path),
+        ]);
+
+        propagate_verified_linked_owners(&mut skill, &resolved_paths);
+
+        assert_eq!(
+            skill.deployments[1].owner_kind,
+            LifecycleOwnerKind::Copy,
+            "a non-mutable canonical owner (Plugin) must never source a takeover, or this \
+             test proves nothing about the mutability filter"
+        );
+    }
+
+    /// A `LinkedTo` deployment with a real `link_target` - but not a
+    /// whole-directory link - is still a verified link shape, and its owner
+    /// must be taken over from the matching canonical deployment; on
+    /// failure the panic names the owner the linked deployment kept
+    /// instead.
+    #[test]
+    fn propagate_verified_linked_owners_takes_over_a_link_target_only_verified_link() {
+        let shared_path = PathBuf::from("/agents/skills/write-tests");
+        let canonical_id = DeploymentId::parse("dep:v1/g/-/universal/-/canonical").unwrap();
+        let linked_id = DeploymentId::parse("dep:v1/g/-/claude-code/-/linked").unwrap();
+        let mut skill = InstalledSkillDto {
+            name: SkillName("write-tests".to_string()),
+            description: None,
+            deployments: vec![
+                DeploymentDto {
+                    id: canonical_id.clone(),
+                    destination: SkillDestination::Universal,
+                    backing: BackingRelationship::Canonical,
+                    owner_kind: LifecycleOwnerKind::SkillsSh,
+                    owner_id: Some(OwnerId::parse("owner:v1/skills-sh:write-tests").unwrap()),
+                    ..minimal_deployment(SourceKind::SkillsSh, None)
+                },
+                DeploymentDto {
+                    id: linked_id.clone(),
+                    destination: SkillDestination::Universal,
+                    backing: BackingRelationship::LinkedTo,
+                    link_target: Some(shared_path.clone()),
+                    shared_via_whole_dir_link: false,
+                    owner_kind: LifecycleOwnerKind::Copy,
+                    ..minimal_deployment(SourceKind::Manual, None)
+                },
+            ],
+        };
+        let resolved_paths = HashMap::from([
+            (canonical_id, shared_path.clone()),
+            (linked_id, shared_path),
+        ]);
+
+        propagate_verified_linked_owners(&mut skill, &resolved_paths);
+
+        assert_eq!(
+            skill.deployments[1].owner_kind,
+            LifecycleOwnerKind::SkillsSh,
+            "a link_target-only verified link must still take over the canonical owner, or \
+             this test proves nothing about the link_target/whole_dir_link disjunction"
+        );
+    }
+
+    /// A `LinkedTo` deployment whose resolved path does not match any
+    /// canonical deployment's resolved path must never take over an
+    /// unrelated canonical owner just because it shares the same scope; on
+    /// failure the panic names the owner it wrongly took over.
+    #[test]
+    fn propagate_verified_linked_owners_never_matches_a_canonical_owner_at_a_different_path() {
+        let canonical_id = DeploymentId::parse("dep:v1/g/-/universal/-/canonical").unwrap();
+        let linked_id = DeploymentId::parse("dep:v1/g/-/claude-code/-/linked").unwrap();
+        let mut skill = InstalledSkillDto {
+            name: SkillName("write-tests".to_string()),
+            description: None,
+            deployments: vec![
+                DeploymentDto {
+                    id: canonical_id.clone(),
+                    destination: SkillDestination::Universal,
+                    backing: BackingRelationship::Canonical,
+                    owner_kind: LifecycleOwnerKind::SkillsSh,
+                    ..minimal_deployment(SourceKind::SkillsSh, None)
+                },
+                DeploymentDto {
+                    id: linked_id.clone(),
+                    destination: SkillDestination::Universal,
+                    backing: BackingRelationship::LinkedTo,
+                    link_target: Some(PathBuf::from("/agents/skills/other-skill")),
+                    owner_kind: LifecycleOwnerKind::Copy,
+                    ..minimal_deployment(SourceKind::Manual, None)
+                },
+            ],
+        };
+        let resolved_paths = HashMap::from([
+            (canonical_id, PathBuf::from("/agents/skills/write-tests")),
+            (linked_id, PathBuf::from("/agents/skills/other-skill")),
+        ]);
+
+        propagate_verified_linked_owners(&mut skill, &resolved_paths);
+
+        assert_eq!(
+            skill.deployments[1].owner_kind,
+            LifecycleOwnerKind::Copy,
+            "a linked deployment resolved to a different path than the canonical owner must \
+             never take over that owner, or this test proves nothing about the path match"
+        );
+    }
+
     mod scan_tests {
         use super::*;
         use crate::harness::HarnessCatalog;
@@ -6270,6 +6483,36 @@ mod tests {
             );
             assert!(deployment.spec_violations.is_empty());
             assert_eq!(inv.completeness, Completeness::Complete);
+        }
+
+        /// Given a plain directory (not a symlink, not a whole-dir link)
+        /// under a harness's own root - never the universal root - when it
+        /// is scanned, then it is `Independent`/`PerHarness`, not folded in
+        /// with the universal-linked skills; on failure the panic names the
+        /// backing/destination pair the scan reported instead.
+        #[test]
+        fn a_plain_per_harness_skill_is_independent_not_linked_to_the_universal_root() {
+            let fs = FixtureBuilder::new()
+                .dir("/h/.claude/skills/write-tests")
+                .file(
+                    "/h/.claude/skills/write-tests/SKILL.md",
+                    b"---\nname: write-tests\ndescription: Writes tests.\n---\nBody.",
+                )
+                .build_fs();
+            let rt = runtime_with(fs, Arc::new(FakeClock::at(0)));
+            let inv = scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+
+            assert_eq!(inv.skills.len(), 1);
+            let deployment = &inv.skills[0].deployments[0];
+            assert_eq!(
+                (deployment.destination, deployment.backing),
+                (
+                    SkillDestination::PerHarness,
+                    BackingRelationship::Independent
+                ),
+                "a plain per-harness skill directory must be Independent/PerHarness, not \
+                 reported as linked into the universal root"
+            );
         }
 
         fn claude_plugin_fixture(settings_json: Option<&[u8]>) -> crate::testing::FixtureBuilder {

@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -20,8 +20,120 @@ use proptest::prelude::*;
 use skill_studio_core::fsops::{self, read_stamp, Root};
 use skill_studio_core::identity::PlanId;
 use skill_studio_core::journal::{FsJournal, PlanWriter};
-use skill_studio_core::ports::{ExclusiveGuard, LeaseMode, LeaseProvider, ScopeFs};
+use skill_studio_core::ports::{
+    DirEntryFacts, ExclusiveGuard, FileFacts, LeaseMode, LeaseProvider, ScopeFs, ScopedPath,
+};
 use skill_studio_core::testing::{FailingFs, FakeLease, FixtureBuilder};
+
+/// Wraps a [`ScopeFs`], recording every path `fsops_fsync_dir` is called
+/// with and delegating everything else to `inner`. Lets a test assert how
+/// far a durability sweep like `fsync_up_to_root` actually walked, which a
+/// fixture with no real disk cannot show any other way.
+struct FsyncSpy {
+    inner: Arc<dyn ScopeFs>,
+    fsynced_dirs: Mutex<Vec<PathBuf>>,
+}
+
+impl FsyncSpy {
+    fn wrap(inner: Arc<dyn ScopeFs>) -> Self {
+        FsyncSpy {
+            inner,
+            fsynced_dirs: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn fsynced_dirs(&self) -> Vec<PathBuf> {
+        self.fsynced_dirs.lock().expect("fsynced_dirs lock").clone()
+    }
+}
+
+impl ScopeFs for FsyncSpy {
+    fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
+        self.inner.canonicalize(path)
+    }
+    fn symlink_metadata(&self, path: &Path) -> std::io::Result<FileFacts> {
+        self.inner.symlink_metadata(path)
+    }
+    fn read_link(&self, path: &Path) -> std::io::Result<PathBuf> {
+        self.inner.read_link(path)
+    }
+    fn read_dir(&self, path: &Path) -> std::io::Result<Vec<DirEntryFacts>> {
+        self.inner.read_dir(path)
+    }
+    fn ancestor_holds(&self, start: &Path, name: &str) -> std::io::Result<bool> {
+        self.inner.ancestor_holds(start, name)
+    }
+    fn read_capped(&self, path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+        self.inner.read_capped(path, max_bytes)
+    }
+    fn read_prefix(&self, path: &Path, limit: u64) -> std::io::Result<(Vec<u8>, bool)> {
+        self.inner.read_prefix(path, limit)
+    }
+    fn write_atomic(
+        &self,
+        guard: &ExclusiveGuard,
+        path: &ScopedPath,
+        bytes: &[u8],
+    ) -> std::io::Result<()> {
+        self.inner.write_atomic(guard, path, bytes)
+    }
+    fn rename(
+        &self,
+        guard: &ExclusiveGuard,
+        from: &ScopedPath,
+        to: &ScopedPath,
+    ) -> std::io::Result<()> {
+        self.inner.rename(guard, from, to)
+    }
+    fn remove_file(&self, guard: &ExclusiveGuard, path: &ScopedPath) -> std::io::Result<()> {
+        self.inner.remove_file(guard, path)
+    }
+    fn create_dir_all(&self, guard: &ExclusiveGuard, path: &ScopedPath) -> std::io::Result<()> {
+        self.inner.create_dir_all(guard, path)
+    }
+    fn symlink(
+        &self,
+        guard: &ExclusiveGuard,
+        target: &ScopedPath,
+        link: &ScopedPath,
+    ) -> std::io::Result<()> {
+        self.inner.symlink(guard, target, link)
+    }
+    fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)> {
+        self.inner.fsops_device_inode(path)
+    }
+    fn fsops_fsync_file(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_fsync_file(path)
+    }
+    fn fsops_fsync_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.fsynced_dirs
+            .lock()
+            .expect("fsynced_dirs lock")
+            .push(path.to_path_buf());
+        self.inner.fsops_fsync_dir(path)
+    }
+    fn fsops_create_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_create_dir(path)
+    }
+    fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.fsops_write_new_file(path, bytes)
+    }
+    fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.fsops_rename(from, to)
+    }
+    fn fsops_symlink(&self, target: &Path, link: &Path) -> std::io::Result<()> {
+        self.inner.fsops_symlink(target, link)
+    }
+    fn fsops_remove_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_remove_dir(path)
+    }
+    fn fsops_remove_file(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.fsops_remove_file(path)
+    }
+    fn fsops_exchange(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        self.inner.fsops_exchange(a, b)
+    }
+}
 
 /// Every fsops call in these tests now records its step through a plan,
 /// per unit 1.2 Section B. The journal itself is not under test here (see
@@ -520,4 +632,114 @@ fn writefile_refuses_a_stale_read_and_leaves_the_original_content_or_names_the_o
         b"raced in first",
         "the file must hold the concurrent writer's content, not the caller's stale write"
     );
+}
+
+/// Given a root, when it is replaced by a fresh directory (a different
+/// device/inode) after `Root::open` captured the original one, then
+/// `revalidate` refuses with `RootMoved` naming the root, rather than
+/// treating the swap as if nothing changed.
+#[test]
+fn revalidate_refuses_a_root_replaced_since_open_or_names_the_swap_it_missed() {
+    let fs = FixtureBuilder::new().dir("/root").build_fs();
+    let root = Root::open(&fs, PathBuf::from("/root")).expect("open root");
+
+    fs.fsops_remove_dir(Path::new("/root"))
+        .expect("remove the original root");
+    fs.fsops_create_dir(Path::new("/root"))
+        .expect("recreate the root - a fresh directory gets a fresh identity");
+
+    let err = root.revalidate().expect_err(
+        "a root replaced since open must be refused, or this test proves nothing about missing the swap",
+    );
+    match err {
+        fsops::FsOpsError::RootMoved { root } => {
+            assert_eq!(root, PathBuf::from("/root"), "must name the swapped root");
+        }
+        other => panic!("expected RootMoved, got {other}"),
+    }
+}
+
+/// Given an ancestor symlink chain exactly at `confine`'s own hop cap (40
+/// hops) that still resolves inside the root, when a name under it is
+/// confined, then it is accepted - the cap is a hop *limit*, not a hop
+/// budget one shorter than the constant names.
+#[test]
+fn confine_accepts_a_symlink_chain_exactly_at_the_hop_limit_or_names_the_hop_it_refused() {
+    let mut builder = FixtureBuilder::new().dir("/root").dir("/root/hop40");
+    for hop in 0..40 {
+        let link = format!("/root/hop{hop}");
+        let target = format!("/root/hop{}", hop + 1);
+        builder = builder.alias(&link, &target);
+    }
+    let fs = builder.build_fs();
+    let root = Root::open(&fs, PathBuf::from("/root")).expect("open root");
+
+    let resolved = root.confine(Path::new("hop0/leaf.txt")).expect(
+        "a chain of exactly the hop limit that still resolves inside the root must be accepted",
+    );
+    assert_eq!(resolved, PathBuf::from("/root/hop40/leaf.txt"));
+}
+
+/// Given an ancestor symlink chain one hop past `confine`'s hop cap (41
+/// hops), when a name under it is confined, then it is refused - the same
+/// chain shape as the test above, one hop longer, must flip from accepted
+/// to refused exactly at the limit.
+#[test]
+fn confine_refuses_a_symlink_chain_one_hop_past_the_limit_or_names_the_hop_it_still_followed() {
+    let mut builder = FixtureBuilder::new().dir("/root").dir("/root/hop41");
+    for hop in 0..41 {
+        let link = format!("/root/hop{hop}");
+        let target = format!("/root/hop{}", hop + 1);
+        builder = builder.alias(&link, &target);
+    }
+    let fs = builder.build_fs();
+    let root = Root::open(&fs, PathBuf::from("/root")).expect("open root");
+
+    let err = root
+        .confine(Path::new("hop0/leaf.txt"))
+        .expect_err("a chain one hop past the limit must be refused, or this test proves nothing about the hop counter never advancing");
+    assert!(
+        matches!(err, fsops::FsOpsError::Escapes { .. }),
+        "expected Escapes, got {err}"
+    );
+}
+
+/// Given a `write_file` target nested two directories below the root, when
+/// the write lands, then the durability sweep fsyncs every ancestor
+/// directory up to and including the root - not just the file's own parent -
+/// so a crash right after still shows the new directory entries on disk.
+#[test]
+fn fsync_up_to_root_walks_every_ancestor_dir_up_to_the_root_or_names_the_one_it_skipped() {
+    let root_path = PathBuf::from("/root");
+    let fixture = FixtureBuilder::new()
+        .dir("/root")
+        .dir("/root/a")
+        .dir("/root/a/b")
+        .file("/root/a/b/SKILL.md", b"before")
+        .dir("/journal")
+        .build_fs();
+    let spy = Arc::new(FsyncSpy::wrap(Arc::new(fixture.clone())));
+    let root = Root::open(spy.as_ref(), root_path.clone()).expect("open root");
+    let journal = FsJournal::new(PathBuf::from("/journal"), Arc::new(fixture));
+    let lease = FakeLease::default();
+    let g = test_guard(&lease);
+    let plan = begin_test_plan(&journal, &g, root_path.clone());
+
+    let target = root_path.join("a").join("b").join("SKILL.md");
+    let stamp = read_stamp(spy.as_ref(), &target).expect("read the stamp before writing");
+    fsops::write_file(&root, &plan, Path::new("a/b/SKILL.md"), b"after", &stamp)
+        .expect("write_file");
+
+    let synced = spy.fsynced_dirs();
+    for expected in [
+        PathBuf::from("/root/a/b"),
+        PathBuf::from("/root/a"),
+        PathBuf::from("/root"),
+    ] {
+        assert!(
+            synced.contains(&expected),
+            "fsync_up_to_root must fsync every ancestor up to the root; {expected:?} was \
+             skipped (synced {synced:?})"
+        );
+    }
 }
