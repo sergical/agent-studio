@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, ErrorCode};
-use crate::ports::ScopeFs;
+use crate::ports::{confine, ExclusiveGuard, ScopeFs};
+use crate::scope::NormalizedScope;
 
 /// Largest lock file the core will read. Larger is treated as corrupt
 /// rather than silently truncated.
@@ -103,6 +104,89 @@ pub fn read_lock_file(fs: &dyn ScopeFs, path: &Path) -> Result<SkillLockFile, Co
 /// Whether `skill_name` has an entry in `lock`.
 pub fn is_skill_installed(lock: &SkillLockFile, skill_name: &str) -> bool {
     lock.skills.contains_key(skill_name)
+}
+
+/// The raw JSON value for `skill_name`'s row in the lock file at `path`,
+/// kept exactly as written - unknown fields included - so a caller that
+/// saves it before letting `npx skills remove` drop the row (`ops::remove`)
+/// can hand it to [`restore_lock_entry`] byte-for-byte, rather than losing
+/// whatever [`InstalledSkillEntry`]'s typed fields do not model. `None` when
+/// the file is missing or `skill_name` has no entry.
+pub fn read_lock_entry_value(
+    fs: &dyn ScopeFs,
+    path: &Path,
+    skill_name: &str,
+) -> Result<Option<serde_json::Value>, CoreError> {
+    let bytes = match fs.read_capped(path, LOCK_FILE_MAX_BYTES) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(CoreError::io(path, e)),
+    };
+    let doc: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+        CoreError::new(ErrorCode::Io, format!("failed to parse lock file: {e}")).at(path)
+    })?;
+    Ok(doc
+        .get("skills")
+        .and_then(|skills| skills.get(skill_name))
+        .cloned())
+}
+
+/// Writes `entry` back into the lock file at `path` under `skill_name`,
+/// through the caller's already-held exclusive lease - the same
+/// read-whole-document/mutate-one-key/write-atomic shape
+/// `ops_remove::drop_registry_entry` uses to drop a `skill-studio.json` row,
+/// run in reverse, keeping every other key (including the file's own
+/// `version`) untouched so `npx skills`, not this write, still owns the
+/// file's schema. A no-op when `skill_name` already has an entry: a
+/// reinstall that raced the undo keeps its own row rather than losing it to
+/// the one being restored.
+pub fn restore_lock_entry(
+    guard: &ExclusiveGuard,
+    fs: &dyn ScopeFs,
+    scope: &NormalizedScope,
+    path: &Path,
+    skill_name: &str,
+    entry: &serde_json::Value,
+) -> Result<(), CoreError> {
+    let mut doc: serde_json::Value = match fs.read_capped(path, LOCK_FILE_MAX_BYTES) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+            CoreError::new(ErrorCode::Io, format!("failed to parse lock file: {e}")).at(path)
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let empty = empty_lock_file();
+            serde_json::json!({ "version": empty.version, "skills": {} })
+        }
+        Err(e) => return Err(CoreError::io(path, e)),
+    };
+    let skills = doc
+        .as_object_mut()
+        .ok_or_else(|| CoreError::new(ErrorCode::Io, "lock file is not a JSON object").at(path))?
+        .entry("skills")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let skills = skills.as_object_mut().ok_or_else(|| {
+        CoreError::new(ErrorCode::Io, "lock file's \"skills\" is not a JSON object").at(path)
+    })?;
+    if skills.contains_key(skill_name) {
+        return Ok(());
+    }
+    skills.insert(skill_name.to_string(), entry.clone());
+    // The `npx skills` CLI itself always writes this file pretty-printed
+    // (`JSON.stringify(doc, null, 2) + "\n"` - checked against its packed
+    // `dist/cli.mjs`), so restoring a row compactly would leave the file in
+    // a shape that CLI never produces, even though both parse identically.
+    // `to_vec_pretty`'s default indent is the same two spaces.
+    let mut bytes = serde_json::to_vec_pretty(&doc).map_err(|e| {
+        CoreError::new(ErrorCode::Io, format!("failed to serialize lock file: {e}")).at(path)
+    })?;
+    bytes.push(b'\n');
+    if let Some(parent) = path.parent() {
+        let scoped_parent = confine(scope, fs, parent)?;
+        fs.create_dir_all(guard, &scoped_parent)
+            .map_err(|e| CoreError::io(parent, e))?;
+    }
+    let scoped = confine(scope, fs, path)?;
+    fs.write_atomic(guard, &scoped, &bytes)
+        .map_err(|e| CoreError::io(path, e))
 }
 
 /// `<project>/skills-lock.json`'s file name - the CLI's own project-scope

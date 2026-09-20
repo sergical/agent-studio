@@ -4642,6 +4642,34 @@ pub fn restore_event(
             let _ = fs.symlink(&session.guard, &scoped_target, &scoped_link);
         }
     }
+    // The `.skill-lock.json` row `ops::remove` saved before the real CLI
+    // dropped it (`SkillsSh` only - see `restore_backup_inverse_with_links_and_lock`'s
+    // own doc), put back the same best-effort way as the harness links
+    // above: an event with no saved row (an old event, or `Dotagents`, whose
+    // row lives in `agents.toml`/`agents.lock` instead) parses to `None`
+    // here and writes nothing.
+    if let Some((skill_name, entry)) = crate::events::parse_restore_lock_entry(inverse) {
+        let lock_path = crate::lock_file::lock_file_path(&rt.scope.home.lexical);
+        if let Err(error) = crate::lock_file::restore_lock_entry(
+            &session.guard,
+            fs,
+            &rt.scope,
+            &lock_path,
+            &skill_name,
+            &entry,
+        ) {
+            // Best-effort, same as the harness links above: the restore
+            // itself still succeeds (the file it undoes is already back),
+            // but the failure is not silently dropped - it lands on the
+            // restore event's own payload so Activity can surface it,
+            // instead of only ever existing as a discarded `Result`.
+            let _ = session.store.patch_payload(
+                &session.guard,
+                &restore_id,
+                serde_json::json!({ "lock_entry_restore_error": error.message }),
+            );
+        }
+    }
 
     let restored_fingerprint = crate::events::fingerprint_path(fs, &path)?;
     session.store.finish(

@@ -16,10 +16,11 @@ use super::event_store::{
 use super::skill_deployment::{deployment_id, SkillDestination};
 use super::skill_dto::InstallScope;
 use super::skill_fork_registry::{
-    read_fork_registry, write_fork_registry, CopyDeploymentRecord, ForkRegistry,
-    CURRENT_REGISTRY_VERSION,
+    read_fork_registry, write_fork_registry, write_fork_registry_maybe_locked,
+    CopyDeploymentRecord, ForkRegistry, CURRENT_REGISTRY_VERSION,
 };
 use super::skill_fs::copy_dir_preserving_symlinks;
+use super::write_lease::WriteLeaseGuard;
 
 const INJECTED_CRASH_PREFIX: &str = "injected independent-copy crash";
 const RESTORE_LINK_PREFIX: &str = ".skill-studio-restore-";
@@ -553,6 +554,7 @@ pub fn validate_independent_copy_restore(event: &EventRow) -> Result<(), String>
 fn remove_matching_copy_ownership(
     home: &Path,
     data: &IndependentCopyEventData,
+    guard: Option<&WriteLeaseGuard>,
 ) -> Result<Option<ForkRegistry>, String> {
     let mut registry = read_fork_registry(home)?;
     match registry.copies.get(&data.copy_deployment_id) {
@@ -560,7 +562,7 @@ fn remove_matching_copy_ownership(
         Some(existing) if ownership_matches(existing, data) => {
             let previous = registry.clone();
             registry.copies.remove(&data.copy_deployment_id);
-            write_fork_registry(home, &registry)?;
+            write_fork_registry_maybe_locked(guard, home, &registry)?;
             Ok(Some(previous))
         }
         Some(_) => Err(
@@ -850,7 +852,7 @@ fn restore_independent_copy_with(
         ));
     }
 
-    let previous_registry = match remove_matching_copy_ownership(home, &data) {
+    let previous_registry = match remove_matching_copy_ownership(home, &data, None) {
         Ok(previous) => previous,
         Err(error) => {
             let _ = store.unclaim_event_restore(&target.id, &restore_id);
@@ -906,6 +908,7 @@ pub fn reconcile_interrupted_independent_copy(
     store: &EventStore,
     home: &Path,
     event: &EventRow,
+    guard: Option<&WriteLeaseGuard>,
 ) -> Result<(), String> {
     if event.kind != "make_independent_copy" || event.status != "interrupted" {
         return Ok(());
@@ -928,12 +931,12 @@ pub fn reconcile_interrupted_independent_copy(
         }
     }
     if !copy_started {
-        return fail_unstarted_copy(store, home, event, &data);
+        return fail_unstarted_copy(store, home, event, &data, guard);
     }
     validate_independent_copy_restore(event)?;
 
     if original_link_still_present(&data) {
-        return fail_unstarted_copy(store, home, event, &data);
+        return fail_unstarted_copy(store, home, event, &data, guard);
     }
     if fs::symlink_metadata(&data.deployment_path)
         .is_ok_and(|metadata| metadata.file_type().is_symlink())
@@ -953,14 +956,14 @@ pub fn reconcile_interrupted_independent_copy(
         && saved_original_link
         && path_is_absent(&data.staging)
     {
-        return claim_replaced_copy(store, home, event, &data);
+        return claim_replaced_copy(store, home, event, &data, guard);
     }
     if fs::symlink_metadata(&data.deployment_path).is_err() && saved_original_link {
         remove_recorded_staging(&data)?;
         fs::rename(&data.saved_link, &data.deployment_path).map_err(|error| {
             format!("Failed to restore the interrupted independent-copy link: {error}")
         })?;
-        return fail_unstarted_copy(store, home, event, &data);
+        return fail_unstarted_copy(store, home, event, &data, guard);
     }
     Err("Interrupted independent copy is ambiguous; preserved the filesystem unchanged".to_string())
 }
@@ -970,9 +973,10 @@ fn fail_unstarted_copy(
     home: &Path,
     event: &EventRow,
     data: &IndependentCopyEventData,
+    guard: Option<&WriteLeaseGuard>,
 ) -> Result<(), String> {
     remove_recorded_staging(data)?;
-    remove_matching_copy_ownership(home, data)?;
+    remove_matching_copy_ownership(home, data, guard)?;
     if let Some(materialize_event_id) = &data.materialize_event_id {
         if fs::symlink_metadata(&data.expected_root)
             .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
@@ -990,6 +994,7 @@ fn claim_replaced_copy(
     home: &Path,
     event: &EventRow,
     data: &IndependentCopyEventData,
+    guard: Option<&WriteLeaseGuard>,
 ) -> Result<(), String> {
     remove_recorded_staging(data)?;
     let Some(copy_record) = data.copy_record.clone() else {
@@ -1011,7 +1016,7 @@ fn claim_replaced_copy(
     registry
         .copies
         .insert(data.copy_deployment_id.clone(), record);
-    write_fork_registry(home, &registry)?;
+    write_fork_registry_maybe_locked(guard, home, &registry)?;
     if fs::symlink_metadata(&data.saved_link)
         .is_ok_and(|metadata| metadata.file_type().is_symlink())
         && data
@@ -1031,6 +1036,7 @@ pub fn reconcile_interrupted_independent_copy_restore(
     store: &EventStore,
     home: &Path,
     event: &EventRow,
+    guard: Option<&WriteLeaseGuard>,
 ) -> Result<(), String> {
     if event.kind != "restore" || event.status != "interrupted" {
         return Ok(());
@@ -1051,7 +1057,7 @@ pub fn reconcile_interrupted_independent_copy_restore(
     let data = independent_copy_event_data(&target)?;
     let staged_restore_link = recorded_restore_link(event, &data)?;
     if original_link_still_present(&data) {
-        remove_matching_copy_ownership(home, &data)?;
+        remove_matching_copy_ownership(home, &data, guard)?;
         if data
             .original_link_target
             .as_deref()
@@ -1075,7 +1081,7 @@ pub fn reconcile_interrupted_independent_copy_restore(
                 data.deployment_path.display()
             ));
         }
-        remove_matching_copy_ownership(home, &data)?;
+        remove_matching_copy_ownership(home, &data, guard)?;
         restore_copy_directory_with_recorded_link(&data, &staged_restore_link, &|_| Ok(()))?;
         let post_fp = fingerprint_path(&data.deployment_path);
         store.patch_inverse_post_fingerprint(&event.id, &post_fp)?;
@@ -1084,7 +1090,7 @@ pub fn reconcile_interrupted_independent_copy_restore(
     }
     match fs::symlink_metadata(&data.deployment_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            remove_matching_copy_ownership(home, &data)?;
+            remove_matching_copy_ownership(home, &data, guard)?;
             restore_absent_copy_path(&data, &staged_restore_link)?;
             let post_fp = fingerprint_path(&data.deployment_path);
             store.patch_inverse_post_fingerprint(&event.id, &post_fp)?;
@@ -1187,7 +1193,7 @@ mod tests {
             .into_iter()
             .find(|row| row.id == event_id)
             .unwrap();
-        reconcile_interrupted_independent_copy(store, home, &event)
+        reconcile_interrupted_independent_copy(store, home, &event, None)
     }
 
     fn recover_restore(store: &EventStore, home: &Path, event_id: &str) -> Result<(), String> {
@@ -1202,7 +1208,7 @@ mod tests {
             .into_iter()
             .find(|row| row.id == event_id)
             .unwrap();
-        reconcile_interrupted_independent_copy_restore(store, home, &event)
+        reconcile_interrupted_independent_copy_restore(store, home, &event, None)
     }
 
     fn no_unknown_staging(root: &Path) {
@@ -1654,8 +1660,8 @@ mod tests {
 
         for _ in 0..2 {
             let interrupted = store.get(&event_id).unwrap().unwrap();
-            let error =
-                reconcile_interrupted_independent_copy(&store, &home, &interrupted).unwrap_err();
+            let error = reconcile_interrupted_independent_copy(&store, &home, &interrupted, None)
+                .unwrap_err();
             assert!(error.contains("without a recorded fingerprint"));
             assert!(data.staging.join("SKILL.md").is_file());
             assert!(read_fork_registry(&home)
@@ -1696,7 +1702,8 @@ mod tests {
         );
         write_fork_registry(&home, &registry).unwrap();
 
-        let error = reconcile_interrupted_independent_copy(&store, &home, &event).unwrap_err();
+        let error =
+            reconcile_interrupted_independent_copy(&store, &home, &event, None).unwrap_err();
 
         assert!(error.contains("staging fingerprint changed"));
         assert_eq!(
@@ -1975,6 +1982,60 @@ mod tests {
         let event_id = store.list(1, None).unwrap()[0].id.clone();
         recover_make(&store, &home, &event_id).unwrap();
         recover_make(&store, &home, &event_id).unwrap();
+
+        assert!(link.is_dir());
+        assert!(read_fork_registry(&home)
+            .unwrap()
+            .copies
+            .values()
+            .any(|record| record.path == link));
+        assert_eq!(store.get(&event_id).unwrap().unwrap().status, "done");
+    }
+
+    /// Regression for the second fix-round BLOCKER: `lib.rs`'s startup pass
+    /// holds `home`'s `WriteLease` across this whole recovery loop (so it
+    /// can't race a concurrent CLI/MCP write), then calls this function -
+    /// which used to call the unlocked `write_fork_registry` from inside
+    /// `claim_replaced_copy`, taking a second, conflicting lease on the same
+    /// root. Advisory locks don't nest within one process, so that second
+    /// `try_acquire` reported the caller's own lease as busy and the
+    /// half-finished copy was never claimed, on every launch. Passing the
+    /// held guard through (`Some(&guard)`, mirroring
+    /// `write_fork_registry_locked`) is the fix; recovering with no guard at
+    /// all (the pre-fix call shape) can't reproduce the deadlock since there
+    /// is no outer lease to conflict with, so this test must hold one itself
+    /// to be red without the fix.
+    #[test]
+    fn recovering_a_replaced_copy_while_the_startup_lease_is_held_does_not_self_deadlock() {
+        let (temp, store, source, link) = setup();
+        let home = temp.path().join("home");
+        let error = make_skill_independent_copy_with(
+            &store,
+            request(&home, &link, &source),
+            &|from, to| fs::rename(from, to),
+            &|home, registry| write_fork_registry(home, registry),
+            &crash_at("replaced"),
+        )
+        .unwrap_err();
+        assert!(error.starts_with(INJECTED_CRASH_PREFIX));
+        let event_id = store.list(1, None).unwrap()[0].id.clone();
+        store.reconcile_at_startup().unwrap();
+
+        // The exact shape `reconcile_event_store_at_startup` takes: one
+        // lease over `home` held for the whole recovery pass. Must be the
+        // real `WriteLease::default()`, not a test-scoped lease root -
+        // `write_fork_registry`'s own internal lock (what the fix routes
+        // around via `write_fork_registry_locked`) always uses the real
+        // `core_runtime::data_root()/leases`, so only the real lease root
+        // can reproduce the two locks conflicting.
+        let write_lease = super::super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home).unwrap();
+        let interrupted = store.interrupted_independent_copy_events().unwrap();
+        let event = interrupted
+            .into_iter()
+            .find(|row| row.id == event_id)
+            .unwrap();
+        reconcile_interrupted_independent_copy(&store, &home, &event, Some(&guard)).unwrap();
 
         assert!(link.is_dir());
         assert!(read_fork_registry(&home)

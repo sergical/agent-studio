@@ -589,16 +589,19 @@ fn undo_after_remove_brings_the_tree_back_with_the_same_tree_hash_or_names_the_d
 }
 
 /// `undo_after_remove_restores_the_links_and_the_provenance_state_or_names_the_missing_path`
-/// (round 2, N3; round 3, N5): the tree-hash guarantee the test above
-/// checks, joined by two more - the Claude Code link `remove` took down
-/// comes back pointing at the restored tree, and each owner kind's own
-/// provenance ends up where `issue-3.9a-followup-a.md` documents it should.
-/// For `Copy`/`Fork` (the two kinds with their own registry row) that row is
-/// back too. `Dotagents`/`SkillsSh` have no registry row of `remove`'s own to
-/// lose (see `CrashPoint`'s own doc) - undo does not, and is not meant to,
-/// re-run the CLI, so the skill reads back as `Manual` once the CLI's own
-/// lock entry is gone (item 10 of the follow-up doc), not as its original
-/// owner kind.
+/// (round 2, N3; round 3, N5; item 10 of the follow-up doc): the tree-hash
+/// guarantee the test above checks, joined by two more - the Claude Code
+/// link `remove` took down comes back pointing at the restored tree, and
+/// each owner kind's own provenance ends up where
+/// `issue-3.9a-followup-a.md` documents it should. For `Copy`/`Fork` (the
+/// two kinds with their own registry row) that row is back too. `SkillsSh`
+/// has its saved `.skill-lock.json` row put back the same way (item 10's
+/// fix), so it reads back as `SkillsSh`, not `Manual`. `Dotagents` has no
+/// registry row of `remove`'s own to lose and no saved row here to restore -
+/// its own ledger (`agents.lock`/`agents.toml`) is a TOML array this fix
+/// does not touch (see `ops_remove::remove`'s own `lock_entry` comment) -
+/// undo does not, and is not meant to, re-run the CLI, so it still reads
+/// back as `Manual` once the CLI's own row is gone.
 #[test]
 fn undo_after_remove_restores_the_links_and_the_provenance_state_or_names_the_missing_path() {
     for kind in MUTABLE_OWNER_KINDS {
@@ -662,21 +665,278 @@ fn undo_after_remove_restores_the_links_and_the_provenance_state_or_names_the_mi
                 has_row,
                 "{kind:?}: the {map_key} registry row must be back after restore"
             );
+        } else if kind == LifecycleOwnerKind::SkillsSh {
+            // Item 10's fix: undo puts the saved `.skill-lock.json` row back
+            // under the skill's key, so the restored tree reads as
+            // `SkillsSh` again, not `Manual`.
+            let owner_kind = resolve_owner_kind(&rt, &skill);
+            assert_eq!(
+                owner_kind,
+                LifecycleOwnerKind::SkillsSh,
+                "{kind:?}: the restored .skill-lock.json row must read back as SkillsSh"
+            );
         } else {
-            // Round 3, N5: undo does not re-run the CLI, so the lock entry
-            // it dropped (`.skill-lock.json` for `SkillsSh`, `agents.lock`
-            // for `Dotagents` - see `FakeNpxSpawner`'s `remove` branch) stays
-            // gone, and the restored tree reads as `Manual` until the next
-            // real `npx ... add` - the documented state from
-            // `issue-3.9a-followup-a.md` item 10.
+            // `Dotagents` tracks its own row in `agents.lock`/`agents.toml`
+            // (a TOML array), which this fix does not capture or restore
+            // (see `ops_remove::remove`'s own `lock_entry` comment) - undo
+            // does not, and is not meant to, re-run the CLI, so the restored
+            // tree still reads as `Manual` until the next real `npx ... add`.
             let owner_kind = resolve_owner_kind(&rt, &skill);
             assert_eq!(
                 owner_kind,
                 LifecycleOwnerKind::Manual,
-                "{kind:?}: without its CLI-owned lock entry, the restored tree must read as Manual"
+                "{kind:?}: without its CLI-owned ledger row, the restored tree must read as Manual"
             );
         }
     }
+}
+
+/// `undo_after_skills_sh_remove_restores_the_lock_entry_byte_for_byte_or_names_the_diverging_value`
+/// (item 10, red without the fix): a `SkillsSh` removal's saved lock row -
+/// including an unknown field `InstalledSkillEntry` does not model, the same
+/// way `dismissed`/`lastSelectedAgents` show up on a real row - comes back
+/// under the skill's key as the exact JSON value it was, and a scan reads
+/// the skill as `SkillsSh` again rather than `Manual`. Catches a fix that
+/// restores only the typed `InstalledSkillEntry` fields (dropping the extra
+/// one) as well as one that never writes the lock file at all.
+#[test]
+fn undo_after_skills_sh_remove_restores_the_lock_entry_byte_for_byte_or_names_the_diverging_value()
+{
+    let home = unique_temp_dir("remove_undo_lock_entry_byte_equal");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let skill = "lock-undo-byte-equal";
+    write_manual_universal_skill(&home, skill);
+    let agents_dir = home.join(".agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    let lock_path = agents_dir.join(".skill-lock.json");
+    let original_entry = serde_json::json!({
+        "source": format!("owner/{skill}"),
+        "sourceType": "github",
+        "sourceUrl": format!("https://github.com/owner/{skill}"),
+        "skillFolderHash": "deadbeef",
+        "installedAt": "2024-01-01T00:00:00Z",
+        "updatedAt": "2024-01-01T00:00:00Z",
+        // A field `InstalledSkillEntry` does not model - proves the saved
+        // value is a raw JSON copy, not a round trip through that struct.
+        "dismissed": true,
+    });
+    std::fs::write(
+        &lock_path,
+        serde_json::to_vec(&serde_json::json!({
+            "version": 3,
+            "skills": { skill: original_entry.clone() },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let deployment_id = resolve_deployment_id(&rt, skill);
+
+    let outcome = ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap();
+    let lock_after_remove: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&lock_path).unwrap()).unwrap();
+    assert!(
+        lock_after_remove
+            .get("skills")
+            .and_then(|s| s.get(skill))
+            .is_none(),
+        "the fake CLI must have dropped the lock row before undo runs"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    let lock_after_undo: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&lock_path).unwrap()).unwrap();
+    let restored_entry = lock_after_undo.get("skills").and_then(|s| s.get(skill));
+    assert_eq!(
+        restored_entry,
+        Some(&original_entry),
+        "the restored lock entry must equal the original JSON value, unknown fields included"
+    );
+    assert_eq!(
+        resolve_owner_kind(&rt, skill),
+        LifecycleOwnerKind::SkillsSh,
+        "a scan after undo must classify the skill as skills-sh, not manual"
+    );
+}
+
+/// `undo_of_an_old_format_remove_event_restores_the_tree_and_writes_no_lock_entry_or_names_the_stray_write`
+/// (item 10's backward-compatibility case): a `remove` event recorded before
+/// this fix existed has no `lock_entry` in its inverse at all - hand-built
+/// here the same way `repair_and_restore.rs`'s own manifest tests hand-build
+/// a `restore_backup` row, since a real one from `ops::remove` today always
+/// carries the field. Its restore must still bring the tree back (the
+/// pre-existing guarantee), and must not write a lock entry: writing one
+/// from thin air, or panicking on the missing field, would both be wrong.
+#[test]
+fn undo_of_an_old_format_remove_event_restores_the_tree_and_writes_no_lock_entry_or_names_the_stray_write(
+) {
+    let home = unique_temp_dir("remove_undo_old_format_event");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let skill = "lock-undo-old-format";
+    write_manual_universal_skill(&home, skill);
+    mark_skills_sh(&home, skill);
+    let deployment_path = home.join(UNIVERSAL_ROOT_RELATIVE).join(skill);
+    let lock_path = home.join(".agents").join(".skill-lock.json");
+
+    let id = {
+        let mut store = rt
+            .ports
+            .history
+            .open(
+                &rt.scope,
+                skill_studio_core::ports::HistoryAccess::ReadWrite,
+            )
+            .unwrap()
+            .unwrap();
+        let guard =
+            skill_studio_core::ports::acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)
+                .unwrap();
+        let id = rt.ports.ids.next_event_id();
+        let manifest = store
+            .backup_paths(&guard, &id, std::slice::from_ref(&deployment_path))
+            .unwrap();
+        let pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.clone());
+        // The pre-fix shape: `op`/`path`/`pre_fingerprint`/`post_fingerprint`
+        // only, no `lock_entry` - `events::restore_backup_inverse`'s own
+        // payload before this fix added the field.
+        let inverse = serde_json::json!({
+            "op": "restore_backup",
+            "path": &deployment_path,
+            "pre_fingerprint": pre_fingerprint
+                .as_ref()
+                .map_or_else(|| "absent".to_string(), |f| f.bare_hex().to_string()),
+            "post_fingerprint": "absent",
+        });
+        store
+            .record(
+                &guard,
+                &id,
+                &skill_studio_core::events::EventDraft {
+                    kind: skill_studio_core::events::EventKind::Remove,
+                    skill: SkillName(skill.to_string()),
+                    harness: None,
+                    scope: Some("global".to_string()),
+                    project_path: None,
+                    payload: serde_json::json!({}),
+                    inverse: Some(inverse),
+                    backup_dir: Some(manifest.backup_dir.clone()),
+                },
+            )
+            .unwrap();
+        store
+            .finish(
+                &guard,
+                &id,
+                skill_studio_core::events::EventStatus::Done,
+                None,
+            )
+            .unwrap();
+        id
+    };
+
+    // Simulate what a real `remove` (and the CLI it shells out to) already
+    // did before this row existed: the tree is gone, and so is the lock row.
+    std::fs::remove_dir_all(&deployment_path).unwrap();
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&lock_path).unwrap()).unwrap();
+    doc.get_mut("skills")
+        .and_then(|s| s.as_object_mut())
+        .and_then(|m| m.shift_remove(skill));
+    std::fs::write(&lock_path, serde_json::to_vec(&doc).unwrap()).unwrap();
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    assert!(
+        deployment_path.join("SKILL.md").exists(),
+        "an old-format event must still restore the tree"
+    );
+    let lock_after_undo: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&lock_path).unwrap()).unwrap();
+    assert!(
+        lock_after_undo
+            .get("skills")
+            .and_then(|s| s.get(skill))
+            .is_none(),
+        "an old-format event has no saved row to restore, so undo must write no lock entry"
+    );
+    assert_eq!(
+        resolve_owner_kind(&rt, skill),
+        LifecycleOwnerKind::Manual,
+        "with no lock entry restored, the tree must still read as Manual"
+    );
+}
+
+/// `undo_after_skills_sh_remove_keeps_a_lock_entry_recreated_before_the_undo_or_names_the_clobbered_row`
+/// (item 10's race guard): the skill is reinstalled - a new lock row lands
+/// under the same key - after `remove` but before the undo runs. Undo must
+/// keep that new row exactly as it is, not overwrite it with the one it
+/// saved: doing so would silently discard whatever the reinstall just
+/// recorded (a new source, a new hash) in favor of stale data.
+#[test]
+fn undo_after_skills_sh_remove_keeps_a_lock_entry_recreated_before_the_undo_or_names_the_clobbered_row(
+) {
+    let home = unique_temp_dir("remove_undo_lock_entry_recreated");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let skill = "lock-undo-recreated";
+    write_manual_universal_skill(&home, skill);
+    mark_skills_sh(&home, skill);
+    let lock_path = home.join(".agents").join(".skill-lock.json");
+    let deployment_id = resolve_deployment_id(&rt, skill);
+
+    let outcome = ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap();
+
+    // The user reinstalled the skill (through the real CLI, not this op)
+    // before undoing the remove - a fresh row under the same key.
+    let reinstalled_entry = serde_json::json!({
+        "source": format!("owner/{skill}"),
+        "sourceType": "github",
+        "sourceUrl": format!("https://github.com/owner/{skill}"),
+        "skillFolderHash": "reinstalled-hash",
+        "installedAt": "2024-06-01T00:00:00Z",
+        "updatedAt": "2024-06-01T00:00:00Z",
+    });
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&lock_path).unwrap()).unwrap();
+    doc["skills"][skill] = reinstalled_entry.clone();
+    std::fs::write(&lock_path, serde_json::to_vec(&doc).unwrap()).unwrap();
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    let lock_after_undo: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&lock_path).unwrap()).unwrap();
+    let entry_after_undo = lock_after_undo.get("skills").and_then(|s| s.get(skill));
+    assert_eq!(
+        entry_after_undo,
+        Some(&reinstalled_entry),
+        "the row recreated before the undo must survive it untouched"
+    );
 }
 
 /// Which step [`remove_crash_mid_rename_leaves_disk_in_the_before_or_after_state_or_names_the_stray_folder`]

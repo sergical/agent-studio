@@ -45,6 +45,19 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
     }
     let conn = Connection::open(db_path)
         .map_err(|e| format!("Failed to open {}: {e}", db_path.display()))?;
+    // The desktop's `EventStore` and the core's `SqliteHistoryStore`
+    // (`skill-studio-host/src/history.rs`) now open this same file from two
+    // separate connections (one per process' worth of core `ops` calls, one
+    // for the desktop's own direct writes). WAL lets both read concurrently,
+    // but a writer still briefly locks the file; without a `busy_timeout`
+    // the loser gets `SQLITE_BUSY` immediately instead of waiting its turn.
+    // Set before `journal_mode = WAL` itself, since switching journal modes
+    // is its own write that can hit a busy database - a CLI or MCP write in
+    // flight at app launch could otherwise fail this whole open instead of
+    // just waiting, leaving the app running its entire session with no
+    // event store.
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("Failed to set busy timeout: {e}"))?;
     conn.pragma_update(None, "journal_mode", "WAL")
         .map_err(|e| format!("Failed to set WAL mode: {e}"))?;
     // `reverted_by` is claimed (set to the restore event's id) before that
@@ -138,10 +151,24 @@ pub struct EventStore {
 
 impl EventStore {
     /// Opens `<app_data>/events.sqlite3`, creating `app_data` if needed.
+    /// Kept for tests and anything that has never had a shared history
+    /// database to migrate onto; the real app calls [`Self::open_with_db`]
+    /// so its backups still live under `app_data` while the connection
+    /// itself points at the core's shared history file.
     pub fn open(app_data: &Path) -> Result<Self, String> {
+        Self::open_with_db(app_data, &app_data.join("events.sqlite3"))
+    }
+
+    /// Opens `db_path` as the event log, while still rooting backups and the
+    /// journal under `app_data` - the split that lets the desktop keep its
+    /// own backup/journal directories after its event *table* moved onto the
+    /// core's shared `<data_root>/history/events.sqlite3` (`core_runtime::
+    /// history_db_path`), so Activity and Undo see every core `ops` mutation
+    /// alongside the desktop's own.
+    pub fn open_with_db(app_data: &Path, db_path: &Path) -> Result<Self, String> {
         fs::create_dir_all(app_data)
             .map_err(|e| format!("Failed to create {}: {e}", app_data.display()))?;
-        let conn = open(&app_data.join("events.sqlite3"))?;
+        let conn = open(db_path)?;
         let journal = skill_studio_core::journal::FsJournal::new(
             app_data.join("journal"),
             std::sync::Arc::new(skill_studio_host::RealFs::new()),
@@ -151,6 +178,103 @@ impl EventStore {
             app_data: app_data.to_path_buf(),
             journal,
         })
+    }
+
+    /// One-time import of the desktop's pre-migration event log
+    /// (`<app_data>/events.sqlite3`, from before the desktop and core shared
+    /// one history file) into the database this store already has open.
+    /// Skips rows whose id already exists (so a second run imports nothing
+    /// new), runs as one transaction, and renames the legacy file to
+    /// `events.sqlite3.migrated` only once every row has copied over -
+    /// leaving it in place (for the next launch to retry) if anything
+    /// failed. A missing or corrupt legacy file is not an error: this
+    /// returns `Ok(0)` rather than block startup.
+    pub fn import_legacy_events(&self) -> Result<usize, String> {
+        let legacy_path = self.app_data.join("events.sqlite3");
+        if !legacy_path.exists() {
+            return Ok(0);
+        }
+        if let Some(current) = self.conn.path() {
+            if Path::new(current) == legacy_path {
+                // The connection this store already holds *is* the legacy
+                // file (no shared history database configured) - nothing to
+                // import from itself.
+                return Ok(0);
+            }
+        }
+        // Opening the legacy file first applies any pending schema
+        // migrations (e.g. the `restorable`/`backup_dir` ALTER TABLEs) to it,
+        // so the ATTACHed copy below has the same columns as the live table.
+        // A corrupt legacy file fails here, before anything is attached or
+        // touched, and is reported without blocking startup.
+        drop(open(&legacy_path)?);
+        let legacy_str = legacy_path.to_str().ok_or_else(|| {
+            format!(
+                "Non-UTF-8 legacy event store path: {}",
+                legacy_path.display()
+            )
+        })?;
+        self.conn
+            .execute("ATTACH DATABASE ?1 AS legacy", params![legacy_str])
+            .map_err(|e| format!("Failed to attach legacy event store: {e}"))?;
+        let import_result = (|| -> Result<usize, String> {
+            self.conn
+                .execute_batch("BEGIN IMMEDIATE")
+                .map_err(|e| format!("Failed to begin legacy import transaction: {e}"))?;
+            let imported = self
+                .conn
+                .execute(
+                    "INSERT OR IGNORE INTO events
+                        (id, ts, kind, skill, harness, scope, project_path, payload,
+                         inverse, backup_dir, status, reverted_by, restorable)
+                     SELECT id, ts, kind, skill, harness, scope, project_path, payload,
+                            inverse, backup_dir, status, reverted_by, restorable
+                     FROM legacy.events",
+                    [],
+                )
+                .map_err(|e| format!("Failed to import legacy events: {e}"))?;
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO materialized_roots
+                        (root_path, harness, shared_root, created_by)
+                     SELECT root_path, harness, shared_root, created_by
+                     FROM legacy.materialized_roots",
+                    [],
+                )
+                .map_err(|e| format!("Failed to import legacy materialized_roots: {e}"))?;
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO materialized_disabled (root_path, skill)
+                     SELECT root_path, skill FROM legacy.materialized_disabled",
+                    [],
+                )
+                .map_err(|e| format!("Failed to import legacy materialized_disabled: {e}"))?;
+            self.conn
+                .execute_batch("COMMIT")
+                .map_err(|e| format!("Failed to commit legacy import transaction: {e}"))?;
+            Ok(imported)
+        })();
+        if import_result.is_err() {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+        let _ = self.conn.execute_batch("DETACH DATABASE legacy");
+        let imported = import_result?;
+        let migrated_path = self.app_data.join("events.sqlite3.migrated");
+        fs::rename(&legacy_path, &migrated_path)
+            .map_err(|e| format!("Failed to rename legacy event store: {e}"))?;
+        // Best-effort: WAL/SHM sidecars only exist if the legacy connection
+        // was left open mid-checkpoint. Their absence is not an error.
+        for ext in ["-wal", "-shm"] {
+            let mut sidecar = legacy_path.clone().into_os_string();
+            sidecar.push(ext);
+            let sidecar = PathBuf::from(sidecar);
+            if sidecar.exists() {
+                let mut migrated_sidecar = migrated_path.clone().into_os_string();
+                migrated_sidecar.push(ext);
+                let _ = fs::rename(&sidecar, PathBuf::from(migrated_sidecar));
+            }
+        }
+        Ok(imported)
     }
 
     fn backup_dir_for(&self, id: &str) -> PathBuf {
@@ -271,15 +395,20 @@ impl EventStore {
             .map_err(|e| format!("Failed to query event {id}: {e}"))
     }
 
-    /// Lists events newest-first (by insertion order - two ULIDs allocated
-    /// in the same millisecond don't reliably sort, so `rowid` is the order).
+    /// Lists events newest-first by `ts`, with `rowid` only as a tiebreaker
+    /// for two ULIDs allocated in the same millisecond (which don't reliably
+    /// sort). `rowid` alone is not enough: `import_legacy_events` appends
+    /// imported rows at the end of the table regardless of their original
+    /// `ts`, so a legacy row imported today would otherwise sort above
+    /// events the core wrote just now.
     pub fn list(&self, limit: usize, skill: Option<&str>) -> Result<Vec<EventRow>, String> {
         let mut stmt = if skill.is_some() {
-            self.conn
-                .prepare("SELECT * FROM events WHERE skill = ?1 ORDER BY rowid DESC LIMIT ?2")
+            self.conn.prepare(
+                "SELECT * FROM events WHERE skill = ?1 ORDER BY ts DESC, rowid DESC LIMIT ?2",
+            )
         } else {
             self.conn
-                .prepare("SELECT * FROM events ORDER BY rowid DESC LIMIT ?1")
+                .prepare("SELECT * FROM events ORDER BY ts DESC, rowid DESC LIMIT ?1")
         }
         .map_err(|e| format!("Failed to prepare event list query: {e}"))?;
 
@@ -354,13 +483,20 @@ impl EventStore {
     }
 
     /// Interrupted deterministic frontmatter repairs that startup can finish
-    /// from their backend-generated, fingerprint-bound intent.
+    /// from their backend-generated, fingerprint-bound intent. Both the
+    /// desktop's `apply_skill_frontmatter_repair` and the core's
+    /// `ops::fix_skill` write `kind = 'repair_skill_frontmatter'`, but only
+    /// the desktop's payload carries `proposed_content_fingerprint` - the
+    /// core's `fix_skill` payload shape is not something this recovery loop
+    /// (desktop-only, driven by `lib.rs`) knows how to parse, so a core row
+    /// here would fail rather than recover.
     pub fn interrupted_frontmatter_repair_events(&self) -> Result<Vec<EventRow>, String> {
         let mut stmt = self
             .conn
             .prepare(
                 "SELECT * FROM events
                  WHERE status = 'interrupted' AND kind = 'repair_skill_frontmatter'
+                   AND json_extract(payload, '$.proposed_content_fingerprint') IS NOT NULL
                  ORDER BY rowid ASC",
             )
             .map_err(|e| format!("Failed to prepare frontmatter repair recovery query: {e}"))?;

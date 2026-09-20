@@ -33,6 +33,20 @@ pub(crate) fn data_root() -> PathBuf {
         .join(".local/share/skill-studio")
 }
 
+/// `<data_root>/history/events.sqlite3` - the one `SQLite` file every core
+/// `ops` mutation (`build_runtime_write_at`, below) reads and writes
+/// history through. Also the file `lib.rs`'s `open_event_store` opens for
+/// the desktop's own `EventStore`, so Activity/Undo see every core mutation
+/// alongside the desktop's own (`docs/action-map/events-and-history.md`);
+/// `pub` (not `pub(crate)`) so `lib.rs` can share this instead of
+/// hand-deriving the same path a second way, and so
+/// `tests/undo_activity_history.rs` can point its own fixture `Runtime` and
+/// `EventStore` at exactly the path the real app computes, instead of a
+/// second, hand-restated copy that could silently drift from it.
+pub fn history_db_path(data_root: &Path) -> PathBuf {
+    data_root.join("history").join("events.sqlite3")
+}
+
 /// Builds a `Runtime` wired for a mutation: the real filesystem, a real
 /// file lease, a writable `SQLite` history store, and a real process
 /// spawner, rooted at the host's home directory. Every desktop command that
@@ -65,7 +79,7 @@ pub fn build_runtime_write_at(home: &Path, data_root: &Path) -> Result<Runtime, 
     scope.opencode_config_root = Some(skill_studio_host::opencode_config_dir(home));
     let catalog = Arc::new(HarnessCatalog::builtin());
     let lease_root = data_root.join("leases");
-    let db_path = scope.history_root.join("events.sqlite3");
+    let db_path = history_db_path(data_root);
     let mut ports = skill_studio_host::default_ports_with_history(lease_root, catalog, db_path);
     ports.discovery = Some(Arc::new(skill_studio_host::HostProjectDiscovery::new()));
     ports.tools = Some(Arc::new(skill_studio_host::PathToolLookup::new()));

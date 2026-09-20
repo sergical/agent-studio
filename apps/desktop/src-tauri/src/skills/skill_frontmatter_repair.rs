@@ -264,12 +264,13 @@ fn roll_back_incomplete_fork(
     home: &Path,
     row: &EventRow,
     intent: &FrontmatterRepairIntent,
+    guard: Option<&super::write_lease::WriteLeaseGuard>,
 ) -> Result<(), String> {
     let registry = intent
         .fork_registry_before
         .as_ref()
         .ok_or("Fork repair intent has no ownership rollback snapshot")?;
-    super::skill_fork_registry::write_fork_registry(home, registry)?;
+    super::skill_fork_registry::write_fork_registry_maybe_locked(guard, home, registry)?;
     let app_data = store.app_data.clone();
     let _ = fs::remove_dir_all(super::skill_fork_registry::fork_snapshot_dir(
         &app_data,
@@ -291,14 +292,16 @@ pub fn reconcile_interrupted_frontmatter_repair(
     store: &EventStore,
     home: &Path,
     row: &EventRow,
+    guard: Option<&super::write_lease::WriteLeaseGuard>,
 ) -> Result<(), String> {
-    reconcile_interrupted_frontmatter_repair_with(store, home, row, |_| {})
+    reconcile_interrupted_frontmatter_repair_with(store, home, row, guard, |_| {})
 }
 
 fn reconcile_interrupted_frontmatter_repair_with(
     store: &EventStore,
     home: &Path,
     row: &EventRow,
+    guard: Option<&super::write_lease::WriteLeaseGuard>,
     after_read: impl FnOnce(&SkillMdWriteTransaction),
 ) -> Result<(), String> {
     let transaction = begin_skill_md_write_transaction()?;
@@ -321,7 +324,7 @@ fn reconcile_interrupted_frontmatter_repair_with(
         return Ok(());
     }
     if managed_ledger_still_owns(home, &intent.name)? {
-        roll_back_incomplete_fork(store, home, row, &intent)?;
+        roll_back_incomplete_fork(store, home, row, &intent, guard)?;
         return Ok(());
     }
     if !fork_record_matches(home, &intent)? {
@@ -839,7 +842,7 @@ mod tests {
         );
         write_fork_registry(&home, &registry).unwrap();
         let rows = store.reconcile_at_startup().unwrap();
-        reconcile_interrupted_frontmatter_repair_with(&store, &home, &rows[0], |_| {
+        reconcile_interrupted_frontmatter_repair_with(&store, &home, &rows[0], None, |_| {
             assert!(skill_md_write_transaction_is_held());
         })
         .unwrap();
@@ -867,7 +870,7 @@ mod tests {
         );
         write_fork_registry(&home, &ForkRegistry::default()).unwrap();
         let rows = store.reconcile_at_startup().unwrap();
-        assert!(reconcile_interrupted_frontmatter_repair(&store, &home, &rows[0]).is_err());
+        assert!(reconcile_interrupted_frontmatter_repair(&store, &home, &rows[0], None).is_err());
         assert_eq!(
             fs::read_to_string(skill.join("SKILL.md")).unwrap(),
             malformed()
@@ -913,7 +916,74 @@ mod tests {
         );
         write_fork_registry(&home, &registry).unwrap();
         let rows = store.reconcile_at_startup().unwrap();
-        reconcile_interrupted_frontmatter_repair(&store, &home, &rows[0]).unwrap();
+        reconcile_interrupted_frontmatter_repair(&store, &home, &rows[0], None).unwrap();
+        assert!(super::super::skill_fork_registry::read_fork_registry(&home)
+            .unwrap()
+            .forks
+            .is_empty());
+        assert_eq!(
+            fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            malformed()
+        );
+    }
+
+    /// Regression for the second fix-round BLOCKER: `lib.rs`'s startup pass
+    /// holds `home`'s `WriteLease` across this whole recovery loop, then
+    /// calls this function - which used to call the unlocked
+    /// `write_fork_registry` from inside `roll_back_incomplete_fork`, taking
+    /// a second, conflicting lease on the same root. Passing the held guard
+    /// through (`Some(&guard)`) is the fix; this test holds the same lease
+    /// `reconcile_event_store_at_startup` would, so it is red without it.
+    #[test]
+    fn rolling_back_a_fork_while_the_startup_lease_is_held_does_not_self_deadlock() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let agents = home.join(".agents");
+        let skill = agents.join("skills/sample");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), malformed()).unwrap();
+        fs::write(
+            agents.join("agents.lock"),
+            "[skills.sample]\nsource = \"owner/repo\"\nresolved_path = \"skills/sample\"\n",
+        )
+        .unwrap();
+        let deployment = deployment(&skill, LifecycleOwnerKind::Dotagents);
+        let store = EventStore::open(&temp.path().join("app-data")).unwrap();
+        record_repair_intent(
+            &store,
+            "crashed",
+            &deployment,
+            FrontmatterRepairApplyMode::ForkAndFix,
+        );
+        let mut registry = ForkRegistry::default();
+        registry.forks.insert(
+            "sample".to_string(),
+            ForkRecord {
+                deployment_id: deployment.id.clone(),
+                skill_dir: skill.clone(),
+                forked_at: "now".to_string(),
+                origin_tool: OriginTool::Dotagents,
+                origin_source: "owner/repo".to_string(),
+                repo: "owner/repo".to_string(),
+                path: "skills/sample".to_string(),
+                declared_ref: None,
+                base_commit: "abc".to_string(),
+            },
+        );
+        write_fork_registry(&home, &registry).unwrap();
+        let rows = store.reconcile_at_startup().unwrap();
+
+        // The exact shape `reconcile_event_store_at_startup` takes: one
+        // lease over `home` held for the whole recovery pass. Must be the
+        // real `WriteLease::default()`, not a test-scoped lease root -
+        // `write_fork_registry`'s own internal lock (what the fix routes
+        // around via `write_fork_registry_locked`) always uses the real
+        // `core_runtime::data_root()/leases`, so only the real lease root
+        // can reproduce the two locks conflicting.
+        let write_lease = super::super::write_lease::WriteLease::default();
+        let guard = write_lease.try_acquire(&home).unwrap();
+        reconcile_interrupted_frontmatter_repair(&store, &home, &rows[0], Some(&guard)).unwrap();
+
         assert!(super::super::skill_fork_registry::read_fork_registry(&home)
             .unwrap()
             .forks

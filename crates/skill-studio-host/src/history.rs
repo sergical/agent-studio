@@ -133,6 +133,16 @@ impl SqliteHistoryStore {
         let parent = db_path.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
         let conn = Connection::open(db_path).map_err(sql_err)?;
+        // The desktop's `EventStore` opens this same file from a second
+        // connection (`core_runtime::history_db_path`); WAL lets both read
+        // concurrently, but a `busy_timeout` keeps a losing writer waiting
+        // instead of failing immediately with `SQLITE_BUSY` - matches the
+        // desktop's `event_store::open`. Set before `journal_mode = WAL`
+        // itself, since that pragma is its own write that can hit a busy
+        // database - a desktop write in flight at CLI/MCP startup could
+        // otherwise fail this whole open instead of just waiting.
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(sql_err)?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(sql_err)?;
         // `reverted_by` is claimed before the restore row that references it
@@ -167,7 +177,12 @@ impl HistoryStore for SqliteHistoryStore {
             sql.push_str(" WHERE ");
             sql.push_str(&clauses.join(" AND "));
         }
-        sql.push_str(" ORDER BY rowid DESC LIMIT ?");
+        // `ts DESC` first, `rowid DESC` only as a tiebreaker: legacy rows the
+        // desktop's `EventStore::import_legacy_events` imports get appended
+        // at the end of the table (highest `rowid`) regardless of their
+        // original `ts`, so `rowid` alone would sort an old imported row
+        // above events written just now.
+        sql.push_str(" ORDER BY ts DESC, rowid DESC LIMIT ?");
 
         let mut owned_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         if let Some(skill) = &filter.skill {
@@ -368,6 +383,41 @@ impl HistoryStore for SqliteHistoryStore {
                 )
                 .map_err(sql_err)?;
         }
+        Ok(())
+    }
+
+    fn patch_payload(
+        &mut self,
+        _guard: &ExclusiveGuard,
+        id: &EventId,
+        patch: serde_json::Value,
+    ) -> Result<(), CoreError> {
+        let Some(patch_obj) = patch.as_object() else {
+            return Ok(());
+        };
+        let payload_str: String = self
+            .conn
+            .query_row(
+                "SELECT payload FROM events WHERE id = ?1",
+                params![id.0],
+                |row| row.get(0),
+            )
+            .map_err(sql_err)?;
+        let mut value: serde_json::Value =
+            serde_json::from_str(&payload_str).unwrap_or(serde_json::Value::Null);
+        let Some(obj) = value.as_object_mut() else {
+            return Ok(());
+        };
+        for (key, patch_value) in patch_obj {
+            obj.insert(key.clone(), patch_value.clone());
+        }
+        let updated = serde_json::to_string(&value).map_err(json_err)?;
+        self.conn
+            .execute(
+                "UPDATE events SET payload = ?1 WHERE id = ?2",
+                params![updated, id.0],
+            )
+            .map_err(sql_err)?;
         Ok(())
     }
 

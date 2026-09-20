@@ -19,16 +19,29 @@
 pub mod skills;
 pub mod timing_log;
 
+use std::path::Path;
+
 use tauri::Manager;
 
 pub use skills::*;
 
-/// Opens the event store at `app`'s data dir (docs/spec-event-store.md) - not
-/// `~/.agents`, which stays reserved for `skill-studio.json`. Reconciliation
-/// is a separate step - see [`reconcile_event_store_at_startup`] - so `run()`
-/// can run it off the UI thread. A failure opening the store returns `None`
-/// rather than aborting startup; every event command surfaces that as an
-/// ordinary `Err`.
+/// Opens the event store against the core's shared history database
+/// (`core_runtime::history_db_path`, under `core_runtime::data_root()`) while
+/// still keeping backups and the journal under `app`'s own data dir
+/// (docs/spec-event-store.md) - not `~/.agents`, which stays reserved for
+/// `skill-studio.json`. Every desktop command that mutates through
+/// `skill-studio-core`'s `ops` (park, unpark, install, etc.) writes its
+/// history there too, so Activity and Undo see those events alongside the
+/// desktop's own direct writes.
+///
+/// Also imports the desktop's pre-migration event log (its own
+/// `events.sqlite3`, from before this shared file existed) once: a failed
+/// or corrupt import only logs, so a bad legacy file never blocks startup.
+///
+/// Reconciliation is a separate step - see
+/// [`reconcile_event_store_at_startup`] - so `run()` can run it off the UI
+/// thread. A failure opening the store returns `None` rather than aborting
+/// startup; every event command surfaces that as an ordinary `Err`.
 ///
 /// Never called when [`skills::data_folder_status::check_and_migrate`]
 /// (unit 6.3) already refused the folder as newer than this build - `run()`
@@ -40,9 +53,30 @@ fn open_event_store(app: &tauri::App) -> Option<skills::event_store::EventStore>
         .app_data_dir()
         .map_err(|e| eprintln!("[event_store] could not resolve app data dir: {e}"))
         .ok()?;
-    skills::event_store::EventStore::open(&app_data)
+    open_event_store_at(&app_data, &skills::core_runtime::data_root())
+}
+
+/// [`open_event_store`], but taking `app_data_dir`/`data_root` directly
+/// rather than reading them from a live `tauri::App` - the seam
+/// `tests/undo_activity_history.rs` opens its own `EventStore` through, so
+/// reverting this function to the desktop-only-file bug it fixed
+/// (`EventStore::open(&app_data)`, ignoring the core's shared history
+/// database entirely) turns that test red instead of only the production
+/// code path nothing exercises directly.
+pub fn open_event_store_at(
+    app_data_dir: &Path,
+    data_root: &Path,
+) -> Option<skills::event_store::EventStore> {
+    let db_path = skills::core_runtime::history_db_path(data_root);
+    let store = skills::event_store::EventStore::open_with_db(app_data_dir, &db_path)
         .map_err(|e| eprintln!("[event_store] failed to open: {e}"))
-        .ok()
+        .ok()?;
+    match store.import_legacy_events() {
+        Ok(0) => {}
+        Ok(imported) => eprintln!("[event_store] imported {imported} legacy event(s)"),
+        Err(e) => eprintln!("[event_store] failed to import legacy events: {e}"),
+    }
+    Some(store)
 }
 
 /// Reconciles any row `store` was left holding `pending` by a crash (unit
@@ -52,7 +86,27 @@ fn open_event_store(app: &tauri::App) -> Option<skills::event_store::EventStore>
 /// repairers over whatever that reconciliation left `interrupted`. Called
 /// from inside `tauri::async_runtime::spawn_blocking` in `run()`, so this
 /// filesystem work never runs on the UI thread.
+///
+/// The events table is now shared with any CLI or MCP process
+/// (`core_runtime::history_db_path`), so a `pending` row here might belong to
+/// a mutation a still-running sibling process owns, not a crash - flipping it
+/// to `interrupted` (or a recovery loop touching it) out from under that
+/// process would race it. Takes the same root write lease every mutating
+/// command takes; when another process already holds it, this whole pass is
+/// skipped rather than blocking startup, and retried on the next launch.
 fn reconcile_event_store_at_startup(store: &skills::event_store::EventStore) {
+    let Some(home) = dirs::home_dir() else {
+        eprintln!("[event_store] could not resolve home dir for startup reconcile");
+        return;
+    };
+    let write_lease = skills::write_lease::WriteLease::default();
+    let guard = match write_lease.try_acquire(&home) {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("[event_store] skipped startup reconcile: {e}");
+            return;
+        }
+    };
     match store.reconcile_at_startup() {
         Ok(flipped) => {
             for row in &flipped {
@@ -76,11 +130,11 @@ fn reconcile_event_store_at_startup(store: &skills::event_store::EventStore) {
                     .and_then(|home| {
                         if row.kind == "make_independent_copy" {
                             skills::skill_independent_copy::reconcile_interrupted_independent_copy(
-                                store, &home, row,
+                                store, &home, row, Some(&guard),
                             )
                         } else {
                             skills::skill_independent_copy::reconcile_interrupted_independent_copy_restore(
-                                store, &home, row,
+                                store, &home, row, Some(&guard),
                             )
                         }
                     });
@@ -124,7 +178,10 @@ fn reconcile_event_store_at_startup(store: &skills::event_store::EventStore) {
                     .ok_or_else(|| "Could not find home directory".to_string())
                     .and_then(|home| {
                         skills::skill_frontmatter_repair::reconcile_interrupted_frontmatter_repair(
-                            store, &home, row,
+                            store,
+                            &home,
+                            row,
+                            Some(&guard),
                         )
                     })
                 {
