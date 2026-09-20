@@ -133,13 +133,20 @@ fn spawn_drain<R: Read + Send + 'static>(pipe: R) -> JoinHandle<Vec<u8>> {
 /// running and the pipe held open, so the reader thread's `read_to_end`
 /// would never see EOF. Shells out to the `kill` binary rather than
 /// `libc::kill` so this crate doesn't need unsafe code for it (the same
-/// tradeoff `lease.rs`'s liveness probe makes with `sysinfo`).
+/// tradeoff `lease.rs`'s liveness probe makes with `sysinfo`). Uses the
+/// POSIX `-s KILL -- -<pid>` form rather than `-KILL -<pid>`: procps `kill`
+/// (Linux) reads a bare negative pid as an option and rejects it, where
+/// `-- -<pid>` unambiguously marks it as the operand. Returns whether the
+/// group kill itself succeeded; the caller still calls `child.kill()` on
+/// the direct child regardless, so `child.wait()` can't block even if this
+/// returns `false` (missing `kill` binary, a parsing difference, ...).
 #[cfg(unix)]
-fn kill_process_group(pid: u32) {
+fn kill_process_group(pid: u32) -> bool {
     let group = format!("-{pid}");
-    let _ = std::process::Command::new("kill")
-        .args(["-KILL", &group])
-        .status();
+    std::process::Command::new("kill")
+        .args(["-s", "KILL", "--", &group])
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Joins `handle` if it finishes within [`KILLED_READER_GRACE`], else
@@ -221,11 +228,11 @@ impl ProcessSpawner for RealProcessSpawner {
             // group kill should close every pipe write end almost at once,
             // but nothing here should be able to block `run` forever.
             #[cfg(unix)]
-            kill_process_group(child.id());
-            #[cfg(not(unix))]
-            {
-                let _ = child.kill();
-            }
+            let _ = kill_process_group(child.id());
+            // Always also kill the direct child: if the group kill above
+            // failed for any reason, this still guarantees `child.wait()`
+            // below can't block for the rest of the deadline-less sleep.
+            let _ = child.kill();
             let _ = child.wait();
             let stdout = join_killed_reader(stdout_reader);
             let stderr = join_killed_reader(stderr_reader);
