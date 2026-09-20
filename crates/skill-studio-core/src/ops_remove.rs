@@ -55,12 +55,13 @@ fn cli_package(owner_kind: LifecycleOwnerKind) -> Option<&'static str> {
 /// Builds the argv `remove` hands the spawner, and the process cwd to run
 /// it in - ported from the desktop's `commands.rs` builders:
 /// `skills_sh_remove_args_for_scope` (`npx skills remove <name> --yes
-/// [--global]`, cwd unset - the desktop only ever sets `current_dir` for a
-/// project, see below) and `dotagents_remove_args` (`npx -y @sentry/dotagents
-/// [--project] remove <name>`). Unlike `ops_install_cli::cli_args_and_cwd`,
-/// both kinds here get the project path as their process cwd for a project
+/// [--global]`) and `dotagents_remove_args` (`npx -y @sentry/dotagents
+/// [--project] remove <name>`). Matching `ops_install_cli::cli_args_and_cwd`
+/// (`skills@1.7.0` has neither a `--cwd` nor a `--project` flag), both
+/// kinds here get the project path as their process cwd for a project
 /// scope - `commands.rs`'s `remove_skill` sets `command.current_dir(path)`
-/// whenever `project_path` is `Some`, for both CLI kinds alike.
+/// whenever `project_path` is `Some`, for both CLI kinds alike; `remove`
+/// itself has no `--project`/`--cwd` flag of its own either.
 fn remove_cli_args_and_cwd(
     owner_kind: LifecycleOwnerKind,
     name: &str,
