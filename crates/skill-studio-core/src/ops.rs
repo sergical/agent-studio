@@ -3304,10 +3304,15 @@ fn outdated_target(skill: &InstalledSkillDto) -> Option<crate::skill_update_chec
         .plugin
         .as_ref()
         .map(|p| (p.marketplace.clone(), p.plugin.clone(), p.version.clone()));
+    let project_path = match (deployment.source_kind, &deployment.root.scope) {
+        (SourceKind::SkillsSh, RootScope::Project(project)) => Some(project.0.clone()),
+        _ => None,
+    };
     Some(crate::skill_update_check::OutdatedTarget {
         name: skill.name.0.clone(),
         source_kind: deployment.source_kind,
         plugin,
+        project_path,
     })
 }
 

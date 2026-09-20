@@ -221,4 +221,61 @@ mod tests {
         let names = read_project_lock_skill_names(&fs, &project_lock_file_path(Path::new("/proj")));
         assert!(names.is_empty());
     }
+
+    /// `read_project_lock_skill_names_returns_empty_or_the_names_it_can_still_read_for_every_malformed_shape`:
+    /// table over the shapes `npx skills` could plausibly leave behind - a
+    /// truncated write, a schema bump, a hand-edited file, or one too big to
+    /// be this file at all - each named by what it returns rather than by
+    /// how it fails, since this reader never surfaces an error (it matches
+    /// `read_lock_file`'s "no ledger" behavior, see its own doc comment).
+    #[test]
+    fn read_project_lock_skill_names_returns_empty_or_the_names_it_can_still_read_for_every_malformed_shape(
+    ) {
+        let cases: Vec<(&str, &[u8], HashSet<String>)> = vec![
+            (
+                "malformed JSON yields no names",
+                b"not json at all",
+                HashSet::new(),
+            ),
+            (
+                // No version check exists in `read_project_lock_skill_names`
+                // (unlike `read_lock_file`'s shared-lock schema): a version
+                // bump alone doesn't invalidate the `skills` map it already
+                // parsed, so this still returns the one name.
+                "a version other than 1 still yields the names it can parse",
+                br#"{"version": 2, "skills": {"a-skill": {"source": "x"}}}"#,
+                HashSet::from(["a-skill".to_string()]),
+            ),
+            (
+                "a non-object skills value yields no names",
+                br#"{"version": 1, "skills": "not-an-object"}"#,
+                HashSet::new(),
+            ),
+        ];
+        for (label, bytes, expected) in cases {
+            let fs = FixtureBuilder::new()
+                .dir("/proj")
+                .file("/proj/skills-lock.json", bytes)
+                .build_fs();
+            let names =
+                read_project_lock_skill_names(&fs, &project_lock_file_path(Path::new("/proj")));
+            assert_eq!(names, expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn read_project_lock_skill_names_over_a_file_past_the_size_cap_yields_no_names() {
+        let mut json = String::from(r#"{"version": 1, "skills": {"a": {"padding": ""#);
+        json.push_str(&"x".repeat(LOCK_FILE_MAX_BYTES as usize + 1));
+        json.push_str(r#""}}}"#);
+        let fs = FixtureBuilder::new()
+            .dir("/proj")
+            .file("/proj/skills-lock.json", json.as_bytes())
+            .build_fs();
+        let names = read_project_lock_skill_names(&fs, &project_lock_file_path(Path::new("/proj")));
+        assert!(
+            names.is_empty(),
+            "a file over the size cap must yield no names, not a truncated parse"
+        );
+    }
 }

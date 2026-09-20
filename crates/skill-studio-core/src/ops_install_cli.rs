@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 use crate::dto::{InstallMethod, InstallRequest};
 use crate::error::{CoreError, ErrorCode};
-use crate::identity::{AgentId, RootScope, SkillName};
-use crate::ports::{OpContext, ProcessSpec, Runtime};
+use crate::identity::{AgentId, RootScope, SkillName, UNIVERSAL_ROOT_RELATIVE};
+use crate::ports::{FileKind, OpContext, ProcessSpec, Runtime};
 
 /// The `npx` package an [`InstallMethod`] shells out to, or `None` for
 /// `Copy` (which never calls `npx`). A plain lookup rather than an
@@ -84,6 +84,44 @@ fn cli_args_and_cwd(
     }
 }
 
+/// A project scope becomes the spawned process's cwd (`cli_args_and_cwd`),
+/// so a missing or non-directory project path must fail before the spawn,
+/// with a message that names it - otherwise it surfaces later as an opaque
+/// "npx: no such file or directory" from the shell itself. Called from
+/// `ops_install::install` before `ensure_dir_all` runs: that call's own
+/// `mkdir -p` on `<project>/.agents/skills` would otherwise silently create
+/// a missing project directory as a side effect, masking the very fault
+/// this check exists to catch.
+pub(crate) fn validate_cli_project_path(
+    rt: &Runtime,
+    req: &InstallRequest,
+) -> Result<(), CoreError> {
+    if cli_package(req.method).is_none() {
+        return Ok(());
+    }
+    let RootScope::Project(project) = &req.scope else {
+        return Ok(());
+    };
+    let is_dir = rt
+        .ports
+        .fs
+        .canonicalize(&project.0)
+        .ok()
+        .and_then(|resolved| rt.ports.fs.symlink_metadata(&resolved).ok())
+        .is_some_and(|facts| facts.kind == FileKind::Dir);
+    if !is_dir {
+        return Err(CoreError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "the project path does not exist or is not a directory: {}",
+                project.0.display()
+            ),
+        )
+        .at(&project.0));
+    }
+    Ok(())
+}
+
 /// `Dotagents`/`SkillsSh`: runs `req.method`'s argv (see
 /// [`cli_args_and_cwd`]) through the process-spawner port and checks the
 /// destination now exists. The CLI writes its own files directly - see
@@ -113,6 +151,24 @@ pub(crate) fn install_via_cli(
         )
     })?;
     let (args, cwd) = cli_args_and_cwd(req.method, source, &req.skill, &req.scope, &req.harnesses);
+    // For a project-scope install, `home_fallback` is where a `--cwd`-less
+    // `npx skills add` (this op's own former bug, or a spawner that quietly
+    // drops `cwd`) would land the skill instead of the project - recorded
+    // before the spawn so the destination-missing check below can tell
+    // "landed at the fallback" from "just failed".
+    let home_fallback = match &req.scope {
+        RootScope::Project(_) => Some(
+            rt.scope
+                .home
+                .lexical
+                .join(UNIVERSAL_ROOT_RELATIVE)
+                .join(&req.skill.0),
+        ),
+        RootScope::Global => None,
+    };
+    let home_fallback_existed_before = home_fallback
+        .as_deref()
+        .is_some_and(|path| rt.ports.fs.symlink_metadata(path).is_ok());
     let spec = ProcessSpec {
         program: "npx".to_string(),
         args,
@@ -128,6 +184,19 @@ pub(crate) fn install_via_cli(
         ));
     }
     if rt.ports.fs.symlink_metadata(destination).is_err() {
+        if let Some(fallback) = &home_fallback {
+            let fallback_now_exists = rt.ports.fs.symlink_metadata(fallback).is_ok();
+            if fallback_now_exists && !home_fallback_existed_before {
+                return Err(CoreError::new(
+                    ErrorCode::Io,
+                    format!(
+                        "the CLI installed to {} instead of the project",
+                        fallback.display()
+                    ),
+                )
+                .at(destination));
+            }
+        }
         return Err(CoreError::new(
             ErrorCode::Io,
             "the CLI did not create the expected destination",

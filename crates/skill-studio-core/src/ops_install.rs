@@ -58,7 +58,7 @@ use crate::events::{EventDraft, EventKind, EventStatus};
 use crate::fsops::{self, Root};
 use crate::identity::{AgentId, RootScope, SkillName, UNIVERSAL_ROOT_RELATIVE};
 use crate::journal::{FsJournal, PlanWriter};
-use crate::ops_install_cli::install_via_cli;
+use crate::ops_install_cli::{install_via_cli, validate_cli_project_path};
 use crate::ports::{
     self, ExclusiveGuard, FileKind, MutationSession, OpContext, PlanStatus, Runtime, ScopeFs,
 };
@@ -355,6 +355,11 @@ pub fn install(
     req: &InstallRequest,
 ) -> Result<InstallOutcome, CoreError> {
     ctx.checkpoint()?;
+    // Before anything below creates so much as a directory: `ensure_dir_all`
+    // (further down, via `install_and_link`) `mkdir -p`s
+    // `<project>/.agents/skills`, which would silently create a missing
+    // project directory as a side effect and mask this exact fault.
+    validate_cli_project_path(rt, req)?;
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
     let step_start = clock.monotonic();

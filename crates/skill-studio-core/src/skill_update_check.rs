@@ -16,7 +16,7 @@
 //! skill; this reads the tree once per source repo instead.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -127,6 +127,15 @@ pub struct OutdatedTarget {
     /// [`SourceKind::Plugin`]; `None` there too when the plugin cache path
     /// carried no version directory.
     pub plugin: Option<(String, String, Option<String>)>,
+    /// The project root, when `source_kind` is [`SourceKind::SkillsSh`] and
+    /// the deployment deciding currency is project-scoped. `None` for a
+    /// global-scope skills.sh skill, or any other `source_kind`. Lets
+    /// `skills_sh_currency` tell "not tracked by skills.sh at all" apart
+    /// from "a project-scope skills.sh install with no row in the *global*
+    /// lock" - the CLI writes the latter's provenance to
+    /// `<project>/skills-lock.json` instead, which this crate only reads for
+    /// ownership, not currency yet.
+    pub project_path: Option<PathBuf>,
 }
 
 /// Looks up every subtree's SHA in a GitHub repo at HEAD, in one call -
@@ -186,9 +195,14 @@ pub fn outdated(
     let mut results = BTreeMap::new();
     for target in targets {
         let record = match target.source_kind {
-            SourceKind::SkillsSh => {
-                skills_sh_currency(&target.name, &lock, tree_lookup, &mut tree_cache)
-            }
+            SourceKind::SkillsSh => skills_sh_currency(
+                fs,
+                &target.name,
+                &lock,
+                target.project_path.as_deref(),
+                tree_lookup,
+                &mut tree_cache,
+            ),
             SourceKind::Dotagents => dotagents_currency(&target.name, &dotagents, commit_lookup),
             SourceKind::Plugin => plugin_currency(target, plugin_lookup),
             SourceKind::Fork => fork_currency(&target.name, &home_registry, commit_lookup),
@@ -215,8 +229,10 @@ pub fn normalize_repo_key(repo: &str) -> String {
 }
 
 fn skills_sh_currency(
+    fs: &dyn ScopeFs,
     name: &str,
     lock: &Result<SkillLockFile, CoreError>,
+    project_path: Option<&Path>,
     tree_lookup: &dyn SourceTreeLookup,
     tree_cache: &mut HashMap<String, Result<HashMap<String, String>, CoreError>>,
 ) -> OutdatedRecord {
@@ -224,6 +240,25 @@ fn skills_sh_currency(
         return OutdatedRecord::bare(Currency::Unknown);
     };
     let Some(entry) = lock.skills.get(name) else {
+        // Absent from the *global* lock doesn't mean untracked: a
+        // project-scope skills.sh install writes its own row to
+        // `<project>/skills-lock.json` instead (see `lock_file`'s
+        // `read_project_lock_skill_names`), which this crate only reads for
+        // ownership so far - naming that gap here, rather than reporting a
+        // bare `Unknown`, so a caller doesn't mistake it for "no lock entry
+        // anywhere".
+        if let Some(project) = project_path {
+            let project_lock = lock_file::project_lock_file_path(project);
+            if lock_file::read_project_lock_skill_names(fs, &project_lock).contains(name) {
+                return OutdatedRecord::unknown_with_error(
+                    None,
+                    format!(
+                        "{} tracks this skill, but project-scope skills.sh currency is not checked yet",
+                        project_lock.display()
+                    ),
+                );
+            }
+        }
         return OutdatedRecord::bare(Currency::Unknown);
     };
     let installed_commit = Some(entry.skill_folder_hash.clone());
@@ -477,6 +512,7 @@ mod tests {
             name: "write-tests".to_string(),
             source_kind: SourceKind::SkillsSh,
             plugin: None,
+            project_path: None,
         }];
         let result = outdated(
             &fs,
@@ -522,6 +558,7 @@ mod tests {
             name: "write-tests".to_string(),
             source_kind: SourceKind::SkillsSh,
             plugin: None,
+            project_path: None,
         }];
         let result = outdated(
             &fs,
@@ -532,6 +569,60 @@ mod tests {
             &NoPlugins,
         );
         assert_eq!(result["write-tests"].currency, Currency::UpToDate);
+    }
+
+    /// Flow: a project-scope skills.sh skill absent from the *global*
+    /// `.skill-lock.json` (it has no row there - the CLI wrote its
+    /// provenance to `<project>/skills-lock.json` instead) but present in
+    /// that project lock.
+    /// Expectation: `Currency::Unknown` with a non-`None` `error` naming
+    /// `<project>/skills-lock.json` - not a bare `Unknown` with `error:
+    /// None`, which reads identically to "no lock entry anywhere" and hides
+    /// that this skill's currency is real but unchecked.
+    #[test]
+    fn project_scope_skills_sh_skill_names_the_project_lock_instead_of_a_bare_unknown() {
+        let project_lock = serde_json::json!({
+            "version": 1,
+            "skills": {
+                "write-tests": {
+                    "source": "obra/write-tests",
+                    "sourceType": "github",
+                    "computedHash": "some-hash",
+                }
+            }
+        });
+        let fs = FixtureBuilder::new()
+            .dir("/home/.agents")
+            .dir("/proj")
+            .file(
+                "/proj/skills-lock.json",
+                &serde_json::to_string(&project_lock).unwrap().into_bytes(),
+            )
+            .build_fs();
+        let targets = vec![OutdatedTarget {
+            name: "write-tests".to_string(),
+            source_kind: SourceKind::SkillsSh,
+            plugin: None,
+            project_path: Some(PathBuf::from("/proj")),
+        }];
+        let result = outdated(
+            &fs,
+            Path::new("/home"),
+            &targets,
+            &FakeTreeLookup::default(),
+            &NoCommits,
+            &NoPlugins,
+        );
+        let record = &result["write-tests"];
+        assert_eq!(record.currency, Currency::Unknown);
+        let error = record
+            .error
+            .as_deref()
+            .expect("must name the project lock, not a bare Unknown");
+        assert!(
+            error.contains("/proj/skills-lock.json"),
+            "error must name the project lock file: {error}"
+        );
     }
 
     /// Flow: a manual skill, with no owner record in any ledger.
@@ -545,6 +636,7 @@ mod tests {
             name: "hand-placed".to_string(),
             source_kind: SourceKind::Manual,
             plugin: None,
+            project_path: None,
         }];
         let result = outdated(
             &fs,
@@ -594,6 +686,7 @@ mod tests {
                 name: (*name).to_string(),
                 source_kind: SourceKind::SkillsSh,
                 plugin: None,
+                project_path: None,
             })
             .collect();
         outdated(
@@ -654,11 +747,13 @@ mod tests {
                 name: "a".to_string(),
                 source_kind: SourceKind::SkillsSh,
                 plugin: None,
+                project_path: None,
             },
             OutdatedTarget {
                 name: "b".to_string(),
                 source_kind: SourceKind::SkillsSh,
                 plugin: None,
+                project_path: None,
             },
         ];
         outdated(
@@ -702,6 +797,7 @@ mod tests {
                 "openai-templates".to_string(),
                 Some("1.0.0".to_string()),
             )),
+            project_path: None,
         }];
         let result = outdated(
             &fs,
@@ -735,6 +831,7 @@ mod tests {
             name: "write-tests".to_string(),
             source_kind: SourceKind::SkillsSh,
             plugin: None,
+            project_path: None,
         }];
         let result = outdated(
             &fs,
@@ -786,6 +883,7 @@ resolved_commit = "old-sha"
             name: "find-bugs".to_string(),
             source_kind: SourceKind::Dotagents,
             plugin: None,
+            project_path: None,
         }];
         let result = outdated(
             &fs,
@@ -832,6 +930,7 @@ resolved_commit = "old-sha"
             name: "write-tests".to_string(),
             source_kind: SourceKind::SkillsSh,
             plugin: None,
+            project_path: None,
         }];
         let result = outdated(
             &fs,
@@ -885,6 +984,7 @@ resolved_commit = "old-sha"
             name: "find-bugs".to_string(),
             source_kind: SourceKind::Dotagents,
             plugin: None,
+            project_path: None,
         }];
         let result = outdated(
             &fs,
@@ -946,6 +1046,7 @@ resolved_commit = "old-sha"
             name: "find-bugs".to_string(),
             source_kind: SourceKind::Fork,
             plugin: None,
+            project_path: None,
         }];
         let result = outdated(
             &fs,
@@ -975,6 +1076,7 @@ resolved_commit = "old-sha"
             name: "find-bugs".to_string(),
             source_kind: SourceKind::Fork,
             plugin: None,
+            project_path: None,
         }];
         let result = outdated(
             &fs,
@@ -1032,11 +1134,13 @@ resolved_commit = "old-sha"
                 name: "find-bugs".to_string(),
                 source_kind: SourceKind::Dotagents,
                 plugin: None,
+                project_path: None,
             },
             OutdatedTarget {
                 name: "forked-skill".to_string(),
                 source_kind: SourceKind::Fork,
                 plugin: None,
+                project_path: None,
             },
         ];
         let result = outdated(

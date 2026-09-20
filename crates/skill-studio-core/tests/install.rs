@@ -34,10 +34,10 @@ const UNIVERSAL_ROOT_RELATIVE: &str = ".agents/skills";
 /// `<cwd or home>/.agents/skills/<skill>` on the real filesystem, the same
 /// shape the real CLI leaves. Named by parsing the `--skill`/`--name` flag
 /// out of argv (per F3, neither builder puts the skill name last), and
-/// falls back to `home` for the process cwd, since `install_via_cli` only
-/// ever sets a cwd for a `Dotagents` project-scope install - skills.sh's own
-/// builder never sets the process cwd at all (`--global`/`--cwd` carry the
-/// target instead).
+/// falls back to `home` for the process cwd, since a global-scope install
+/// (either method) never sets one - a project scope sets the process cwd to
+/// the project directory itself for both `Dotagents` and `SkillsSh`; neither
+/// CLI has a `--project`/`--cwd` flag that carries the target instead.
 ///
 /// R3: when argv carries `--agent claude-code`, also creates
 /// `<cwd or home>/.claude/skills/<skill>` as a real symlink into the
@@ -689,6 +689,19 @@ fn skills_sh_project_install_runs_npx_in_the_project_dir_not_via_a_cwd_flag_or_n
         "the skill must not also land in the process's original cwd"
     );
 
+    // `cli_request` names `AgentId::CLAUDE_CODE`, so the CLI's own
+    // `--agent claude-code` link must land under the project too, not home -
+    // the same cwd the universal root above already proved.
+    let claude_link = project.join(".claude").join("skills").join("kappa");
+    assert!(
+        std::fs::symlink_metadata(&claude_link).is_ok(),
+        "the Claude Code link must be under the project: {claude_link:?}"
+    );
+    assert!(
+        !home.join(".claude").join("skills").join("kappa").exists(),
+        "the Claude Code link must not also land in the process's original cwd"
+    );
+
     std::fs::remove_dir_all(&home).ok();
 }
 
@@ -717,6 +730,107 @@ fn skills_sh_global_install_keeps_the_global_flag_and_no_process_cwd_or_names_th
     assert_eq!(
         cwd, &None,
         "a global-scope install must not set a process cwd"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `skills_sh_project_install_over_a_missing_project_path_names_it_before_spawning_npx_or_names_the_opaque_shell_error`:
+/// a project path that doesn't exist must fail before `npx` ever runs, with
+/// the path named in the error - otherwise the failure only ever surfaces
+/// as the shell's own opaque "npx: no such file or directory".
+#[test]
+fn skills_sh_project_install_over_a_missing_project_path_names_it_before_spawning_npx_or_names_the_opaque_shell_error(
+) {
+    let home = unique_temp_dir("install_skills_sh_missing_project");
+    std::fs::create_dir_all(&home).unwrap();
+    let missing_project = home.join("does-not-exist");
+    let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner.clone()));
+    let mut req = cli_request("nu", InstallMethod::SkillsSh);
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(
+        missing_project.clone(),
+    ));
+
+    let err = ops::install(&rt, &ctx(), &req).unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::InvalidRequest);
+    assert!(
+        err.message.contains(&missing_project.display().to_string()),
+        "the error must name the missing project path: {}",
+        err.message
+    );
+    assert_eq!(
+        spawner.recorded.lock().unwrap().len(),
+        0,
+        "npx must never be spawned over a missing project path"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `skills_sh_project_install_that_lands_at_the_home_fallback_names_it_instead_of_a_bare_missing_destination_error`:
+/// when the project-scope destination never appears but the CLI's
+/// home-fallback location (`<home>/.agents/skills/<name>`) newly does, the
+/// error must say the CLI installed there instead of just "did not create
+/// the expected destination" - the same shape the `--cwd`-flag bug this PR
+/// fixes would otherwise have produced silently.
+#[test]
+fn skills_sh_project_install_that_lands_at_the_home_fallback_names_it_instead_of_a_bare_missing_destination_error(
+) {
+    let home = unique_temp_dir("install_skills_sh_home_fallback");
+    std::fs::create_dir_all(&home).unwrap();
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+
+    /// A spawner that ignores the process cwd it's given and always writes
+    /// under `home` - stands in for a spawner (or a future CLI) that drops
+    /// `ProcessSpec::cwd` on the floor, the exact failure mode item 2(b)
+    /// guards against.
+    struct IgnoresCwdSpawner {
+        home: PathBuf,
+    }
+    impl ProcessSpawner for IgnoresCwdSpawner {
+        fn run(
+            &self,
+            spec: &ProcessSpec,
+            _cancel: &dyn CancelToken,
+        ) -> Result<ProcessOutput, skill_studio_core::CoreError> {
+            let skill = spec
+                .args
+                .iter()
+                .position(|a| a == "--skill")
+                .and_then(|i| spec.args.get(i + 1))
+                .unwrap()
+                .clone();
+            let dir = self.home.join(UNIVERSAL_ROOT_RELATIVE).join(&skill);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), "installed at the wrong place\n").unwrap();
+            Ok(ProcessOutput {
+                status: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+            })
+        }
+    }
+
+    let spawner = Arc::new(IgnoresCwdSpawner { home: home.clone() });
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner));
+    let mut req = cli_request("xi", InstallMethod::SkillsSh);
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+
+    let err = ops::install(&rt, &ctx(), &req).unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Io);
+    let fallback = home.join(UNIVERSAL_ROOT_RELATIVE).join("xi");
+    assert!(
+        err.message.contains(&fallback.display().to_string()),
+        "the error must name the home fallback the CLI actually wrote to: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("instead of the project"),
+        "the error must say this landed instead of the project: {}",
+        err.message
     );
 
     std::fs::remove_dir_all(&home).ok();
