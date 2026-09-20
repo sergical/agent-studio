@@ -82,8 +82,6 @@ import type {
   GithubSkillEntry,
   GithubSkillListing,
   InstallScope,
-  PerHarnessDestinationId,
-  SkillDestination,
 } from "@skill-studio/lib";
 
 const SHEET_TAB_CLASS =
@@ -119,7 +117,7 @@ const METHOD_LABELS = {
 const METHOD_TOOLTIPS = {
   dotagents: "Tracked in agents.toml. Installs to Universal and updates with dotagents.",
   "skills-sh": "Tracked in .skill-lock.json. Installs to Universal.",
-  copy: "Untracked. Supports Universal or independent Per harness copies.",
+  copy: "Untracked. Installs to Universal.",
   pack: "Imports every skill in this share pack to Universal.",
 } satisfies Record<SheetMethod, string>;
 
@@ -141,14 +139,16 @@ function parseSummary(parsed: ParsedSkillSource | { error: string }): string {
 interface FormState {
   sheetTab: "manual" | "browse";
   source: string;
+  /** The name a plain git URL installs under - it has no repo listing to
+   * infer one from, so the sheet asks for it directly (see `derive_name`
+   * in skill_install.rs). Unused for every other source kind. */
+  gitSkillName: string;
   methodChoice: SheetMethod;
   /** The installed readers of the Universal folder left switched on. `null`
    * until `getAddMethodDefaults` answers, which is what seeds it. */
   enabledReaders: AgentId[] | null;
   /** Whether Claude Code gets a link to the Universal deployment. */
   claudeLink: boolean;
-  destination: SkillDestination;
-  perHarnesses: PerHarnessDestinationId[];
   scope: InstallScope;
   projectPath: string | null;
   isSubmitting: boolean;
@@ -159,11 +159,10 @@ function initialFormState(): FormState {
   return {
     sheetTab: "manual",
     source: "",
+    gitSkillName: "",
     methodChoice: "dotagents",
     enabledReaders: null,
     claudeLink: true,
-    destination: "universal",
-    perHarnesses: [],
     scope: "global",
     projectPath: null,
     isSubmitting: false,
@@ -175,12 +174,11 @@ type FormAction =
   | { type: "reset"; prefill: string; projectPath: string | null }
   | { type: "set_tab"; tab: FormState["sheetTab"] }
   | { type: "set_source"; source: string }
+  | { type: "set_git_skill_name"; name: string }
   | { type: "set_method"; method: SheetMethod }
   | { type: "set_readers"; readers: AgentId[] }
   | { type: "set_reader_enabled"; agent: AgentId; enabled: boolean }
   | { type: "set_claude_link"; claudeLink: boolean }
-  | { type: "set_destination"; destination: SkillDestination }
-  | { type: "set_per_harness"; harness: PerHarnessDestinationId; enabled: boolean }
   | { type: "set_scope"; scope: InstallScope }
   | { type: "set_project_path"; path: string | null }
   | { type: "submit_start" }
@@ -199,6 +197,8 @@ function formReducer(state: FormState, action: FormAction): FormState {
       return { ...state, sheetTab: action.tab };
     case "set_source":
       return { ...state, source: action.source };
+    case "set_git_skill_name":
+      return { ...state, gitSkillName: action.name };
     case "set_method":
       return { ...state, methodChoice: action.method };
     case "set_readers":
@@ -212,15 +212,6 @@ function formReducer(state: FormState, action: FormAction): FormState {
       };
     case "set_claude_link":
       return { ...state, claudeLink: action.claudeLink };
-    case "set_destination":
-      return { ...state, destination: action.destination };
-    case "set_per_harness":
-      return {
-        ...state,
-        perHarnesses: action.enabled
-          ? [...state.perHarnesses, action.harness]
-          : state.perHarnesses.filter((id) => id !== action.harness),
-      };
     case "set_scope":
       return { ...state, scope: action.scope };
     case "set_project_path":
@@ -268,6 +259,37 @@ function SourceField({
       <p className={`m-0 text-small ${showError ? "text-error" : "text-text-tertiary"}`}>
         {source.trim() ? parseSummary(parsed) : "Paste a repo, URL, or path to get started."}
       </p>
+    </div>
+  );
+}
+
+/** A plain git URL has no repo listing to name itself from - `derive_name`
+ * (skill_install.rs) refuses to install one without an explicit name, so
+ * the sheet asks for it here instead of failing at submit. */
+function GitSkillNameField({
+  name,
+  onChange,
+}: {
+  name: string;
+  onChange: (value: string) => void;
+}) {
+  const [touched, setTouched] = useState(false);
+  const showError = touched && name.trim().length === 0;
+  return (
+    <div className="flex flex-col gap-2">
+      <label htmlFor="add-skill-git-name" className={SECTION_LABEL_CLASS}>
+        Skill name
+      </label>
+      <Input
+        id="add-skill-git-name"
+        type="text"
+        className="h-(--control-height) rounded-sm border-border bg-bg-primary text-body text-text-primary focus-visible:border-border-focus focus-visible:ring-0"
+        value={name}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={() => setTouched(true)}
+        placeholder="The folder name this skill installs under"
+      />
+      {showError && <p className="m-0 text-small text-error">A git source needs a skill name.</p>}
     </div>
   );
 }
@@ -650,7 +672,6 @@ function useAddSkillSubmit(input: {
   parsed: ParsedSkillSource | { error: string };
   method: SheetMethod;
   noMethodsAvailable: boolean;
-  destination: SkillDestination;
   agents: AgentId[];
   disabledHarnesses: AgentId[];
   scope: InstallScope;
@@ -665,7 +686,6 @@ function useAddSkillSubmit(input: {
     parsed,
     method,
     noMethodsAvailable,
-    destination,
     agents,
     disabledHarnesses,
     scope,
@@ -688,7 +708,7 @@ function useAddSkillSubmit(input: {
   const isValid = isAddSkillFormValid({
     parsed,
     noMethodsAvailable,
-    destination,
+    destination: "universal",
     agents,
     scope,
     projectPath,
@@ -816,7 +836,7 @@ function useAddSkillSubmit(input: {
           source: toWireParsedSkillSource(parsed),
           skills: githubEntries,
           method,
-          destination,
+          destination: "universal",
           agents,
           disabled_harnesses: disabledHarnesses,
           scope,
@@ -826,7 +846,7 @@ function useAddSkillSubmit(input: {
         queued = await startAddSkillOperation(operationId, {
           source: toWireParsedSkillSource(parsed),
           method,
-          destination,
+          destination: "universal",
           agents,
           disabled_harnesses: disabledHarnesses,
           scope,
@@ -951,7 +971,6 @@ function useAddSkillSubmit(input: {
 /** The "Add by source" tab's form fields, everything below the Method picker. */
 function ManualTabFields({
   method,
-  destination,
   scope,
   projectPath,
   userAddedProjects,
@@ -960,16 +979,12 @@ function ManualTabFields({
   onBrowseProject,
   installedReaders,
   enabledReaders,
-  perHarnesses,
   onReaderEnabledChange,
   claudeReadsShared,
   claudeLink,
   onClaudeLinkChange,
-  onDestinationChange,
-  onHarnessChange,
 }: {
   method: SheetMethod;
-  destination: SkillDestination;
   scope: InstallScope;
   projectPath: string | null;
   userAddedProjects: string[];
@@ -978,13 +993,10 @@ function ManualTabFields({
   onBrowseProject: () => void;
   installedReaders: AgentId[];
   enabledReaders: AgentId[];
-  perHarnesses: PerHarnessDestinationId[];
   onReaderEnabledChange: (agent: AgentId, enabled: boolean) => void;
   claudeReadsShared: boolean;
   claudeLink: boolean;
   onClaudeLinkChange: (on: boolean) => void;
-  onDestinationChange: (destination: SkillDestination) => void;
-  onHarnessChange: (harness: PerHarnessDestinationId, enabled: boolean) => void;
 }) {
   return (
     <>
@@ -1006,32 +1018,17 @@ function ManualTabFields({
         />
       )}
 
-      <SkillDestinationSelector
-        destination={destination}
-        harnesses={destination === "universal" ? [] : perHarnesses}
-        scope={method === "pack" ? "global" : scope}
-        onDestinationChange={onDestinationChange}
-        onHarnessChange={onHarnessChange}
-        perHarnessDisabledReason={
-          method === "copy"
-            ? undefined
-            : method === "pack"
-              ? "Pack imports deploy to Universal."
-              : `${METHOD_LABELS[method]} installs to Universal. Choose Copy for Per harness.`
-        }
-      />
+      <SkillDestinationSelector scope={method === "pack" ? "global" : scope} />
 
-      {destination === "universal" && (
-        <UniversalVisibilitySelector
-          readers={installedReaders}
-          enabledReaders={enabledReaders}
-          onReaderEnabledChange={onReaderEnabledChange}
-          claudeReadsShared={claudeReadsShared}
-          claudeLink={claudeLink}
-          onClaudeLinkChange={onClaudeLinkChange}
-          scope={method === "pack" ? "global" : scope}
-        />
-      )}
+      <UniversalVisibilitySelector
+        readers={installedReaders}
+        enabledReaders={enabledReaders}
+        onReaderEnabledChange={onReaderEnabledChange}
+        claudeReadsShared={claudeReadsShared}
+        claudeLink={claudeLink}
+        onClaudeLinkChange={onClaudeLinkChange}
+        scope={method === "pack" ? "global" : scope}
+      />
 
       {submitError && (
         <p className="m-0 rounded-md bg-error-soft p-2.5 text-small text-error" role="alert">
@@ -1152,19 +1149,13 @@ function ManualTabFooter({
  * out of `AddSkillSheet` so its body doesn't also carry this branch chain. */
 function deriveMethodAndVisibility(
   source: string,
-  destination: SkillDestination,
   methodChoice: SheetMethod,
   pickedReaders: AgentId[] | null,
   claudeLink: boolean,
-  perHarnesses: PerHarnessDestinationId[],
   defaults: AddMethodDefaults | null,
 ) {
   const parsed = parseSkillSource(source);
-  const sourceMethods = availableAddSkillMethods(parsed, defaults);
-  const methods =
-    destination === "per-harness"
-      ? sourceMethods.filter((candidate) => candidate === "copy")
-      : sourceMethods;
+  const methods = availableAddSkillMethods(parsed, defaults);
   const noMethodsAvailable = !("error" in parsed) && methods.length === 0;
 
   // Keep the selected method valid as the source changes - e.g. switching
@@ -1193,15 +1184,15 @@ function deriveMethodAndVisibility(
       ? installedReaders
       : installedReaders.filter((id) => pickedReaderSet.has(id));
   const agents = normalizeInstallHarnesses(
-    destination,
-    destination === "universal"
-      ? universalInstallHarnesses(enabledReaders, claudeLink)
-      : perHarnesses,
+    "universal",
+    universalInstallHarnesses(enabledReaders, claudeLink),
   );
-  const disabledHarnesses =
-    destination === "universal"
-      ? universalDisabledHarnesses(installedReaders, enabledReaders, claudeReadsShared, claudeLink)
-      : [];
+  const disabledHarnesses = universalDisabledHarnesses(
+    installedReaders,
+    enabledReaders,
+    claudeReadsShared,
+    claudeLink,
+  );
 
   return {
     parsed,
@@ -1270,11 +1261,10 @@ export function AddSkillSheet() {
   const {
     sheetTab,
     source,
+    gitSkillName,
     methodChoice,
     enabledReaders: pickedReaders,
     claudeLink,
-    destination,
-    perHarnesses,
     scope,
     projectPath,
     isSubmitting,
@@ -1332,18 +1322,19 @@ export function AddSkillSheet() {
     enabledReaders,
     agents,
     disabledHarnesses,
-  } = deriveMethodAndVisibility(
-    source,
-    destination,
-    methodChoice,
-    pickedReaders,
-    claudeLink,
-    perHarnesses,
-    defaults,
-  );
+  } = deriveMethodAndVisibility(source, methodChoice, pickedReaders, claudeLink, defaults);
+
+  // A plain git URL has no repo listing to name itself from - fold the
+  // sheet's own Skill name field into `parsed` here, once, so every
+  // downstream user (the listing hook, the submit request) sees it the same
+  // way it would if `parseSkillSource` had produced it.
+  const submitParsed =
+    !("error" in parsed) && parsed.kind === "git"
+      ? { ...parsed, skillName: gitSkillName.trim() || undefined }
+      : parsed;
 
   const { listingState, githubEntries, selectedPaths, setSelectedPaths, listingBlocks } =
-    useAddSkillGithubSelection(parsed, method);
+    useAddSkillGithubSelection(submitParsed, method);
 
   const {
     isValid,
@@ -1354,10 +1345,9 @@ export function AddSkillSheet() {
     packTrust,
     trustBusy,
   } = useAddSkillSubmit({
-    parsed,
+    parsed: submitParsed,
     method,
     noMethodsAvailable,
-    destination,
     agents,
     disabledHarnesses,
     scope,
@@ -1443,6 +1433,13 @@ export function AddSkillSheet() {
               inputRef={sourceInputRef}
             />
 
+            {!("error" in parsed) && parsed.kind === "git" && (
+              <GitSkillNameField
+                name={gitSkillName}
+                onChange={(value) => dispatch({ type: "set_git_skill_name", name: value })}
+              />
+            )}
+
             <GithubSkillPicker
               state={listingState}
               selectedPaths={selectedPaths}
@@ -1459,7 +1456,6 @@ export function AddSkillSheet() {
 
             <ManualTabFields
               method={method}
-              destination={destination}
               scope={scope}
               projectPath={projectPath}
               userAddedProjects={userAddedProjects}
@@ -1475,19 +1471,12 @@ export function AddSkillSheet() {
               onBrowseProject={handleBrowseProject}
               installedReaders={installedReaders}
               enabledReaders={enabledReaders}
-              perHarnesses={perHarnesses}
               onReaderEnabledChange={(agent, enabled) =>
                 dispatch({ type: "set_reader_enabled", agent, enabled })
               }
               claudeReadsShared={claudeReadsShared}
               claudeLink={claudeLink}
               onClaudeLinkChange={(on) => dispatch({ type: "set_claude_link", claudeLink: on })}
-              onDestinationChange={(next) =>
-                dispatch({ type: "set_destination", destination: next })
-              }
-              onHarnessChange={(harness, enabled) =>
-                dispatch({ type: "set_per_harness", harness, enabled })
-              }
             />
           </TabsContent>
         </Tabs>
