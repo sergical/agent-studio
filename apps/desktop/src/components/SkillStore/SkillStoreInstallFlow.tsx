@@ -41,13 +41,8 @@ import type {
   AddSkillOperationEvent,
   AgentId,
   InstallScope,
-  SkillDestination,
   SkillWithStatus,
 } from "@skill-studio/lib";
-
-const PER_HARNESS_DISABLED_REASON =
-  "skills.sh installs to Universal. Use Add by source with Copy for Per harness.";
-const ignoreHarnessChange = () => {};
 
 interface SkillStoreInstallFlowProps {
   skill: SkillWithStatus;
@@ -69,7 +64,6 @@ export function SkillStoreInstallFlow({
   const [enabledReaders, setEnabledReaders] = useState<AgentId[]>([]);
   const [claudeReadsUniversal, setClaudeReadsUniversal] = useState(true);
   const [claudeLink, setClaudeLink] = useState(true);
-  const [destination, setDestination] = useState<SkillDestination>("universal");
   const [installScope, setInstallScope] = useState<InstallScope>("global");
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [isInstalling, setIsInstalling] = useState(false);
@@ -223,7 +217,7 @@ export function SkillStoreInstallFlow({
           }),
           method: "skills-sh",
           scope: installScope,
-          destination,
+          destination: "universal",
           agents: universalInstallHarnesses(enabledReaders, claudeLink),
           disabled_harnesses: universalDisabledHarnesses(
             readers,
@@ -277,15 +271,7 @@ export function SkillStoreInstallFlow({
         </h4>
         <ScopeToggleGroup scope={installScope} onScopeChange={handleInstallScopeChange} />
         <div className="mt-3">
-          <SkillDestinationSelector
-            destination={destination}
-            harnesses={[]}
-            scope={installScope}
-            onDestinationChange={setDestination}
-            onHarnessChange={ignoreHarnessChange}
-            disabled={isInstalling}
-            perHarnessDisabledReason={PER_HARNESS_DISABLED_REASON}
-          />
+          <SkillDestinationSelector scope={installScope} />
         </div>
 
         {installScope === "project" && (

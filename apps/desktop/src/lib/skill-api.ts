@@ -52,7 +52,12 @@ let ipcCallSeq = 0;
 /** Every wrapper below routes through this instead of calling `invoke` directly, so every IPC
  * round trip gets one "ipc:<command>" `performance` measure - the overlay's source, and visible in
  * devtools' Performance panel too. The mark name carries a counter so concurrent calls to the same
- * command don't clobber each other's mark. */
+ * command don't clobber each other's mark.
+ *
+ * Tauri rejects a failed command with the Rust `Result::Err` string directly, not an `Error` - a
+ * catch site's `err instanceof Error ? err.message : "Unknown error"` would discard it. Wrapping
+ * a non-`Error` rejection here, once, means every existing catch site across the app shows the
+ * real backend text without a per-site edit. */
 function callCommand<T>(command: string, args?: InvokeArgs): Promise<T> {
   const startMark = `ipc:${command}:${ipcCallSeq++}`;
   performance.mark(startMark);
@@ -69,14 +74,14 @@ function callCommand<T>(command: string, args?: InvokeArgs): Promise<T> {
     },
     (cause: unknown) => {
       finish(false);
-      throw cause;
+      throw cause instanceof Error ? cause : new Error(String(cause));
     },
   );
 }
 
-/** Tauri rejects a failed command with the Rust `Result::Err` string directly, not an `Error` -
- * `err instanceof Error ? err.message : "Unknown error"` would discard it, so every catch block
- * that surfaces an invoke failure as a toast goes through this instead. */
+/** Kept for call sites that already branch on `cause` themselves; `callCommand` now normalizes
+ * every rejection to an `Error` before it reaches a catch block, so this is equivalent to reading
+ * `cause.message` directly there. */
 export function invokeErrorMessage(cause: unknown): string {
   if (cause instanceof Error) return cause.message;
   if (cause == null) return "Unknown error";
