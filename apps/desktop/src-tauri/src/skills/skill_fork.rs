@@ -15,7 +15,6 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -213,21 +212,55 @@ fn skills_sh_unfork_add_args(
     skills_sh_universal_add_args(&rec.origin_source, Some(name), &spec)
 }
 
+/// Timeout for the un-fork `npx` remove/reinstall, matching
+/// `ops_install_cli`/`ops_update`/`ops_remove`'s own `npx` deadline in
+/// `skill-studio-core` so this desktop-only spawn isn't a special case.
+const NPX_TIMEOUT_MS: u64 = 120_000;
+
 fn run_npx(args: &[String], cwd: Option<&Path>) -> Result<(), String> {
-    let mut command = Command::new("npx");
-    command.args(args);
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
+    // Un-fork runs outside `core_runtime`'s `Runtime`/`Ports`, so it needs
+    // its own login-shell `PATH` probe: launched from Finder, this process
+    // only has `launchd`'s minimal `PATH`, which has neither `npx` nor the
+    // `node` its shebang needs (see `core_runtime::build_runtime_write_at`).
+    let search_dirs = skill_studio_host::LoginShellToolLookup::new()
+        .dirs()
+        .to_vec();
+    let spawner = skill_studio_host::RealProcessSpawner::with_search_path(search_dirs);
+    run_npx_with_spawner(&spawner, args, cwd)
+}
+
+/// [`run_npx`], but taking `spawner` directly - a testable seam so a test
+/// can give it a `RealProcessSpawner::with_search_path` over a fake `npx`
+/// script instead of paying for a real login-shell spawn or mutating the
+/// process's own `PATH`.
+fn run_npx_with_spawner(
+    spawner: &dyn skill_studio_core::ports::ProcessSpawner,
+    args: &[String],
+    cwd: Option<&Path>,
+) -> Result<(), String> {
+    use skill_studio_core::ports::{NeverCancel, ProcessSpec};
+
+    let spec = ProcessSpec {
+        program: "npx".to_string(),
+        args: args.to_vec(),
+        cwd: cwd.map(Path::to_path_buf),
+        env: Vec::new(),
+        timeout_ms: NPX_TIMEOUT_MS,
+    };
+    let output = spawner
+        .run(&spec, &NeverCancel)
+        .map_err(|e| format!("Failed to execute npx: {}", e.message))?;
+    if output.timed_out {
+        return Err("npx timed out".to_string());
     }
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to execute npx: {e}"))?;
-    if output.status.success() {
+    if output.status == Some(0) {
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        Err(if stderr.is_empty() { stdout } else { stderr })
+        Err(if output.stderr.is_empty() {
+            output.stdout
+        } else {
+            output.stderr
+        })
     }
 }
 
@@ -1614,6 +1647,7 @@ fn resolve_recorded_fork_target(
 mod tests {
     use super::super::skill_fork_registry::write_fork_registry;
     use super::*;
+    use std::process::Command;
     use std::sync::Mutex;
 
     fn test_guard(home: &Path) -> super::super::write_lease::WriteLeaseGuard {
@@ -3292,6 +3326,10 @@ mod tests {
     /// `cwd`, not just log it - a fake `npx` script records its own working
     /// directory (via `pwd`) so this asserts the real
     /// `Command::current_dir` call, not the argv this function builds.
+    /// Goes through `run_npx_with_spawner`, over a `RealProcessSpawner`
+    /// scoped to the fake `npx`'s own dir: `run_npx` itself now resolves
+    /// `npx` off a real login-shell probe, which a fake on this process's
+    /// `PATH` can no longer intercept.
     #[test]
     fn run_npx_with_a_cwd_runs_the_process_there_or_names_the_ignored_cwd() {
         let bin_dir = tempfile::tempdir().expect("fake bin dir");
@@ -3310,8 +3348,13 @@ mod tests {
         }
 
         let target_dir = tempfile::tempdir().expect("target cwd");
-        let _path_guard = super::super::test_support::PathGuard::new(bin_dir.path());
-        let result = run_npx(&["--version".to_string()], Some(target_dir.path()));
+        let spawner =
+            skill_studio_host::RealProcessSpawner::with_search_path(vec![bin_dir.path().into()]);
+        let result = run_npx_with_spawner(
+            &spawner,
+            &["--version".to_string()],
+            Some(target_dir.path()),
+        );
 
         assert!(result.is_ok(), "{result:?}");
         let recorded_cwd = std::fs::read_to_string(&recording)

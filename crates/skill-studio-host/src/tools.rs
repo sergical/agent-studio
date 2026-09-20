@@ -44,8 +44,9 @@ impl Default for PathToolLookup {
 }
 
 /// True when `path` names a regular file with an executable bit set for the
-/// owner, group, or others.
-fn is_executable_file(path: &Path) -> bool {
+/// owner, group, or others. `pub(crate)` so `harness_detect.rs` can use the
+/// same check to resolve a bare program name against its own search dirs.
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;
     };
@@ -238,6 +239,15 @@ impl LoginShellToolLookup {
 
     fn search_dirs(&self) -> &[PathBuf] {
         self.search_dirs.get_or_init(|| (self.probe)())
+    }
+
+    /// The probed login-shell `PATH` directories, running the probe on first
+    /// call and reusing the cached result after. `pub` so a caller that also
+    /// needs to spawn a child (`RealProcessSpawner::with_search_path`) can
+    /// give that spawner the same directories this lookup resolved `npx`
+    /// against, instead of probing the login shell a second time.
+    pub fn dirs(&self) -> &[PathBuf] {
+        self.search_dirs()
     }
 }
 
