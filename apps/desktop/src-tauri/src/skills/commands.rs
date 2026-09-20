@@ -1063,7 +1063,15 @@ mod tests {
         let data_root = tmp.path().join("data");
         std::fs::create_dir_all(&home).unwrap();
 
-        let rt = super::super::core_runtime::build_runtime_write_at(&home, &data_root).unwrap();
+        // The process's own PATH, not a real login-shell probe: this
+        // fixture never spawns `npx`, so it shouldn't pay for (or risk
+        // hanging on, once per skill below) a real `$SHELL -lic` spawn.
+        let rt = super::super::core_runtime::build_runtime_write_at_with_search_dirs(
+            &home,
+            &data_root,
+            super::super::core_runtime::process_path_search_dirs(),
+        )
+        .unwrap();
         let ctx = OpContext::uncancellable(skill_studio_core::identity::CorrelationId(
             ulid::Ulid::new().to_string(),
         ));
@@ -1104,9 +1112,10 @@ mod tests {
             requests,
             move || {
                 *record_build_thread.lock().unwrap() = Some(std::thread::current().id());
-                super::super::core_runtime::build_runtime_write_at(
+                super::super::core_runtime::build_runtime_write_at_with_search_dirs(
                     &home_for_closure,
                     &data_root_for_closure,
+                    super::super::core_runtime::process_path_search_dirs(),
                 )
             },
             move |_, _| {

@@ -72,6 +72,39 @@ pub fn build_runtime_write() -> Result<Runtime, String> {
 /// parity check with the desktop adapter's own runtime constructor instead
 /// of a hand-mirrored copy of it.
 pub fn build_runtime_write_at(home: &Path, data_root: &Path) -> Result<Runtime, String> {
+    // `LoginShellToolLookup::new()` reads a process-wide cache (see its own
+    // doc comment): the real `$SHELL -lic` probe still runs at most once no
+    // matter how many `Runtime`s this process builds (park, unpark, update -
+    // once per skill in Update All -, remove, doctor, fix, undo, twice at
+    // startup), not once per call here.
+    let search_dirs = skill_studio_host::LoginShellToolLookup::new()
+        .dirs()
+        .to_vec();
+    build_runtime_write_at_with_search_dirs(home, data_root, search_dirs)
+}
+
+/// This process's own `PATH`, split into directories. `pub` so test call
+/// sites (`tests/park_parity.rs`, `tests/fix_parity.rs`,
+/// `tests/undo_activity_history.rs`, and unit tests in `skill_fix.rs`,
+/// `skill_doctor.rs`, `commands.rs`, `skill_refresh.rs`) can pass
+/// [`build_runtime_write_at_with_search_dirs`] a fixed, no-shell-spawn
+/// answer instead of `build_runtime_write_at`'s real login-shell probe: the
+/// process's own `PATH` is a smaller, honest stand-in, since it already came
+/// from *some* shell (whichever launched `cargo test`).
+pub fn process_path_search_dirs() -> Vec<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).collect()
+}
+
+/// [`build_runtime_write_at`], with `search_dirs` given directly instead of
+/// resolved from the login-shell probe. `pub` so tests can pass
+/// [`process_path_search_dirs`] - or a fixed fixture list - instead of
+/// spawning the developer's real login shell just to build a `Runtime`.
+pub fn build_runtime_write_at_with_search_dirs(
+    home: &Path,
+    data_root: &Path,
+    search_dirs: Vec<PathBuf>,
+) -> Result<Runtime, String> {
     let history_root = data_root.join("history");
     let codex_home = skill_studio_host::codex_home(home);
     let mut scope =
@@ -82,27 +115,32 @@ pub fn build_runtime_write_at(home: &Path, data_root: &Path) -> Result<Runtime, 
     let db_path = history_db_path(data_root);
     let mut ports = skill_studio_host::default_ports_with_history(lease_root, catalog, db_path);
     ports.discovery = Some(Arc::new(skill_studio_host::HostProjectDiscovery::new()));
-    ports.tools = Some(Arc::new(skill_studio_host::PathToolLookup::new()));
-    // `ops::install`'s `Dotagents`/`SkillsSh` methods shell out through this
-    // port (`ops_install_cli::install_via_cli`), and `ops::install_preferences`
-    // checks it to detect `npx` on `PATH` - neither worked from the desktop
-    // until this was added here, alongside `build_runtime_detect`'s own copy.
-    ports.spawner = Some(Arc::new(skill_studio_host::RealProcessSpawner::new()));
+    // A packaged `.app` launched from Finder gets `launchd`'s minimal `PATH`
+    // (`/usr/bin:/bin:/usr/sbin:/sbin`), which has neither `npx` nor the
+    // `node` its `#!/usr/bin/env node` shebang needs. Both ends of that
+    // problem share one set of search dirs: `ports.tools` resolves `npx` for
+    // `ops::install_preferences`'s detection and `ops_install_cli`'s method
+    // pick, and `ports.spawner` gets the same directories so the `npx`
+    // process it actually spawns (`ops::install`/`update`/`remove`'s
+    // `Dotagents`/`SkillsSh` methods) can find itself and `node` too.
+    ports.tools = Some(Arc::new(
+        skill_studio_host::PathToolLookup::with_search_dirs(search_dirs.clone()),
+    ));
+    ports.spawner = Some(Arc::new(
+        skill_studio_host::RealProcessSpawner::with_search_path(search_dirs),
+    ));
     Runtime::new(&scope, ports).map_err(|err| err.message)
 }
 
-/// Builds a `Runtime` for `ops::harnesses`: the only op that resolves
-/// executables and spawns `--version` probes, so it is also the only one
-/// that needs the login-shell `PATH` (`LoginShellToolLookup`) instead of the
-/// process's own, minimal `launchd` `PATH` (`PathToolLookup`, used by
-/// `build_runtime_write` for every other command). Read-only: no lease root
-/// or history store beyond what `Runtime::new` needs to normalize the scope.
+/// Builds a `Runtime` for `ops::harnesses`: the op that resolves executables
+/// and spawns `--version` probes. Identical to `build_runtime_write` today -
+/// every write also needs the login-shell `PATH` to spawn `npx` from a
+/// packaged app - kept as its own function because callers name their
+/// intent (`build_runtime_detect` vs `build_runtime_write`) and a future
+/// read/write split may need to diverge again.
 pub fn build_runtime_detect() -> Result<Runtime, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let mut rt = build_runtime_write_at(&home, &data_root())?;
-    rt.ports.tools = Some(Arc::new(skill_studio_host::LoginShellToolLookup::new()));
-    rt.ports.spawner = Some(Arc::new(skill_studio_host::RealProcessSpawner::new()));
-    Ok(rt)
+    build_runtime_write_at(&home, &data_root())
 }
 
 /// Unwraps a `ResultEnvelope` into the plain `Result<T, String>` every

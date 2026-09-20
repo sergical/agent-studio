@@ -42,7 +42,9 @@ use skill_studio_core::ops::{self, Operation};
 use skill_studio_core::testing::golden::ctx;
 use skill_studio_core::OpStatus;
 
-use skill_studio_lib::skills::core_runtime::build_runtime_write_at;
+use skill_studio_lib::skills::core_runtime::{
+    build_runtime_write_at_with_search_dirs, process_path_search_dirs,
+};
 use skill_studio_lib::skills::skill_park::park_with_runtime;
 
 mod cli_binary;
@@ -80,7 +82,15 @@ fn parkable_home(home: &Path) {
 /// identical content - get three different ids; each home's id is computed
 /// from that same home, not shared across them.
 fn universal_deployment_id(home: &Path) -> DeploymentId {
-    let rt = build_runtime_write_at(home, &home.join(".skill-studio")).expect("runtime");
+    // The process's own PATH, not a real login-shell probe: park/unpark
+    // parity never spawns `npx`, so it doesn't need to pay for (or risk
+    // hanging on) a real `$SHELL -lic` spawn.
+    let rt = build_runtime_write_at_with_search_dirs(
+        home,
+        &home.join(".skill-studio"),
+        process_path_search_dirs(),
+    )
+    .expect("runtime");
     let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
     let skill = inventory
         .skills

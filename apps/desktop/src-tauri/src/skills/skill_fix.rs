@@ -80,7 +80,9 @@ mod tests {
     use skill_studio_core::testing::golden::ctx;
 
     use super::*;
-    use crate::skills::core_runtime::build_runtime_write_at;
+    use crate::skills::core_runtime::{
+        build_runtime_write_at_with_search_dirs, process_path_search_dirs,
+    };
 
     /// Row F1 (unit 3.7b review round 1): a skill whose only issue is
     /// invalid YAML frontmatter is the one issue `ops::fix_skill` actually
@@ -103,8 +105,15 @@ mod tests {
         )
         .expect("write SKILL.md");
 
-        let rt = build_runtime_write_at(home.path(), &home.path().join(".skill-studio"))
-            .expect("desktop runtime");
+        // The process's own PATH, not a real login-shell probe: this test
+        // never needs `npx`, so it doesn't need to pay for (or risk hanging
+        // on) a real `$SHELL -lic` spawn.
+        let rt = build_runtime_write_at_with_search_dirs(
+            home.path(),
+            &home.path().join(".skill-studio"),
+            process_path_search_dirs(),
+        )
+        .expect("desktop runtime");
         let outcome = ops::fix_skill(
             &rt,
             &ctx(),

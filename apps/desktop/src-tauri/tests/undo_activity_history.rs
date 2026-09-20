@@ -43,7 +43,8 @@ use skill_studio_host::{FileLease, RealFs, SqliteHistoryOpener};
 
 use skill_studio_lib::open_event_store_at;
 use skill_studio_lib::skills::core_runtime::{
-    build_runtime_write_at, history_db_path, to_command_result,
+    build_runtime_write_at_with_search_dirs, history_db_path, process_path_search_dirs,
+    to_command_result,
 };
 use skill_studio_lib::skills::event_commands::{dto_from_row, restore_event_with_runtime};
 use skill_studio_lib::skills::event_store::{
@@ -317,8 +318,10 @@ fn park_unpark_harness_toggle_and_install_each_appear_in_history_and_park_undo_r
     std::fs::create_dir_all(&home).unwrap();
     let data_root = data_root_for(&home);
 
-    // install (Copy - no external CLI needed).
-    let rt = build_runtime_write_at(&home, &data_root).unwrap();
+    // install (Copy - no external CLI needed). The process's own PATH, not
+    // a real login-shell probe: this test never spawns `npx`.
+    let rt = build_runtime_write_at_with_search_dirs(&home, &data_root, process_path_search_dirs())
+        .unwrap();
     let install_outcome = ops::install(
         &rt,
         &ctx(),
@@ -757,7 +760,10 @@ fn a_core_written_frontmatter_repair_via_fix_skill_undoes_through_the_core() {
     let skill_md = home.join(".claude/skills").join(skill).join("SKILL.md");
     let original = std::fs::read(&skill_md).unwrap();
 
-    let rt = build_runtime_write_at(&home, &data_root).unwrap();
+    // The process's own PATH, not a real login-shell probe: this test never
+    // spawns `npx`.
+    let rt = build_runtime_write_at_with_search_dirs(&home, &data_root, process_path_search_dirs())
+        .unwrap();
     let outcome = ops::fix_skill(
         &rt,
         &ctx(),

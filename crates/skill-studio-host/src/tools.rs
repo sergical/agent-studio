@@ -44,8 +44,9 @@ impl Default for PathToolLookup {
 }
 
 /// True when `path` names a regular file with an executable bit set for the
-/// owner, group, or others.
-fn is_executable_file(path: &Path) -> bool {
+/// owner, group, or others. `pub(crate)` so `harness_detect.rs` can use the
+/// same check to resolve a bare program name against its own search dirs.
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;
     };
@@ -203,27 +204,48 @@ fn nvm_node_bin_dirs(nvm_node_versions: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The one real login-shell `PATH` probe result for this process's whole
+/// lifetime. `core_runtime::build_runtime_write_at` builds a fresh `Runtime`
+/// (and so a fresh `LoginShellToolLookup`) per command - park, unpark,
+/// update (once per skill in Update All), remove, doctor, fix, undo, and
+/// twice at startup - and `skill_fork::run_npx` probes again for the
+/// un-fork flow; without this cache each of those would spawn its own
+/// `$SHELL -lic` (100-800ms, up to `SHELL_PROBE_TIMEOUT`). Scoped to the
+/// *production* probe only: [`LoginShellToolLookup::with_probe`] (tests,
+/// and any future fake) never reads or writes this `static`, so a test
+/// supplying its own probe can neither leak into nor be starved by another
+/// test's real one.
+static LOGIN_SHELL_PATH: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
+fn cached_login_shell_path() -> Vec<PathBuf> {
+    LOGIN_SHELL_PATH
+        .get_or_init(|| read_login_shell_path(&default_fallback_dirs()))
+        .clone()
+}
+
 /// `ToolLookup` that resolves against the user's login-shell `PATH`
 /// instead of the process's own (minimal, under `launchd`) `PATH`. Intended
 /// for the desktop app; the CLI and MCP server keep using
 /// [`PathToolLookup`], whose process `PATH` already comes from a shell.
 ///
-/// Caches the probed `PATH` in a per-instance `OnceLock` rather than a
-/// process-wide `static`: the shell still spawns at most once per launch,
-/// because `core_runtime::build_runtime_detect` builds exactly one
-/// `LoginShellToolLookup` and every harness resolves against that same
-/// instance (`harness-detection.md`: "one shell spawn per app start,
-/// cached") - but a `static` cache also leaked across tests that construct
-/// their own instance, and made the probe itself impossible to fake.
+/// [`LoginShellToolLookup::new`] reads [`LOGIN_SHELL_PATH`], a process-wide
+/// cache: the shell spawns at most once per launch no matter how many
+/// `Runtime`s (and so `LoginShellToolLookup` instances) the app builds
+/// (`harness-detection.md`: "one shell spawn per app start, cached").
+/// [`LoginShellToolLookup::with_probe`] bypasses that cache entirely, so a
+/// test that constructs its own fake probe can neither leak into another
+/// test's real probe nor be forced to spawn a real shell.
 pub struct LoginShellToolLookup {
     search_dirs: OnceLock<Vec<PathBuf>>,
     probe: Box<dyn Fn() -> Vec<PathBuf> + Send + Sync>,
 }
 
 impl LoginShellToolLookup {
-    /// Builds a lookup that probes the real login shell on first use.
+    /// Builds a lookup that reads the process-wide login-shell `PATH`
+    /// cache, probing the real login shell only on this process's first
+    /// call to it.
     pub fn new() -> Self {
-        Self::with_probe(|| read_login_shell_path(&default_fallback_dirs()))
+        Self::with_probe(cached_login_shell_path)
     }
 
     /// As [`LoginShellToolLookup::new`], with `probe` standing in for the
@@ -238,6 +260,15 @@ impl LoginShellToolLookup {
 
     fn search_dirs(&self) -> &[PathBuf] {
         self.search_dirs.get_or_init(|| (self.probe)())
+    }
+
+    /// The probed login-shell `PATH` directories, running the probe on first
+    /// call and reusing the cached result after. `pub` so a caller that also
+    /// needs to spawn a child (`RealProcessSpawner::with_search_path`) can
+    /// give that spawner the same directories this lookup resolved `npx`
+    /// against, instead of probing the login shell a second time.
+    pub fn dirs(&self) -> &[PathBuf] {
+        self.search_dirs()
     }
 }
 
@@ -355,6 +386,27 @@ mod tests {
             calls.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "expected exactly one probe run across three find_binary calls on the same lookup"
+        );
+    }
+
+    /// `two_login_shell_lookups_share_one_process_wide_probe_or_names_the_second_spawn`:
+    /// `core_runtime::build_runtime_write_at` builds a fresh `Runtime` (and
+    /// so a fresh `LoginShellToolLookup`) per command - park, unpark,
+    /// update, remove, doctor, fix, undo, twice at startup. Two separate
+    /// `new()` instances must read the same process-wide `LOGIN_SHELL_PATH`
+    /// cache rather than each probing their own login shell. Fails if
+    /// `LoginShellToolLookup::new()` goes back to a fresh per-instance probe
+    /// instead of the shared cache: the two instances could then disagree
+    /// if the login shell's `PATH` output ever varied between spawns.
+    #[test]
+    fn two_login_shell_lookups_share_one_process_wide_probe_or_names_the_second_spawn() {
+        let first = LoginShellToolLookup::new();
+        let second = LoginShellToolLookup::new();
+
+        assert_eq!(
+            first.dirs(),
+            second.dirs(),
+            "two LoginShellToolLookup instances disagreed on the probed PATH - each must read the same process-wide cache, not probe independently"
         );
     }
 

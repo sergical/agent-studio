@@ -43,7 +43,9 @@ use skill_studio_core::ops;
 use skill_studio_core::ports::Runtime;
 use skill_studio_core::testing::golden::{ctx, unique_temp_dir};
 
-use skill_studio_lib::skills::core_runtime::build_runtime_write_at;
+use skill_studio_lib::skills::core_runtime::{
+    build_runtime_write_at_with_search_dirs, process_path_search_dirs,
+};
 
 mod cli_binary;
 use cli_binary::cli_binary_path;
@@ -82,7 +84,15 @@ fn write_fixture(home: &Path) {
 /// lookup), rooted at `home` with its data root namespaced alongside it so
 /// the test never touches the real machine's `~/.local/share/skill-studio`.
 fn desktop_runtime_at(home: &Path) -> Runtime {
-    build_runtime_write_at(home, &home.join(".skill-studio")).expect("desktop runtime")
+    // The process's own PATH, not a real login-shell probe: fix parity
+    // never spawns `npx`, so it doesn't need to pay for (or risk hanging
+    // on) a real `$SHELL -lic` spawn.
+    build_runtime_write_at_with_search_dirs(
+        home,
+        &home.join(".skill-studio"),
+        process_path_search_dirs(),
+    )
+    .expect("desktop runtime")
 }
 
 /// Runs the real `skill-studio` CLI binary's `fix` subcommand against
