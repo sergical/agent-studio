@@ -19,8 +19,27 @@ const SKILLS_API_BASE: &str = "https://skills.sh/api/v1";
 
 /// The local Skill Studio server's default base URL, used when
 /// `~/.agents/skill-studio.json` has no `skills_sh_api_key` and no
-/// `server_url` override - see `apps/server`.
-const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8787";
+/// `server_url` override - see `apps/server`. A release build bakes in the
+/// hosted Worker URL via the `SKILL_STUDIO_SERVER_URL` compile-time
+/// environment variable (set in `.github/workflows/release.yml`); a local
+/// dev build, where that variable is unset, falls back to the local server.
+fn default_server_url() -> String {
+    normalize_default_server_url(option_env!("SKILL_STUDIO_SERVER_URL"))
+}
+
+/// Trims a trailing `/` from a compile-time server URL override, falling
+/// back to the local dev server when the override is absent or blank -
+/// pulled out as a pure function so tests can pass values in directly,
+/// since `option_env!` itself is fixed at compile time for the whole crate.
+fn normalize_default_server_url(compile_time_value: Option<&str>) -> String {
+    match compile_time_value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => value.trim_end_matches('/').to_string(),
+        None => "http://127.0.0.1:8787".to_string(),
+    }
+}
 
 /// Which credentials and base URL a discovery request uses - resolved once
 /// per call by `resolve_skills_sh_access`. `Direct` is the developer override
@@ -59,7 +78,7 @@ impl SkillsShAccess {
 /// Resolves which access mode a discovery request should use: a non-empty
 /// `skills_sh_api_key` in `~/.agents/skill-studio.json` wins (`Direct`,
 /// straight to skills.sh); otherwise `Server`, routed through the local Skill
-/// Studio server at `server_url` (or `DEFAULT_SERVER_URL`).
+/// Studio server at `server_url` (or the compile-time `default_server_url`).
 pub fn resolve_skills_sh_access(home: &Path) -> Result<SkillsShAccess, String> {
     let registry = skill_fork_registry::read_fork_registry(home)?;
     if let Some(api_key) = registry
@@ -71,7 +90,7 @@ pub fn resolve_skills_sh_access(home: &Path) -> Result<SkillsShAccess, String> {
     let server_url = registry
         .server_url
         .filter(|url| !url.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
+        .unwrap_or_else(default_server_url);
     Ok(SkillsShAccess::Server {
         base_url: format!("{}/api/v1", server_url.trim_end_matches('/')),
     })
@@ -194,12 +213,39 @@ fn client_for(
 /// skills.sh outage.
 fn connection_error(access: &SkillsShAccess, e: &reqwest::Error) -> String {
     match access {
-        SkillsShAccess::Server { .. } => format!(
-            "Skill Studio server not reachable at {}. Start it with `npm run dev:server`.",
-            access.server_root()
-        ),
+        SkillsShAccess::Server { .. } => server_unreachable_message(access.server_root()),
         SkillsShAccess::Direct { .. } => format!("Failed to reach skills.sh: {e}"),
     }
+}
+
+/// The connection-failure message for `Server` mode, pulled out as a pure
+/// function so tests can cover both branches without a real transport
+/// failure. `npm run dev:server` is only right for the local dev server
+/// (loopback) - a release build's hosted default fails for reasons that
+/// advice can't fix, so it points at the network instead.
+fn server_unreachable_message(server_root: &str) -> String {
+    if is_loopback_server_root(server_root) {
+        format!("Skill Studio server not reachable at {server_root}. Start it with `npm run dev:server`.")
+    } else {
+        format!(
+            "Skill Studio server at {server_root} is not reachable. Check your network connection."
+        )
+    }
+}
+
+/// True when `server_root`'s host is `127.0.0.1` or `localhost` - a plain
+/// string check rather than a URL-parsing dependency, since `server_root` is
+/// always one of `normalize_default_server_url`'s own outputs or a
+/// user-configured `server_url` override, not arbitrary input.
+fn is_loopback_server_root(server_root: &str) -> bool {
+    let without_scheme = server_root
+        .split_once("://")
+        .map_or(server_root, |(_, rest)| rest);
+    let host = without_scheme
+        .split(['/', ':'])
+        .next()
+        .unwrap_or(without_scheme);
+    host == "127.0.0.1" || host == "localhost"
 }
 
 /// Search for skills on skills.sh. The v1 search endpoint has no pagination:
@@ -443,5 +489,54 @@ mod tests {
             base_url: "http://127.0.0.1:8787/api/v1".to_string(),
         };
         assert_eq!(access.server_root(), "http://127.0.0.1:8787");
+    }
+
+    #[test]
+    fn normalize_default_server_url_falls_back_to_localhost_when_unset() {
+        assert_eq!(normalize_default_server_url(None), "http://127.0.0.1:8787");
+    }
+
+    #[test]
+    fn normalize_default_server_url_falls_back_to_localhost_when_blank() {
+        assert_eq!(
+            normalize_default_server_url(Some("   ")),
+            "http://127.0.0.1:8787"
+        );
+    }
+
+    #[test]
+    fn normalize_default_server_url_trims_a_trailing_slash() {
+        assert_eq!(
+            normalize_default_server_url(Some("https://skill-studio-server.example.workers.dev/")),
+            "https://skill-studio-server.example.workers.dev"
+        );
+    }
+
+    #[test]
+    fn normalize_default_server_url_keeps_a_url_with_no_trailing_slash() {
+        assert_eq!(
+            normalize_default_server_url(Some("https://skill-studio-server.example.workers.dev")),
+            "https://skill-studio-server.example.workers.dev"
+        );
+    }
+
+    #[test]
+    fn server_unreachable_message_names_the_local_dev_server_for_loopback_hosts() {
+        assert_eq!(
+            server_unreachable_message("http://127.0.0.1:8787"),
+            "Skill Studio server not reachable at http://127.0.0.1:8787. Start it with `npm run dev:server`."
+        );
+        assert_eq!(
+            server_unreachable_message("http://localhost:8787"),
+            "Skill Studio server not reachable at http://localhost:8787. Start it with `npm run dev:server`."
+        );
+    }
+
+    #[test]
+    fn server_unreachable_message_points_at_the_network_for_a_hosted_url() {
+        assert_eq!(
+            server_unreachable_message("https://skill-studio-server.example.workers.dev"),
+            "Skill Studio server at https://skill-studio-server.example.workers.dev is not reachable. Check your network connection."
+        );
     }
 }

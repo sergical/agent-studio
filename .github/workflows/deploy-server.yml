@@ -1,0 +1,26 @@
+name: Deploy Server
+
+# Manual only for now - no push trigger until the hosted URL has been
+# rehearsed. The skills.sh key itself is never in this workflow: it's set
+# once by hand with `wrangler secret put SKILLS_SH_API_KEY` (see
+# apps/server/README.md).
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test -w @skill-studio/server
+      - name: Deploy to Cloudflare Workers
+        working-directory: apps/server
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

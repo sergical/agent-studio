@@ -18,3 +18,36 @@ The server refuses to start without it. `PORT` defaults to `8787`, bound to
 - `GET /health` -> `{ ok: true }`, no upstream call
 - `GET /api/v1/skills`, `GET /api/v1/skills/search`, `GET /api/v1/skills/:owner/:repo/:slug`
   -> proxied to `https://skills.sh/api/v1`, query string passed through verbatim
+
+## Deploy to Cloudflare Workers
+
+The same app also runs as a public Cloudflare Worker (`src/worker.ts`), for
+release builds of the desktop app that don't have a local server to talk to
+(see `SKILL_STUDIO_SERVER_URL` in the root `apps/desktop` release build).
+
+One-time setup, from `apps/server`:
+
+```bash
+npx wrangler login
+npx wrangler secret put SKILLS_SH_API_KEY   # paste the real skills.sh key when prompted
+npm run deploy -w @skill-studio/server
+```
+
+`.github/workflows/deploy-server.yml` redeploys on demand
+(`workflow_dispatch`) using `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` repo secrets - it never sees the skills.sh key.
+
+Once a custom domain is ready, add it under a `"routes"` entry in
+`wrangler.jsonc` (see the comment there) instead of relying on the
+`workers.dev` subdomain.
+
+### Abuse control
+
+The Worker is public, so it adds two things the Node dev server doesn't need:
+
+- **Rate limit**: 60 requests per 60 seconds per caller IP
+  (`CF-Connecting-IP`), via the Workers Rate Limiting binding. A refused
+  request gets `429` with `Retry-After: 60`.
+- **Edge cache**: successful (`200`) responses only, keyed by the full
+  request URL - 300 seconds for the list/search routes, 3600 seconds for a
+  skill's detail route. `/health` is never rate limited or cached.
