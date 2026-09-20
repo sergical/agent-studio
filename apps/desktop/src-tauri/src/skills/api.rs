@@ -19,8 +19,27 @@ const SKILLS_API_BASE: &str = "https://skills.sh/api/v1";
 
 /// The local Skill Studio server's default base URL, used when
 /// `~/.agents/skill-studio.json` has no `skills_sh_api_key` and no
-/// `server_url` override - see `apps/server`.
-const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8787";
+/// `server_url` override - see `apps/server`. A release build bakes in the
+/// hosted Worker URL via the `SKILL_STUDIO_SERVER_URL` compile-time
+/// environment variable (set in `.github/workflows/release.yml`); a local
+/// dev build, where that variable is unset, falls back to the local server.
+fn default_server_url() -> String {
+    normalize_default_server_url(option_env!("SKILL_STUDIO_SERVER_URL"))
+}
+
+/// Trims a trailing `/` from a compile-time server URL override, falling
+/// back to the local dev server when the override is absent or blank -
+/// pulled out as a pure function so tests can pass values in directly,
+/// since `option_env!` itself is fixed at compile time for the whole crate.
+fn normalize_default_server_url(compile_time_value: Option<&str>) -> String {
+    match compile_time_value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => value.trim_end_matches('/').to_string(),
+        None => "http://127.0.0.1:8787".to_string(),
+    }
+}
 
 /// Which credentials and base URL a discovery request uses - resolved once
 /// per call by `resolve_skills_sh_access`. `Direct` is the developer override
@@ -59,7 +78,7 @@ impl SkillsShAccess {
 /// Resolves which access mode a discovery request should use: a non-empty
 /// `skills_sh_api_key` in `~/.agents/skill-studio.json` wins (`Direct`,
 /// straight to skills.sh); otherwise `Server`, routed through the local Skill
-/// Studio server at `server_url` (or `DEFAULT_SERVER_URL`).
+/// Studio server at `server_url` (or the compile-time `default_server_url`).
 pub fn resolve_skills_sh_access(home: &Path) -> Result<SkillsShAccess, String> {
     let registry = skill_fork_registry::read_fork_registry(home)?;
     if let Some(api_key) = registry
@@ -71,7 +90,7 @@ pub fn resolve_skills_sh_access(home: &Path) -> Result<SkillsShAccess, String> {
     let server_url = registry
         .server_url
         .filter(|url| !url.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
+        .unwrap_or_else(default_server_url);
     Ok(SkillsShAccess::Server {
         base_url: format!("{}/api/v1", server_url.trim_end_matches('/')),
     })
@@ -443,5 +462,34 @@ mod tests {
             base_url: "http://127.0.0.1:8787/api/v1".to_string(),
         };
         assert_eq!(access.server_root(), "http://127.0.0.1:8787");
+    }
+
+    #[test]
+    fn normalize_default_server_url_falls_back_to_localhost_when_unset() {
+        assert_eq!(normalize_default_server_url(None), "http://127.0.0.1:8787");
+    }
+
+    #[test]
+    fn normalize_default_server_url_falls_back_to_localhost_when_blank() {
+        assert_eq!(
+            normalize_default_server_url(Some("   ")),
+            "http://127.0.0.1:8787"
+        );
+    }
+
+    #[test]
+    fn normalize_default_server_url_trims_a_trailing_slash() {
+        assert_eq!(
+            normalize_default_server_url(Some("https://skill-studio-server.example.workers.dev/")),
+            "https://skill-studio-server.example.workers.dev"
+        );
+    }
+
+    #[test]
+    fn normalize_default_server_url_keeps_a_url_with_no_trailing_slash() {
+        assert_eq!(
+            normalize_default_server_url(Some("https://skill-studio-server.example.workers.dev")),
+            "https://skill-studio-server.example.workers.dev"
+        );
     }
 }

@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "skill-studio-server",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-18",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+  },
+  // No route/custom domain yet - add one under `"routes"` here once the
+  // hosted URL has a domain (see README.md's "Deploy to Cloudflare Workers").
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "1",
+      "simple": {
+        "limit": 60,
+        "period": 60,
+      },
+    },
+  ],
+}

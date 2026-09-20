@@ -122,6 +122,10 @@ jobs:
           # Injected into build.rs via SKILL_STUDIO_COMMIT so the built app
           # and CLI report the commit they were built from (unit 6.6).
           SKILL_STUDIO_COMMIT: ${{ github.sha }}
+          # Compiled into the release binary's default server URL (see
+          # `default_server_url` in api.rs) - an unset repo variable keeps
+          # the `http://127.0.0.1:8787` local-dev default.
+          SKILL_STUDIO_SERVER_URL: ${{ vars.SKILL_STUDIO_SERVER_URL }}
           # Apple's APPLE_CERTIFICATE/APPLE_SIGNING_IDENTITY/etc. are
           # deliberately NOT set here - see "Configure Apple code signing"
           # above, which appends them to $GITHUB_ENV (so they still reach

@@ -1,0 +1,43 @@
+// ============================================================================
+// Skill Studio - Worker
+// The Cloudflare Workers entry point for the skills.sh proxy: this URL is
+// public (unlike the Node dev server, which only ever binds 127.0.0.1), so it
+// wires the Workers Rate Limiting binding and the Cache API into
+// `createSkillsProxyApp` before every request reaches skills.sh.
+// ============================================================================
+
+import { createSkillsProxyApp, type RateLimiter, type ResponseCache } from "./skills-proxy-app";
+
+/** The subset of Workers' `Fetcher.env` this proxy reads: the skills.sh key
+ * (set once with `wrangler secret put SKILLS_SH_API_KEY`) and the rate limit
+ * binding declared in `wrangler.jsonc`. */
+interface Env {
+  SKILLS_SH_API_KEY: string;
+  RATE_LIMITER: RateLimiter;
+}
+
+/** The Workers fetch handler's third argument - unused here, since the one
+ * deferred piece of work (the Cache API write) is awaited inline instead of
+ * scheduled past the response with `waitUntil`. Named narrowly instead of
+ * pulling in `@cloudflare/workers-types` for one unused parameter. */
+interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException(): void;
+}
+
+// `caches.default` is a Workers-only global (the edge Cache API) with no
+// Node equivalent, so it isn't part of this project's `lib: ["ES2020"]`
+// tsconfig - declared narrowly here instead of pulling in the full
+// `@cloudflare/workers-types` package just for one global.
+declare const caches: { default: ResponseCache };
+
+export default {
+  fetch(request: Request, env: Env, _ctx: ExecutionContext): Response | Promise<Response> {
+    const app = createSkillsProxyApp({
+      apiKey: env.SKILLS_SH_API_KEY,
+      limiter: env.RATE_LIMITER,
+      cache: caches.default,
+    });
+    return app.fetch(request);
+  },
+};
