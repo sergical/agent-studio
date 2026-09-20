@@ -1,0 +1,8 @@
+{
+  "cli_version": "skills@1.7.0",
+  "source_repo": "vercel-labs/agent-skills",
+  "source_slug": "web-design-guidelines",
+  "source_commit": "063bee94c3f4df8453406c830b0a7df0f2860278",
+  "exit_status": 0,
+  "notes": "InstallMethod::SkillsSh, global scope, requested harnesses = [] (universal root only). No LICENSE file accompanies this fixture: vercel-labs/agent-skills (checked at the recorded source_commit via the GitHub API) carries no LICENSE file upstream, so there is nothing to vendor. What SKILL.md content this skill DID have is not on disk either: its body under skills/<name>/ is stored as a one-line stub (`stub sha256=<original hash> bytes=<n>`), never the real content; tree.json still records the ORIGINAL sha256/length, and cli_parity.rs compares against that original hash, not the stub's own bytes."
+}

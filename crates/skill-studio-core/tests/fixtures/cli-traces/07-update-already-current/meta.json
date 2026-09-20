@@ -1,0 +1,6 @@
+{
+  "cli_version": "skills@1.7.0",
+  "source_repo": "anthropics/skills",
+  "exit_status": 0,
+  "notes": "InstallMethod::SkillsSh, project scope. Proves an update call is a no-op for the universal root's own bytes (SKILL.md/LICENSE.txt sha256 identical before/after). Surprising real-CLI behavior found while recording: even though neither the initial add nor this update ever passed --agent claude-code, update on its own initiative added a .claude/skills/academy-guide symlink that was not present in before/ - recorded as-is, since UpdateRequest carries no harness selector for ops to claim anything about either. Every file body under a skills/<name>/ folder fetched from a remote source (including LICENSE.txt, when present) is stored on disk as a one-line stub (`stub sha256=<original hash> bytes=<n>`), never the real third-party content; tree.json still records the ORIGINAL sha256/length, and cli_parity.rs compares against that original hash, not the stub's own bytes."
+}

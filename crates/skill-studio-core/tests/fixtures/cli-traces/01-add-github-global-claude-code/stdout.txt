@@ -1,0 +1,39 @@
+
+│
+●   claude-code_2-1-277_agent  Agent detected — installing non-interactively
+│
+◇  Source: https://github.com/anthropics/skills.git
+│
+◒  Cloning repository…◐  Cloning repository…◓  Cloning repository…◑  Cloning repository…◒  Cloning repository…◐  Cloning repository…◓  Cloning repository…◑  Cloning repository…◒  Cloning repository….◐  Cloning repository….◓  Cloning repository….◑  Cloning repository….◒  Cloning repository….◐  Cloning repository….◓  Cloning repository….◑  Cloning repository….◒  Cloning repository…..◐  Cloning repository…..◓  Cloning repository…..◑  Cloning repository…..◒  Cloning repository…..◐  Cloning repository…..◓  Cloning repository…..◑  Cloning repository…..◒  Cloning repository…...◐  Cloning repository…...◓  Cloning repository…...◑  Cloning repository…...◒  Cloning repository…...◐  Cloning repository…...◓  Cloning repository…...◑  Cloning repository…...◒  Cloning repository…...◐  Cloning repository…◓  Cloning repository…◑  Cloning repository…◒  Cloning repository…◐  Cloning repository…◓  Cloning repository…◑  Cloning repository…◒  Cloning repository…◐  Cloning repository….◓  Cloning repository….◑  Cloning repository….◒  Cloning repository….◐  Cloning repository….◇  Repository cloned
+│
+◇  Found 20 skills
+│
+●  Selected 1 skill: academy-guide
+
+│
+◇  Installation Summary ───────────╮
+│                                  │
+│                                  │
+│  Academy Guide                   │
+│                                  │
+│  ~/.agents/skills/academy-guide  │
+│    universal: Universal          │
+│    symlink → Claude Code         │
+│                                  │
+├──────────────────────────────────╯
+│
+◇  Installation complete
+
+│
+◇  Installed 1 skill ────────────────╮
+│                                    │
+│                                    │
+│  Academy Guide                     │
+│  ✓ ~/.agents/skills/academy-guide  │
+│    universal: Universal            │
+│    symlinked: Claude Code          │
+│                                    │
+├────────────────────────────────────╯
+
+│
+└  Done!  Review skills before use; they run with full agent permissions.

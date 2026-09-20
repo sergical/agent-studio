@@ -1,0 +1,10 @@
+skills
+add
+$LOCAL_SKILL_DIR
+--yes
+--skill
+my-local-skill
+--agent
+universal
+--cwd--
+$PROJECT

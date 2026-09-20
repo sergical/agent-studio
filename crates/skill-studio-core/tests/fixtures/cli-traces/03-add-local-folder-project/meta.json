@@ -1,0 +1,6 @@
+{
+  "cli_version": "skills@1.7.0",
+  "source": "local folder (authored for this fixture, not fetched)",
+  "exit_status": 0,
+  "notes": "InstallMethod::SkillsSh, project scope. Recorded by cd-ing into $PROJECT first and never passing --cwd, since skills@1.7.0's add has no working --cwd flag. Whether this still diverges from ops_install_cli.rs's SkillsSh builder is decided in cli_parity.rs's KNOWN_DIVERGENCES, not here."
+}

@@ -1,0 +1,32 @@
+
+│
+●   claude-code_2-1-277_agent  Agent detected — installing non-interactively
+│
+◇  Source: $LOCAL_SKILL_DIR
+│
+◇  Local path validated
+│
+◇  Found 1 skill
+│
+●  Selected 1 skill: my-local-skill
+
+│
+◇  Installation Summary ────────────╮
+│                                   │
+│  ./.agents/skills/my-local-skill  │
+│    copy → Universal               │
+│                                   │
+├───────────────────────────────────╯
+│
+◇  Installation complete
+
+│
+◇  Installed 1 skill ───────────────────╮
+│                                       │
+│  ✓ my-local-skill (copied)            │
+│    → ./.agents/skills/my-local-skill  │
+│                                       │
+├───────────────────────────────────────╯
+
+│
+└  Done!  Review skills before use; they run with full agent permissions.

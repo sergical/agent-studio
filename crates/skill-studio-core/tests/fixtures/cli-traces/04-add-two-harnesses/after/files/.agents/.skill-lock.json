@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "skills": {
+    "brand-guidelines": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/anthropics/skills.git",
+      "skillPath": "skills/brand-guidelines/SKILL.md",
+      "skillFolderHash": "1dc8bd3584b80568edae7da16382363e24ecf0f0",
+      "pluginName": "example-skills",
+      "installedAt": "2026-09-19T23:57:36.930Z",
+      "updatedAt": "2026-09-19T23:57:36.930Z"
+    }
+  },
+  "dismissed": {}
+}

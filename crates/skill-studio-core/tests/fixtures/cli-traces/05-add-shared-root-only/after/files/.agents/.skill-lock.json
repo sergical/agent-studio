@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "skills": {
+    "web-artifacts-builder": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/anthropics/skills.git",
+      "skillPath": "skills/web-artifacts-builder/SKILL.md",
+      "skillFolderHash": "821b94f16c123d5f12e4e72eda9f7a162e2698f6",
+      "pluginName": "example-skills",
+      "installedAt": "2026-09-19T23:59:05.383Z",
+      "updatedAt": "2026-09-19T23:59:05.383Z"
+    }
+  },
+  "dismissed": {}
+}

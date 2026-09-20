@@ -1,0 +1,7 @@
+skills
+remove
+academy-guide
+--yes
+--global
+--cwd--
+GLOBAL

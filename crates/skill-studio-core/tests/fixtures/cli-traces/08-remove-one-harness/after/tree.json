@@ -1,0 +1,16 @@
+[
+  {
+    "path": ".agents/.skill-lock.json",
+    "kind": "file",
+    "len": 53,
+    "sha256": "c758df0ec3336eecf0903b45708ed2dbacb1829d358cf95845eb1639b0996807"
+  },
+  {
+    "path": ".agents/skills",
+    "kind": "dir"
+  },
+  {
+    "path": ".claude/skills",
+    "kind": "dir"
+  }
+]
