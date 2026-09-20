@@ -123,6 +123,9 @@ interface CreateSkillsProxyAppOptions {
   limiter?: RateLimiter;
   /** Only set on the public Worker entry; the Node dev server leaves this unset. */
   cache?: ResponseCache;
+  /** Schedules work past the response, e.g. Workers' `ExecutionContext.waitUntil` -
+   * when absent, the cache write is awaited inline instead. */
+  waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 const RATE_LIMIT_WINDOW_SECONDS = 60;
@@ -133,6 +136,31 @@ function cacheTtlSecondsFor(path: string): number {
   return path === "/api/v1/skills" || path === "/api/v1/skills/search" ? 300 : 3600;
 }
 
+/** The only query params each route forwards upstream and keys the cache on,
+ * sorted for a stable order - anything else (an unrelated param, or the same
+ * params in a different order) is dropped so it can't fragment the cache or
+ * drain a caller's rate-limit quota with cache-busting variations. The skill
+ * detail route takes no query params at all. */
+const ALLOWED_QUERY_PARAMS = {
+  "/api/v1/skills": ["page", "per_page", "view"],
+  "/api/v1/skills/search": ["limit", "q"],
+} satisfies Record<string, readonly string[]>;
+
+/** Rebuilds `url`'s query string using only `path`'s allowed params, in
+ * sorted order - used for both the upstream request and the cache key so the
+ * two always agree. */
+function normalizedSearch(path: string, url: string): string {
+  const allowed = ALLOWED_QUERY_PARAMS[path] ?? [];
+  const params = new URL(url).searchParams;
+  const kept = new URLSearchParams();
+  for (const key of allowed) {
+    const value = params.get(key);
+    if (value !== null) kept.set(key, value);
+  }
+  const search = kept.toString();
+  return search ? `?${search}` : "";
+}
+
 /** Builds the Hono app for `apiKey` - split out from each runtime's entry so
  * tests can exercise routes without starting a real listener, and so the
  * Node and Worker entries share one implementation. */
@@ -141,6 +169,7 @@ export function createSkillsProxyApp({
   fetch: fetchImpl = fetch,
   limiter,
   cache,
+  waitUntil,
 }: CreateSkillsProxyAppOptions): Hono {
   const app = new Hono();
 
@@ -152,6 +181,17 @@ export function createSkillsProxyApp({
   });
 
   app.get("/health", (c) => c.json({ ok: true }));
+
+  // The rate limiter and cache both key on GET-only semantics (an idempotent,
+  // side-effect-free request whose URL fully determines the response), so a
+  // non-GET method is rejected here, before either middleware runs, rather
+  // than falling through to them and to Hono's routing.
+  app.use("/api/v1/*", async (c, next) => {
+    if (c.req.method !== "GET") {
+      return c.json({ error: "Method not allowed" }, 405);
+    }
+    return next();
+  });
 
   // Only the public Worker entry passes `limiter`/`cache`; the Node dev
   // server's routes fall straight through to `next()` on both.
@@ -169,9 +209,11 @@ export function createSkillsProxyApp({
 
   app.use("/api/v1/*", async (c, next) => {
     if (!cache) return next();
-    // The cache key is the full request URL - GET-only, so a plain `Request`
-    // built from it is enough; no method/body/headers to vary on.
-    const cacheKey = new Request(c.req.url);
+    // The cache key is the request's origin/path plus its normalized query -
+    // GET-only, so a plain `Request` built from it is enough; no
+    // method/body/headers to vary on.
+    const normalized = normalizedSearch(c.req.path, c.req.url);
+    const cacheKey = new Request(`${new URL(c.req.url).origin}${c.req.path}${normalized}`);
     const cached = await cache.match(cacheKey);
     if (cached) {
       c.res = cached.clone();
@@ -180,9 +222,18 @@ export function createSkillsProxyApp({
     await next();
     if (c.res.status === 200) {
       const ttl = cacheTtlSecondsFor(c.req.path);
-      const cacheable = new Response(c.res.body, c.res);
+      // `c.res.clone()` tees the body so the cache and the eventual caller
+      // each get their own independent stream - handing both the same
+      // stream (e.g. `new Response(c.res.body, c.res)`) means whichever
+      // reads first (here, `cache.put`) leaves the other's body consumed.
+      const cacheable = c.res.clone();
       cacheable.headers.set("Cache-Control", `public, max-age=${ttl}`);
-      await cache.put(cacheKey, cacheable);
+      const putPromise = cache.put(cacheKey, cacheable);
+      if (waitUntil) {
+        waitUntil(putPromise);
+      } else {
+        await putPromise;
+      }
     }
   });
 
@@ -190,7 +241,7 @@ export function createSkillsProxyApp({
     const { status, body } = await proxyGet(
       apiKey,
       "/skills",
-      new URL(c.req.url).search,
+      normalizedSearch(c.req.path, c.req.url),
       fetchImpl,
     );
     // SAFETY: `status` is skills.sh's own response status, always a valid
@@ -203,7 +254,7 @@ export function createSkillsProxyApp({
     const { status, body } = await proxyGet(
       apiKey,
       "/skills/search",
-      new URL(c.req.url).search,
+      normalizedSearch(c.req.path, c.req.url),
       fetchImpl,
     );
     // SAFETY: see the /api/v1/skills handler above.
@@ -219,7 +270,9 @@ export function createSkillsProxyApp({
     const { status, body } = await proxyGet(
       apiKey,
       `/skills/${segments.map((segment) => encodeURIComponent(segment)).join("/")}`,
-      new URL(c.req.url).search,
+      // The detail route takes no query params - not just for the cache key,
+      // but forwarded to skills.sh too.
+      normalizedSearch(c.req.path, c.req.url),
       fetchImpl,
     );
     // SAFETY: see the /api/v1/skills handler above.

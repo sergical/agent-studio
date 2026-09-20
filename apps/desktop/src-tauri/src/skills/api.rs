@@ -213,12 +213,39 @@ fn client_for(
 /// skills.sh outage.
 fn connection_error(access: &SkillsShAccess, e: &reqwest::Error) -> String {
     match access {
-        SkillsShAccess::Server { .. } => format!(
-            "Skill Studio server not reachable at {}. Start it with `npm run dev:server`.",
-            access.server_root()
-        ),
+        SkillsShAccess::Server { .. } => server_unreachable_message(access.server_root()),
         SkillsShAccess::Direct { .. } => format!("Failed to reach skills.sh: {e}"),
     }
+}
+
+/// The connection-failure message for `Server` mode, pulled out as a pure
+/// function so tests can cover both branches without a real transport
+/// failure. `npm run dev:server` is only right for the local dev server
+/// (loopback) - a release build's hosted default fails for reasons that
+/// advice can't fix, so it points at the network instead.
+fn server_unreachable_message(server_root: &str) -> String {
+    if is_loopback_server_root(server_root) {
+        format!("Skill Studio server not reachable at {server_root}. Start it with `npm run dev:server`.")
+    } else {
+        format!(
+            "Skill Studio server at {server_root} is not reachable. Check your network connection."
+        )
+    }
+}
+
+/// True when `server_root`'s host is `127.0.0.1` or `localhost` - a plain
+/// string check rather than a URL-parsing dependency, since `server_root` is
+/// always one of `normalize_default_server_url`'s own outputs or a
+/// user-configured `server_url` override, not arbitrary input.
+fn is_loopback_server_root(server_root: &str) -> bool {
+    let without_scheme = server_root
+        .split_once("://")
+        .map_or(server_root, |(_, rest)| rest);
+    let host = without_scheme
+        .split(['/', ':'])
+        .next()
+        .unwrap_or(without_scheme);
+    host == "127.0.0.1" || host == "localhost"
 }
 
 /// Search for skills on skills.sh. The v1 search endpoint has no pagination:
@@ -490,6 +517,26 @@ mod tests {
         assert_eq!(
             normalize_default_server_url(Some("https://skill-studio-server.example.workers.dev")),
             "https://skill-studio-server.example.workers.dev"
+        );
+    }
+
+    #[test]
+    fn server_unreachable_message_names_the_local_dev_server_for_loopback_hosts() {
+        assert_eq!(
+            server_unreachable_message("http://127.0.0.1:8787"),
+            "Skill Studio server not reachable at http://127.0.0.1:8787. Start it with `npm run dev:server`."
+        );
+        assert_eq!(
+            server_unreachable_message("http://localhost:8787"),
+            "Skill Studio server not reachable at http://localhost:8787. Start it with `npm run dev:server`."
+        );
+    }
+
+    #[test]
+    fn server_unreachable_message_points_at_the_network_for_a_hosted_url() {
+        assert_eq!(
+            server_unreachable_message("https://skill-studio-server.example.workers.dev"),
+            "Skill Studio server at https://skill-studio-server.example.workers.dev is not reachable. Check your network connection."
         );
     }
 }

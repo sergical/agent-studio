@@ -86,7 +86,7 @@ describe("GET /api/v1/skills/:owner/:repo/:slug", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("encodes decoded safe segments once and forwards the query", async () => {
+  it("encodes decoded safe segments once and drops the query, since the detail route takes none", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValue(new Response(JSON.stringify({ skill: "ok" }), { status: 200 }));
@@ -97,7 +97,7 @@ describe("GET /api/v1/skills/:owner/:repo/:slug", () => {
 
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://skills.sh/api/v1/skills/org%20name/repo%2Btools/skill%25%40v1?ref=a%2Fb",
+      "https://skills.sh/api/v1/skills/org%20name/repo%2Btools/skill%25%40v1",
       { headers: { Authorization: "Bearer sk-secret" } },
     );
   });
@@ -120,19 +120,25 @@ function fakeLimiter(refuseAfter: number): RateLimiter & { calls: number } {
 }
 
 /** An in-memory `ResponseCache` fake keyed by request URL, matching just
- * enough of the Workers Cache API (`caches.default`) for these tests. */
+ * enough of the Workers Cache API (`caches.default`) for these tests. The
+ * real Cache API's `put` reads the response body to completion - mirrored
+ * here (instead of `response.clone()`) so a production bug that hands the
+ * live response's body to both the caller and the cache fails the same way
+ * it would against a real Worker: with a "body already used" error. */
 function fakeCache(): ResponseCache & { size: number } {
-  const store = new Map<string, Response>();
+  const store = new Map<string, { body: ArrayBuffer; status: number; headers: Headers }>();
   return {
     get size() {
       return store.size;
     },
     async match(request) {
       const cached = store.get(request.url);
-      return cached?.clone();
+      if (!cached) return undefined;
+      return new Response(cached.body, { status: cached.status, headers: cached.headers });
     },
     async put(request, response) {
-      store.set(request.url, response.clone());
+      const body = await response.arrayBuffer();
+      store.set(request.url, { body, status: response.status, headers: response.headers });
     },
   };
 }
@@ -178,6 +184,7 @@ describe("edge cache middleware", () => {
     const second = await app.request("http://localhost/api/v1/skills?view=all-time&page=0");
 
     expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ data: ["one"] });
     expect(await second.json()).toEqual({ data: ["one"] });
     expect(fetchMock).toHaveBeenCalledOnce();
   });
@@ -224,5 +231,63 @@ describe("edge cache middleware", () => {
 
     expect(response.status).toBe(500);
     expect(cache.size).toBe(0);
+  });
+
+  it("drops a query param outside the route's allowlist before it reaches upstream", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+
+    await createSkillsProxyApp({ apiKey: "sk-secret", fetch: fetchMock }).request(
+      "http://localhost/api/v1/skills?page=0&x=cache-buster",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://skills.sh/api/v1/skills?page=0",
+      expect.anything(),
+    );
+  });
+
+  it("treats an unrelated extra param as the same cache entry, making one upstream call", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ data: ["one"] }), { status: 200 }));
+    const cache = fakeCache();
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", fetch: fetchMock, cache });
+
+    await app.request("http://localhost/api/v1/skills?page=0");
+    await app.request("http://localhost/api/v1/skills?page=0&x=cache-buster-1");
+    await app.request("http://localhost/api/v1/skills?page=0&x=cache-buster-2");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("treats the same params in a different order as the same cache entry, making one upstream call", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ data: ["one"] }), { status: 200 }));
+    const cache = fakeCache();
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", fetch: fetchMock, cache });
+
+    await app.request("http://localhost/api/v1/skills?view=all-time&page=0&per_page=20");
+    await app.request("http://localhost/api/v1/skills?per_page=20&page=0&view=all-time");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("non-GET requests to /api/v1/*", () => {
+  it("rejects a write method with 405, without consulting the cache or calling upstream", async () => {
+    const fetchMock = vi.fn();
+    const cache = fakeCache();
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", fetch: fetchMock, cache });
+    await app.request("http://localhost/api/v1/skills?page=0");
+
+    const response = await app.request("http://localhost/api/v1/skills?page=99", {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(405);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

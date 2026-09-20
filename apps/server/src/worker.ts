@@ -16,10 +16,10 @@ interface Env {
   RATE_LIMITER: RateLimiter;
 }
 
-/** The Workers fetch handler's third argument - unused here, since the one
- * deferred piece of work (the Cache API write) is awaited inline instead of
- * scheduled past the response with `waitUntil`. Named narrowly instead of
- * pulling in `@cloudflare/workers-types` for one unused parameter. */
+/** The Workers fetch handler's third argument - its `waitUntil` schedules the
+ * Cache API write past the response, so a cache write never adds to the
+ * caller's latency. Named narrowly instead of pulling in
+ * `@cloudflare/workers-types` for one method. */
 interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException(): void;
@@ -32,11 +32,12 @@ interface ExecutionContext {
 declare const caches: { default: ResponseCache };
 
 export default {
-  fetch(request: Request, env: Env, _ctx: ExecutionContext): Response | Promise<Response> {
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
     const app = createSkillsProxyApp({
       apiKey: env.SKILLS_SH_API_KEY,
       limiter: env.RATE_LIMITER,
       cache: caches.default,
+      waitUntil: (promise) => ctx.waitUntil(promise),
     });
     return app.fetch(request);
   },
