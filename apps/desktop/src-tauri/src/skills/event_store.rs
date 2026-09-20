@@ -45,16 +45,21 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
     }
     let conn = Connection::open(db_path)
         .map_err(|e| format!("Failed to open {}: {e}", db_path.display()))?;
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .map_err(|e| format!("Failed to set WAL mode: {e}"))?;
     // The desktop's `EventStore` and the core's `SqliteHistoryStore`
     // (`skill-studio-host/src/history.rs`) now open this same file from two
     // separate connections (one per process' worth of core `ops` calls, one
     // for the desktop's own direct writes). WAL lets both read concurrently,
     // but a writer still briefly locks the file; without a `busy_timeout`
     // the loser gets `SQLITE_BUSY` immediately instead of waiting its turn.
+    // Set before `journal_mode = WAL` itself, since switching journal modes
+    // is its own write that can hit a busy database - a CLI or MCP write in
+    // flight at app launch could otherwise fail this whole open instead of
+    // just waiting, leaving the app running its entire session with no
+    // event store.
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| format!("Failed to set busy timeout: {e}"))?;
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|e| format!("Failed to set WAL mode: {e}"))?;
     // `reverted_by` is claimed (set to the restore event's id) before that
     // restore row exists - see `restore()` - so foreign key enforcement on
     // that column must stay off.

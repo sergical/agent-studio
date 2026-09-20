@@ -463,6 +463,64 @@ fn a_desktop_written_repair_event_still_appears_in_history_and_still_undoes() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+// Second fix-round item 2: `move_aside_disable`/`move_aside_restore` carry
+// `backup_dir: None` and an `InverseOp::MoveBack`, and no core code ever
+// writes them - they belong back in `DESKTOP_OWNED_KINDS` (removing them
+// was the earlier round's mistake), and this row shape is exactly what an
+// old desktop-written row looks like today.
+#[test]
+fn a_legacy_move_aside_disable_row_undoes_through_the_desktop() {
+    let home = unique_temp_dir("undo_move_aside_disable");
+    std::fs::create_dir_all(&home).unwrap();
+    let data_root = data_root_for(&home);
+    let skill = "iota-move-aside";
+    let claude_dir = home.join(CLAUDE_ROOT_RELATIVE);
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let original = claude_dir.join(skill);
+    std::fs::write(&original, "disabled aside").unwrap();
+    let moved_aside = claude_dir.join(format!("{skill}.disabled"));
+    std::fs::rename(&original, &moved_aside).unwrap();
+
+    let store = desktop_store(&home, &data_root);
+    let id = allocate_id();
+    let inverse = InverseOp::MoveBack {
+        from: moved_aside.clone(),
+        to: original.clone(),
+        pre_fingerprint: fingerprint_path(&original),
+        post_fingerprint: None,
+    };
+    store
+        .record(
+            &id,
+            &EventDraft {
+                kind: "move_aside_disable".to_string(),
+                skill: skill.to_string(),
+                harness: Some("claude-code".to_string()),
+                scope: None,
+                project_path: None,
+                payload: serde_json::json!({ "from": moved_aside, "to": original }),
+                inverse: Some(serde_json::to_value(&inverse).unwrap()),
+                backup_dir: None,
+                restorable: true,
+            },
+        )
+        .unwrap();
+    store.finish(&id, EventStatus::Done).unwrap();
+
+    let row = store.get(&id).unwrap().unwrap();
+    let dto = dto_from_row(&store, &home, &data_root, row.clone());
+    assert!(dto.restorable);
+
+    restore_event_with_runtime(&store, &home, &data_root, &row.id, false).unwrap();
+    assert!(
+        original.is_file(),
+        "undo must move the skill back from its disabled path"
+    );
+    assert!(std::fs::symlink_metadata(&moved_aside).is_err());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 // ---------------------------------------------------------------------
 // (d) The one-time import of a pre-migration desktop event log runs once:
 // a second startup imports nothing twice, and a corrupt legacy file does

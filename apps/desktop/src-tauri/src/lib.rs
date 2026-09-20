@@ -100,7 +100,7 @@ fn reconcile_event_store_at_startup(store: &skills::event_store::EventStore) {
         return;
     };
     let write_lease = skills::write_lease::WriteLease::default();
-    let _guard = match write_lease.try_acquire(&home) {
+    let guard = match write_lease.try_acquire(&home) {
         Ok(guard) => guard,
         Err(e) => {
             eprintln!("[event_store] skipped startup reconcile: {e}");
@@ -130,11 +130,11 @@ fn reconcile_event_store_at_startup(store: &skills::event_store::EventStore) {
                     .and_then(|home| {
                         if row.kind == "make_independent_copy" {
                             skills::skill_independent_copy::reconcile_interrupted_independent_copy(
-                                store, &home, row,
+                                store, &home, row, Some(&guard),
                             )
                         } else {
                             skills::skill_independent_copy::reconcile_interrupted_independent_copy_restore(
-                                store, &home, row,
+                                store, &home, row, Some(&guard),
                             )
                         }
                     });
@@ -178,7 +178,10 @@ fn reconcile_event_store_at_startup(store: &skills::event_store::EventStore) {
                     .ok_or_else(|| "Could not find home directory".to_string())
                     .and_then(|home| {
                         skills::skill_frontmatter_repair::reconcile_interrupted_frontmatter_repair(
-                            store, &home, row,
+                            store,
+                            &home,
+                            row,
+                            Some(&guard),
                         )
                     })
                 {

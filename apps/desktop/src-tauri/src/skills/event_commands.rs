@@ -118,14 +118,17 @@ pub async fn list_skill_events(
     .await
 }
 
-/// Event kinds whose inverse only the desktop's own `EventStore::restore`
-/// can apply, and which never carry a `backup_dir`: their
-/// `InverseOp::RecreateSymlink`/`RemoveSymlink` uses the field name `"link"`,
-/// which the core's `events::parse_symlink_inverse` (field `"path"`) does not
-/// recognize, and `make_independent_copy` has its own bespoke restore path
-/// below. `distribute_from_shared` is here for legacy rows only - the
-/// desktop no longer writes it, but old rows still show Undo and
-/// `EventStore::apply_restore_distribute` still handles it.
+/// Legacy desktop rows with no `backup_dir`, whose inverse only the
+/// desktop's own `EventStore::restore` can apply: their
+/// `InverseOp::RecreateSymlink`/`RemoveSymlink`/`MoveBack` uses the field
+/// name `"link"`, which the core's `events::parse_symlink_inverse` (field
+/// `"path"`) does not recognize, and `make_independent_copy` has its own
+/// bespoke restore path below. No core code writes any of these kinds, so
+/// there's no ambiguity to resolve by filesystem probe the way
+/// `repair_skill_frontmatter` needs - `distribute_from_shared` and
+/// `move_aside_disable`/`move_aside_restore` are here for legacy rows only
+/// (the desktop no longer writes them), but old rows still show Undo and
+/// `event_store.rs` (~:804) still reverses them.
 ///
 /// Kinds that *do* carry a `backup_dir` (e.g. `repair_skill_frontmatter`,
 /// which both the desktop's `apply_skill_frontmatter_repair` and the core's
@@ -143,6 +146,8 @@ const DESKTOP_OWNED_KINDS: &[&str] = &[
     "repair_relink_link",
     "make_independent_copy",
     "distribute_from_shared",
+    "move_aside_disable",
+    "move_aside_restore",
 ];
 
 /// Walks a chain of `restore` rows back to the kind that actually owns the

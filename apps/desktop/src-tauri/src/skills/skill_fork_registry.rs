@@ -390,6 +390,22 @@ pub fn write_fork_registry_locked(
     .map_err(|e| e.to_string())
 }
 
+/// `write_fork_registry` or `write_fork_registry_locked`, chosen by whether
+/// `guard` is `Some` - lets one recovery function serve both a caller that
+/// already holds `home`'s `WriteLease` (startup reconcile, which takes the
+/// lease once for its whole pass) and one that doesn't (a test calling the
+/// same function directly).
+pub fn write_fork_registry_maybe_locked(
+    guard: Option<&super::write_lease::WriteLeaseGuard>,
+    home: &Path,
+    registry: &ForkRegistry,
+) -> Result<(), String> {
+    match guard {
+        Some(guard) => write_fork_registry_locked(guard, home, registry),
+        None => write_fork_registry(home, registry),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

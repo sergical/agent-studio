@@ -59,7 +59,10 @@ impl WriteLease {
     /// Acquires an exclusive, non-blocking lease on `root`. `Err` mirrors
     /// the old mutation mutex's message shape when another writer already
     /// holds it, naming its pid and how long it has held the lease when the
-    /// lease reports one.
+    /// lease reports one; any other failure (e.g. the lease directory isn't
+    /// writable) passes the underlying error text through instead of
+    /// flattening it to the same "in progress" message, which would send a
+    /// caller looking for a concurrent writer that doesn't exist.
     pub fn try_acquire(&self, root: &Path) -> Result<WriteLeaseGuard, String> {
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let key = LeaseKey { canonical_root };
@@ -71,7 +74,7 @@ impl WriteLease {
                     "Another write is in progress (pid {}, held for {:?})",
                     busy.pid, busy.age
                 ),
-                None => "Another write operation is in progress".to_string(),
+                None => e.message,
             })
     }
 }
