@@ -246,9 +246,11 @@ pub fn restore_event_with_runtime(
             );
         }
         let write_lease = super::write_lease::WriteLease::default();
-        let _guard = write_lease.try_acquire(home)?;
-        return super::skill_independent_copy::restore_independent_copy(store, home, &target)
-            .map(|_| ());
+        let guard = write_lease.try_acquire(home)?;
+        return super::skill_independent_copy::restore_independent_copy(
+            store, home, &target, &guard,
+        )
+        .map(|_| ());
     }
 
     // A row with a `backup_dir` is dispatched by which root actually has its
@@ -526,7 +528,7 @@ pub async fn make_skill_independent_copy(
             let event_store = app.state::<EventStoreState>();
             let home = dirs::home_dir().ok_or("Could not find home directory")?;
             let write_lease = super::write_lease::WriteLease::default();
-            let _guard = write_lease.try_acquire(&home)?;
+            let write_guard = write_lease.try_acquire(&home)?;
             let deployment_id = target
                 .deployment_id
                 .as_deref()
@@ -616,6 +618,7 @@ pub async fn make_skill_independent_copy(
                     slot: &parsed.slot,
                     convert_whole_root: whole_root,
                 },
+                &write_guard,
             )?;
             drop(guard);
             let affected_projects: Vec<PathBuf> = project_path.iter().map(PathBuf::from).collect();
@@ -1175,5 +1178,71 @@ mod tests {
         let snapshot = fixture_snapshot(&broken, &healthy);
         let (_, deployment) = find_deployment_at(&snapshot, &healthy).unwrap();
         assert!(!is_unresolved(deployment));
+    }
+
+    /// Regression for the launch BLOCKER: undoing a *done* "Make independent
+    /// copy" row is this command's other nested-lease path -
+    /// `restore_event_with_runtime` takes `home`'s `WriteLease` itself before
+    /// dispatching to `skill_independent_copy::restore_independent_copy`,
+    /// which used to record the removed Copy ownership through the unlocked
+    /// `write_fork_registry` (a second, conflicting `try_acquire` on the
+    /// lease `restore_event_with_runtime` already holds). Drives undo through
+    /// the same seam the real `restore_skill_event` command calls, so a
+    /// revert of the guard-threading fix in `restore_independent_copy`
+    /// reintroduces the "another process holds the lease" failure here.
+    #[test]
+    fn undo_of_a_done_make_independent_copy_row_restores_the_link_and_removes_copy_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let data_root = temp.path().join("data-root");
+        let source = home.join(".agents/skills/find-bugs");
+        let link = home.join(".claude/skills/find-bugs");
+        fs::create_dir_all(source.join("assets")).unwrap();
+        fs::write(
+            source.join("SKILL.md"),
+            "---\nname: find-bugs\ndescription: test\n---\nBody\n",
+        )
+        .unwrap();
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink("../../.agents/skills/find-bugs", &link).unwrap();
+        let store = EventStore::open(&temp.path().join("app-data")).unwrap();
+
+        let event_id = {
+            let write_lease = super::super::write_lease::WriteLease::default();
+            let guard = write_lease.try_acquire(&home).unwrap();
+            super::super::skill_independent_copy::make_skill_independent_copy(
+                &store,
+                super::super::skill_independent_copy::IndependentCopyRequest {
+                    home: &home,
+                    skill: "find-bugs",
+                    link: &link,
+                    expected_source: &source,
+                    harness: "Claude Code",
+                    scope: super::super::skill_dto::InstallScope::Global,
+                    project_path: None,
+                    slot: "claude-code",
+                    convert_whole_root: false,
+                },
+                &guard,
+            )
+            .unwrap()
+        };
+        assert!(
+            !super::super::skill_fork_registry::read_fork_registry(&home)
+                .unwrap()
+                .copies
+                .is_empty()
+        );
+
+        restore_event_with_runtime(&store, &home, &data_root, &event_id, false).unwrap();
+
+        assert_eq!(
+            fs::read_link(&link).unwrap(),
+            PathBuf::from("../../.agents/skills/find-bugs")
+        );
+        assert!(super::super::skill_fork_registry::read_fork_registry(&home)
+            .unwrap()
+            .copies
+            .is_empty());
     }
 }

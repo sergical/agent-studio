@@ -45,7 +45,10 @@ describe("Add Skill form validation", () => {
   });
 
   it("accepts normal sources with a valid install method", () => {
-    const gitSource = parseSkillSource("git:https://example.com/skills.git");
+    const gitSource = {
+      ...parseSkillSource("git:https://example.com/skills.git"),
+      skillName: "skills",
+    };
     const localSource = parseSkillSource("~/skills/find-bugs");
     const gitMethods = availableAddSkillMethods(gitSource, methodDefaults(true));
     const localMethods = availableAddSkillMethods(localSource, methodDefaults(false));
@@ -63,5 +66,22 @@ describe("Add Skill form validation", () => {
         githubEntries: null,
       }),
     ).toBe(true);
+  });
+
+  it("rejects a git source with no skill name - derive_name (skill_install.rs) refuses to install one without an explicit name, and the sheet has no repo listing to infer one from", () => {
+    const gitSource = parseSkillSource("git:https://example.com/skills.git");
+    const methods = availableAddSkillMethods(gitSource, methodDefaults(true));
+
+    expect(
+      isAddSkillFormValid({
+        parsed: gitSource,
+        noMethodsAvailable: methods.length === 0,
+        destination: "universal",
+        agents: [],
+        scope: "global",
+        projectPath: null,
+        githubEntries: null,
+      }),
+    ).toBe(false);
   });
 });

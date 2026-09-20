@@ -52,6 +52,7 @@ export function isAddSkillFormValid(input: {
   return (
     !("error" in parsed) &&
     !noMethodsAvailable &&
+    (parsed.kind !== "git" || !!parsed.skillName?.trim()) &&
     (scope !== "project" || !!projectPath) &&
     installDestinationError(destination, agents) === null &&
     (githubEntries === null || githubEntries.length > 0)
