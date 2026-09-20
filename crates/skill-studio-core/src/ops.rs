@@ -423,12 +423,17 @@ pub(crate) fn scan_inner(
     let mut scope_ledgers: HashMap<RootScope, ownership::ScopeLedgers> = HashMap::new();
     scope_ledgers.insert(
         RootScope::Global,
-        ownership::read_scope_ledgers(fs, &home.join(".agents")),
+        ownership::read_scope_ledgers(fs, &home.join(".agents"), None),
     );
     for project in &rt.scope.projects {
+        let project_lock_path = lock_file::project_lock_file_path(&project.lexical);
         scope_ledgers.insert(
             RootScope::Project(ProjectRef(project.lexical.clone())),
-            ownership::read_scope_ledgers(fs, &project.lexical.join(".agents")),
+            ownership::read_scope_ledgers(
+                fs,
+                &project.lexical.join(".agents"),
+                Some(&project_lock_path),
+            ),
         );
     }
     let home_registry = ownership::read_home_registry(fs, home);
@@ -2278,7 +2283,8 @@ fn classify_owner(cx: &OwnerClassifyContext) -> (LifecycleOwnerKind, Option<Owne
     };
 
     let dotagents_entry = ledger.dotagents.iter().find(|d| d.name == cx.skill_name);
-    let skills_sh_entry = lock_file::is_skill_installed(&ledger.lock, cx.skill_name);
+    let skills_sh_entry = lock_file::is_skill_installed(&ledger.lock, cx.skill_name)
+        || ledger.project_lock_skills.contains(cx.skill_name);
 
     if dotagents_entry.is_some() && skills_sh_entry {
         return (LifecycleOwnerKind::Ambiguous, None);
@@ -3298,10 +3304,15 @@ fn outdated_target(skill: &InstalledSkillDto) -> Option<crate::skill_update_chec
         .plugin
         .as_ref()
         .map(|p| (p.marketplace.clone(), p.plugin.clone(), p.version.clone()));
+    let project_path = match (deployment.source_kind, &deployment.root.scope) {
+        (SourceKind::SkillsSh, RootScope::Project(project)) => Some(project.0.clone()),
+        _ => None,
+    };
     Some(crate::skill_update_check::OutdatedTarget {
         name: skill.name.0.clone(),
         source_kind: deployment.source_kind,
         plugin,
+        project_path,
     })
 }
 

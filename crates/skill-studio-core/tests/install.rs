@@ -34,10 +34,10 @@ const UNIVERSAL_ROOT_RELATIVE: &str = ".agents/skills";
 /// `<cwd or home>/.agents/skills/<skill>` on the real filesystem, the same
 /// shape the real CLI leaves. Named by parsing the `--skill`/`--name` flag
 /// out of argv (per F3, neither builder puts the skill name last), and
-/// falls back to `home` for the process cwd, since `install_via_cli` only
-/// ever sets a cwd for a `Dotagents` project-scope install - skills.sh's own
-/// builder never sets the process cwd at all (`--global`/`--cwd` carry the
-/// target instead).
+/// falls back to `home` for the process cwd, since a global-scope install
+/// (either method) never sets one - a project scope sets the process cwd to
+/// the project directory itself for both `Dotagents` and `SkillsSh`; neither
+/// CLI has a `--project`/`--cwd` flag that carries the target instead.
 ///
 /// R3: when argv carries `--agent claude-code`, also creates
 /// `<cwd or home>/.claude/skills/<skill>` as a real symlink into the
@@ -633,6 +633,275 @@ fn skills_sh_install_with_claude_code_keeps_the_cli_link_or_names_the_eexist_fai
     assert_eq!(
         std::fs::canonicalize(&link).unwrap(),
         std::fs::canonicalize(&deployment_path).unwrap()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `skills_sh_project_install_runs_npx_in_the_project_dir_not_via_a_cwd_flag_or_names_the_stray_write`:
+/// `skills@1.7.0` has no `--cwd` flag, so a project-scope skills.sh install
+/// must carry the project path as the spawned process's own cwd, not as an
+/// argv token - otherwise the CLI writes into whatever directory the host
+/// process happened to start in instead of the project (the bug this test
+/// pins fixed).
+#[test]
+fn skills_sh_project_install_runs_npx_in_the_project_dir_not_via_a_cwd_flag_or_names_the_stray_write(
+) {
+    let home = unique_temp_dir("install_skills_sh_project_cwd");
+    std::fs::create_dir_all(&home).unwrap();
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner.clone()));
+    let mut req = cli_request("kappa", InstallMethod::SkillsSh);
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+
+    let outcome = ops::install(&rt, &ctx(), &req).unwrap();
+    assert!(
+        matches!(outcome, InstallOutcome::Installed { .. }),
+        "expected Installed, got {outcome:?}"
+    );
+
+    let recorded = spawner.recorded.lock().unwrap();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "install_via_cli must call npx exactly once"
+    );
+    let (args, cwd) = &recorded[0];
+    assert!(
+        !args.contains(&"--cwd".to_string()),
+        "skills@1.7.0 has no --cwd flag; the argv must not carry one: {args:?}"
+    );
+    assert_eq!(
+        cwd.as_deref(),
+        Some(project.as_path()),
+        "the process cwd itself must be the project path"
+    );
+
+    let skill_dir = project.join(UNIVERSAL_ROOT_RELATIVE).join("kappa");
+    assert!(
+        skill_dir.join("SKILL.md").exists(),
+        "the skill must land under the project, not under home: {skill_dir:?}"
+    );
+    assert!(
+        !home.join(UNIVERSAL_ROOT_RELATIVE).join("kappa").exists(),
+        "the skill must not also land in the process's original cwd"
+    );
+
+    // `cli_request` names `AgentId::CLAUDE_CODE`, so the CLI's own
+    // `--agent claude-code` link must land under the project too, not home -
+    // the same cwd the universal root above already proved.
+    let claude_link = project.join(".claude").join("skills").join("kappa");
+    assert!(
+        std::fs::symlink_metadata(&claude_link).is_ok(),
+        "the Claude Code link must be under the project: {claude_link:?}"
+    );
+    assert!(
+        !home.join(".claude").join("skills").join("kappa").exists(),
+        "the Claude Code link must not also land in the process's original cwd"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `skills_sh_global_install_keeps_the_global_flag_and_no_process_cwd_or_names_the_over_eager_fix`:
+/// a global-scope skills.sh install must still pass `--global` and run with
+/// no process cwd override - guards against the project-scope `--cwd` fix
+/// spilling into the global path, which never needed one.
+#[test]
+fn skills_sh_global_install_keeps_the_global_flag_and_no_process_cwd_or_names_the_over_eager_fix() {
+    let home = unique_temp_dir("install_skills_sh_global_cwd");
+    std::fs::create_dir_all(&home).unwrap();
+    let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner.clone()));
+    let req = cli_request("lambda", InstallMethod::SkillsSh);
+
+    let outcome = ops::install(&rt, &ctx(), &req).unwrap();
+    assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+
+    let recorded = spawner.recorded.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    let (args, cwd) = &recorded[0];
+    assert!(
+        args.contains(&"--global".to_string()),
+        "a global-scope install must still pass --global: {args:?}"
+    );
+    assert_eq!(
+        cwd, &None,
+        "a global-scope install must not set a process cwd"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `skills_sh_project_install_over_a_missing_project_path_names_it_before_spawning_npx_or_names_the_opaque_shell_error`:
+/// a project path that doesn't exist must fail before `npx` ever runs, with
+/// the path named in the error - otherwise the failure only ever surfaces
+/// as the shell's own opaque "npx: no such file or directory".
+#[test]
+fn skills_sh_project_install_over_a_missing_project_path_names_it_before_spawning_npx_or_names_the_opaque_shell_error(
+) {
+    let home = unique_temp_dir("install_skills_sh_missing_project");
+    std::fs::create_dir_all(&home).unwrap();
+    let missing_project = home.join("does-not-exist");
+    let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner.clone()));
+    let mut req = cli_request("nu", InstallMethod::SkillsSh);
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(
+        missing_project.clone(),
+    ));
+
+    let err = ops::install(&rt, &ctx(), &req).unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::InvalidRequest);
+    assert!(
+        err.message.contains(&missing_project.display().to_string()),
+        "the error must name the missing project path: {}",
+        err.message
+    );
+    assert_eq!(
+        spawner.recorded.lock().unwrap().len(),
+        0,
+        "npx must never be spawned over a missing project path"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `skills_sh_project_install_that_lands_at_the_home_fallback_names_it_instead_of_a_bare_missing_destination_error`:
+/// when the project-scope destination never appears but the CLI's
+/// home-fallback location (`<home>/.agents/skills/<name>`) newly does, the
+/// error must say the CLI installed there instead of just "did not create
+/// the expected destination" - the same shape the `--cwd`-flag bug this PR
+/// fixes would otherwise have produced silently.
+#[test]
+fn skills_sh_project_install_that_lands_at_the_home_fallback_names_it_instead_of_a_bare_missing_destination_error(
+) {
+    let home = unique_temp_dir("install_skills_sh_home_fallback");
+    std::fs::create_dir_all(&home).unwrap();
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+
+    /// A spawner that ignores the process cwd it's given and always writes
+    /// under `home` - stands in for a spawner (or a future CLI) that drops
+    /// `ProcessSpec::cwd` on the floor, the exact failure mode item 2(b)
+    /// guards against.
+    struct IgnoresCwdSpawner {
+        home: PathBuf,
+    }
+    impl ProcessSpawner for IgnoresCwdSpawner {
+        fn run(
+            &self,
+            spec: &ProcessSpec,
+            _cancel: &dyn CancelToken,
+        ) -> Result<ProcessOutput, skill_studio_core::CoreError> {
+            let skill = spec
+                .args
+                .iter()
+                .position(|a| a == "--skill")
+                .and_then(|i| spec.args.get(i + 1))
+                .unwrap()
+                .clone();
+            let dir = self.home.join(UNIVERSAL_ROOT_RELATIVE).join(&skill);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), "installed at the wrong place\n").unwrap();
+            Ok(ProcessOutput {
+                status: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+            })
+        }
+    }
+
+    let spawner = Arc::new(IgnoresCwdSpawner { home: home.clone() });
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner));
+    let mut req = cli_request("xi", InstallMethod::SkillsSh);
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+
+    let err = ops::install(&rt, &ctx(), &req).unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Io);
+    let fallback = home.join(UNIVERSAL_ROOT_RELATIVE).join("xi");
+    assert!(
+        err.message.contains(&fallback.display().to_string()),
+        "the error must name the home fallback the CLI actually wrote to: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("instead of the project"),
+        "the error must say this landed instead of the project: {}",
+        err.message
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `project_skills_lock_json_classifies_a_skills_sh_install_as_owned_not_manual_or_names_the_lost_provenance`:
+/// the CLI writes `<project>/skills-lock.json` (schema version 1) for a
+/// project-scope skills.sh install, a different file from the shared
+/// `.skill-lock.json` `ownership::read_scope_ledgers` already reads - a
+/// tracked project's scan must still classify the skill as `SkillsSh`, not
+/// fall back to `Manual` for want of a matching ledger entry.
+#[test]
+fn project_skills_lock_json_classifies_a_skills_sh_install_as_owned_not_manual_or_names_the_lost_provenance(
+) {
+    let home = unique_temp_dir("install_project_skills_lock_json");
+    std::fs::create_dir_all(&home).unwrap();
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let mut scope = RuntimeScope::fixture(&home);
+    scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
+        paths: vec![project.clone()],
+    };
+    let history_root = home.join(".history");
+    let ports = Ports {
+        fs: Arc::new(RealFs::new()),
+        clock: Arc::new(FakeClock::at(0)),
+        ids: Arc::new(FakeIds::default()),
+        leases: Arc::new(FileLease::new(home.join(".leases"))),
+        history: Arc::new(SqliteHistoryOpener::new(
+            history_root.join("events.sqlite3"),
+        )),
+        sink: Arc::new(RecordingSink::default()),
+        spawner: Some(Arc::new(FakeNpxSpawner::new(home.clone())) as Arc<dyn ProcessSpawner>),
+        discovery: None,
+        tools: None,
+        catalog: Arc::new(HarnessCatalog::builtin()),
+    };
+    let rt = Runtime::new(&scope, ports).unwrap();
+
+    let mut req = cli_request("mu", InstallMethod::SkillsSh);
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+    req.save_as_preference = false;
+    let outcome = ops::install(&rt, &ctx(), &req).unwrap();
+    assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+
+    // The CLI's own project-scope lock file - `install_via_cli` never writes
+    // this itself, so the test writes it the way `npx skills add --cwd
+    // <project>` would, per PR #295's real trace.
+    std::fs::write(
+        project.join("skills-lock.json"),
+        r#"{"version":1,"skills":{"mu":{"source":"owner/repo","sourceType":"github","computedHash":"abc123"}}}"#,
+    )
+    .unwrap();
+
+    let inventory =
+        ops::scan(&rt, &ctx(), &skill_studio_core::dto::ScanRequest::default()).unwrap();
+    let skill = inventory
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "mu")
+        .expect("the installed skill must appear in the scan");
+    let deployment = skill
+        .deployments
+        .first()
+        .expect("the project-scope install must leave exactly one deployment");
+    assert_eq!(
+        deployment.owner_kind,
+        skill_studio_core::identity::LifecycleOwnerKind::SkillsSh,
+        "skills-lock.json must classify the skill as skills-sh-owned, not left Manual: {:?}",
+        deployment.owner_kind
     );
 
     std::fs::remove_dir_all(&home).ok();

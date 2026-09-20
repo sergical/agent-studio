@@ -149,12 +149,16 @@ pub struct SkillInstallSpec {
     pub harnesses: Vec<AgentId>,
 }
 
-/// Universal skills.sh argv. Never includes Codex as a proxy for Universal.
+/// Universal skills.sh argv, and the process cwd to run it in. Never
+/// includes Codex as a proxy for Universal. `skills@1.7.0` has no `--cwd`
+/// flag (PR #101 / `fix/project-install-runs-in-project-dir`), so a project
+/// scope returns the project path as the process cwd instead of an argv
+/// token - the same fix as `ops_install_cli.rs`'s `cli_args_and_cwd`.
 pub fn skills_sh_universal_add_args(
     repo_source: &str,
     skill_name: Option<&str>,
     spec: &SkillInstallSpec,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, Option<PathBuf>), String> {
     if spec.destination != SkillDestination::Universal {
         return Err("skills.sh Universal argv is only for the Universal destination".to_string());
     }
@@ -164,17 +168,19 @@ pub fn skills_sh_universal_add_args(
         repo_source.to_string(),
         "--yes".to_string(),
     ];
-    match spec.scope {
-        InstallScope::Global => args.push("--global".to_string()),
+    let cwd = match spec.scope {
+        InstallScope::Global => {
+            args.push("--global".to_string());
+            None
+        }
         InstallScope::Project => {
             let path = spec
                 .project_path
                 .as_deref()
                 .ok_or("Project scope needs a project path")?;
-            args.push("--cwd".to_string());
-            args.push(path.to_string());
+            Some(PathBuf::from(path))
         }
-    }
+    };
     if let Some(name) = skill_name {
         args.push("--skill".to_string());
         args.push(name.to_string());
@@ -185,10 +191,19 @@ pub fn skills_sh_universal_add_args(
         args.push("--agent".to_string());
         args.push("claude-code".to_string());
     }
-    Ok(args)
+    Ok((args, cwd))
 }
 
-fn skills_sh_unfork_add_args(rec: &ForkRecord, name: &str) -> Result<Vec<String>, String> {
+fn skills_sh_unfork_add_args(
+    rec: &ForkRecord,
+    name: &str,
+) -> Result<(Vec<String>, Option<PathBuf>), String> {
+    // Fork only ever applies to a global-scope skill (see
+    // `skill_refresh::build_snapshot`), so this reinstall is always global
+    // and the cwd `skills_sh_universal_add_args` returns is always `None` -
+    // still threaded through `run_npx` rather than discarded, so a future
+    // caller that reinstalls a project-scope fork gets the right cwd for
+    // free instead of a silently dropped one.
     let spec = SkillInstallSpec {
         scope: InstallScope::Global,
         destination: SkillDestination::Universal,
@@ -198,9 +213,13 @@ fn skills_sh_unfork_add_args(rec: &ForkRecord, name: &str) -> Result<Vec<String>
     skills_sh_universal_add_args(&rec.origin_source, Some(name), &spec)
 }
 
-fn run_npx(args: &[String]) -> Result<(), String> {
-    let output = Command::new("npx")
-        .args(args)
+fn run_npx(args: &[String], cwd: Option<&Path>) -> Result<(), String> {
+    let mut command = Command::new("npx");
+    command.args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let output = command
         .output()
         .map_err(|e| format!("Failed to execute npx: {e}"))?;
     if output.status.success() {
@@ -221,17 +240,18 @@ impl LedgerTool for RealLedgerTool {
             // target the global scope.
             OriginTool::SkillsSh => skills_sh_remove_args_for_scope(name, InstallScope::Global),
         };
-        run_npx(&args)
+        run_npx(&args, None)
     }
 
     fn reinstall(&self, rec: &ForkRecord, name: &str) -> Result<(), String> {
-        let args = match rec.origin_tool {
-            OriginTool::Dotagents => {
-                dotagents_add_args(&rec.origin_source, name, rec.declared_ref.as_deref())
-            }
+        let (args, cwd) = match rec.origin_tool {
+            OriginTool::Dotagents => (
+                dotagents_add_args(&rec.origin_source, name, rec.declared_ref.as_deref()),
+                None,
+            ),
             OriginTool::SkillsSh => skills_sh_unfork_add_args(rec, name)?,
         };
-        run_npx(&args)
+        run_npx(&args, cwd.as_deref())
     }
 }
 
@@ -1615,7 +1635,7 @@ mod tests {
 
     #[test]
     fn universal_skills_sh_uses_agent_universal_and_global_or_names_the_wrong_argv() {
-        let argv =
+        let (argv, cwd) =
             skills_sh_universal_add_args("o/r", Some("find-bugs"), &universal_global()).unwrap();
         assert_eq!(
             argv,
@@ -1632,13 +1652,14 @@ mod tests {
             ]
         );
         assert!(!argv.iter().any(|a| a == "codex"));
+        assert_eq!(cwd, None);
     }
 
     #[test]
     fn universal_skills_sh_may_add_claude_code_not_codex_or_names_the_missing_agent() {
         let mut spec = universal_global();
         spec.harnesses = vec![AgentId::ClaudeCode];
-        let argv = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
+        let (argv, _cwd) = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
         assert!(argv.windows(2).any(|w| w == ["--agent", "universal"]));
         assert!(argv.windows(2).any(|w| w == ["--agent", "claude-code"]));
         assert!(!argv.iter().any(|a| a == "codex"));
@@ -1648,22 +1669,26 @@ mod tests {
     fn universal_skills_sh_ignores_direct_readers_or_names_the_leaked_agent() {
         let mut spec = universal_global();
         spec.harnesses = vec![AgentId::Codex];
-        let argv = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
+        let (argv, _cwd) = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
         assert!(!argv.iter().any(|arg| arg == "codex"));
     }
 
+    /// `skills@1.7.0` has no `--cwd` flag: a project scope must carry the
+    /// project path as the process cwd, not as an argv token, or the CLI
+    /// writes into whatever directory the process happened to start in.
     #[test]
-    fn project_universal_uses_cwd_not_global_or_names_the_wrong_scope() {
+    fn project_universal_runs_in_project_dir_not_via_cwd_flag_or_names_the_wrong_scope() {
         let spec = SkillInstallSpec {
             scope: InstallScope::Project,
             destination: SkillDestination::Universal,
             project_path: Some("/work/app".to_string()),
             harnesses: vec![],
         };
-        let argv = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
-        assert!(argv.contains(&"--cwd".to_string()));
-        assert!(argv.contains(&"/work/app".to_string()));
+        let (argv, cwd) = skills_sh_universal_add_args("o/r", None, &spec).unwrap();
+        assert!(!argv.contains(&"--cwd".to_string()));
+        assert!(!argv.contains(&"/work/app".to_string()));
         assert!(!argv.contains(&"--global".to_string()));
+        assert_eq!(cwd, Some(PathBuf::from("/work/app")));
     }
 
     /// Records every `remove`/`reinstall` call so tests can assert "called
@@ -3242,8 +3267,9 @@ mod tests {
             base_commit: "a".repeat(40),
         };
 
+        let (args, cwd) = skills_sh_unfork_add_args(&record, "find-bugs").unwrap();
         assert_eq!(
-            skills_sh_unfork_add_args(&record, "find-bugs").unwrap(),
+            args,
             vec![
                 "skills",
                 "add",
@@ -3255,6 +3281,47 @@ mod tests {
                 "--agent",
                 "universal",
             ]
+        );
+        assert_eq!(
+            cwd, None,
+            "a fork is always global-scope, so unfork never sets a process cwd"
+        );
+    }
+
+    /// `run_npx(args, Some(cwd))` must run the child process itself in
+    /// `cwd`, not just log it - a fake `npx` script records its own working
+    /// directory (via `pwd`) so this asserts the real
+    /// `Command::current_dir` call, not the argv this function builds.
+    #[test]
+    fn run_npx_with_a_cwd_runs_the_process_there_or_names_the_ignored_cwd() {
+        let bin_dir = tempfile::tempdir().expect("fake bin dir");
+        let recording = bin_dir.path().join("pwd.log");
+        let fake_npx = bin_dir.path().join("npx");
+        std::fs::write(
+            &fake_npx,
+            format!("#!/bin/sh\npwd > '{}'\nexit 0\n", recording.display()),
+        )
+        .expect("write fake npx");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_npx, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod fake npx");
+        }
+
+        let target_dir = tempfile::tempdir().expect("target cwd");
+        let _path_guard = super::super::test_support::PathGuard::new(bin_dir.path());
+        let result = run_npx(&["--version".to_string()], Some(target_dir.path()));
+
+        assert!(result.is_ok(), "{result:?}");
+        let recorded_cwd = std::fs::read_to_string(&recording)
+            .expect("read recording")
+            .trim()
+            .to_string();
+        assert_eq!(
+            std::fs::canonicalize(&recorded_cwd).expect("canonicalize recorded cwd"),
+            std::fs::canonicalize(target_dir.path()).expect("canonicalize target cwd"),
+            "run_npx must launch the process in the given cwd, not wherever the test process runs"
         );
     }
 
