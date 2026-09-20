@@ -995,6 +995,57 @@ mod tests {
         );
     }
 
+    /// Given `ensure_dir` is called on a single missing directory (not one
+    /// requiring recursion into a missing parent, unlike the `begin`-driven
+    /// test above), when its own `fsops_create_dir` call hits a real I/O
+    /// error, then that error must be returned rather than swallowed as
+    /// `AlreadyExists`; on failure the panic names the outcome `ensure_dir`
+    /// gave instead.
+    #[test]
+    fn ensure_dir_on_a_single_missing_directory_propagates_a_real_creation_error() {
+        let fixture = FixtureBuilder::new().dir("/journal").build_fs();
+        let failing = FailingFs::wrap(Arc::new(fixture));
+        failing.fail_next_create_dir();
+        let journal = journal_over(Arc::new(failing));
+
+        let result = journal.ensure_dir(Path::new("/journal/plans"));
+
+        assert!(
+            result.is_err(),
+            "an injected fsops_create_dir failure must propagate as an error, not be treated \
+             as the directory already existing: got {result:?}"
+        );
+    }
+
+    /// Given a directory that already exists on disk, when `ensure_dir`'s
+    /// own existence check races with a concurrent creator and reports it
+    /// missing anyway - so `ensure_dir` calls `fsops_create_dir` on a
+    /// directory that is really already there - then the resulting
+    /// `AlreadyExists` error must be swallowed as a no-op, not surfaced as a
+    /// failure; on failure the panic names the outcome `ensure_dir` gave
+    /// instead.
+    #[test]
+    fn ensure_dir_swallows_a_genuine_already_exists_race_as_a_no_op() {
+        let fixture = FixtureBuilder::new()
+            .dir("/journal")
+            .dir("/journal/plans")
+            .build_fs();
+        let failing = FailingFs::wrap(Arc::new(fixture));
+        // Makes the existence check on `/journal/plans` report "missing"
+        // even though it is really there, so `ensure_dir` proceeds to
+        // `fsops_create_dir`, which then hits a genuine `AlreadyExists`.
+        failing.fail_symlink_metadata_for(PathBuf::from("/journal/plans"));
+        let journal = journal_over(Arc::new(failing));
+
+        let result = journal.ensure_dir(Path::new("/journal/plans"));
+
+        assert!(
+            result.is_ok(),
+            "a real AlreadyExists from fsops_create_dir must be swallowed as a no-op, not \
+             surfaced as a failure: got {result:?}"
+        );
+    }
+
     /// Given `all()`'s own `read_dir` call hits a real I/O error - not the
     /// benign "no plans directory has been created yet" case the `NotFound`
     /// arm exists for - when `all()` runs, then that error must propagate

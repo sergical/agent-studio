@@ -480,4 +480,24 @@ mod tests {
              creating anything"
         );
     }
+
+    /// `fsops_symlink` is the unguarded, journal-facing primitive used
+    /// internally by `fsops`, distinct from the guarded `symlink` above.
+    #[test]
+    fn fsops_symlink_creates_a_real_link_or_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs_adapter = RealFs::new();
+        let target_path = dir.path().join("target.md");
+        fs::write(&target_path, b"x").unwrap();
+        let link_path = dir.path().join("link.md");
+
+        fs_adapter.fsops_symlink(&target_path, &link_path).unwrap();
+
+        let read_back = fs::read_link(&link_path).unwrap();
+        assert_eq!(
+            read_back, target_path,
+            "fsops_symlink must create a real link pointing at the target, not return Ok \
+             without creating anything"
+        );
+    }
 }

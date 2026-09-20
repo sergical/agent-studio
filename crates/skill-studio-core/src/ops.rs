@@ -6368,6 +6368,52 @@ mod tests {
         );
     }
 
+    /// A `LinkedTo` deployment whose own destination is `PerHarness` - not
+    /// `Universal` - is not a candidate for takeover, even when it would
+    /// otherwise resolve to the exact same path as a matching canonical
+    /// owner; on failure the panic names the owner it wrongly took over.
+    #[test]
+    fn propagate_verified_linked_owners_skips_a_linked_deployment_whose_own_destination_is_not_universal(
+    ) {
+        let shared_path = PathBuf::from("/agents/skills/write-tests");
+        let canonical_id = DeploymentId::parse("dep:v1/g/-/universal/-/canonical").unwrap();
+        let linked_id = DeploymentId::parse("dep:v1/g/-/claude-code/-/linked").unwrap();
+        let mut skill = InstalledSkillDto {
+            name: SkillName("write-tests".to_string()),
+            description: None,
+            deployments: vec![
+                DeploymentDto {
+                    id: canonical_id.clone(),
+                    destination: SkillDestination::Universal,
+                    backing: BackingRelationship::Canonical,
+                    owner_kind: LifecycleOwnerKind::SkillsSh,
+                    ..minimal_deployment(SourceKind::SkillsSh, None)
+                },
+                DeploymentDto {
+                    id: linked_id.clone(),
+                    destination: SkillDestination::PerHarness,
+                    backing: BackingRelationship::LinkedTo,
+                    link_target: Some(shared_path.clone()),
+                    owner_kind: LifecycleOwnerKind::Copy,
+                    ..minimal_deployment(SourceKind::Manual, None)
+                },
+            ],
+        };
+        let resolved_paths = HashMap::from([
+            (canonical_id, shared_path.clone()),
+            (linked_id, shared_path),
+        ]);
+
+        propagate_verified_linked_owners(&mut skill, &resolved_paths);
+
+        assert_eq!(
+            skill.deployments[1].owner_kind,
+            LifecycleOwnerKind::Copy,
+            "a linked deployment whose own destination is not Universal must never take over \
+             a canonical owner, or this test proves nothing about the destination guard"
+        );
+    }
+
     mod scan_tests {
         use super::*;
         use crate::harness::HarnessCatalog;
@@ -6512,6 +6558,38 @@ mod tests {
                 ),
                 "a plain per-harness skill directory must be Independent/PerHarness, not \
                  reported as linked into the universal root"
+            );
+        }
+
+        /// Given a per-skill symlink under a harness's own root whose target
+        /// resolves, but not to anywhere under the universal skills root,
+        /// when it is scanned, then it is `Independent`/`PerHarness`, not
+        /// promoted to a universal link; on failure the panic names the
+        /// backing/destination pair the scan reported instead.
+        #[test]
+        fn a_per_skill_symlink_pointing_outside_the_universal_root_is_not_treated_as_linked() {
+            let fs = FixtureBuilder::new()
+                .dir("/h/.claude/skills")
+                .dir("/elsewhere/write-tests")
+                .file(
+                    "/elsewhere/write-tests/SKILL.md",
+                    b"---\nname: write-tests\ndescription: Writes tests.\n---\nBody.",
+                )
+                .alias("/h/.claude/skills/write-tests", "/elsewhere/write-tests")
+                .build_fs();
+            let rt = runtime_with(fs, Arc::new(FakeClock::at(0)));
+            let inv = scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+
+            assert_eq!(inv.skills.len(), 1);
+            let deployment = &inv.skills[0].deployments[0];
+            assert_eq!(
+                (deployment.destination, deployment.backing),
+                (
+                    SkillDestination::PerHarness,
+                    BackingRelationship::Independent
+                ),
+                "a per-skill symlink resolving outside the universal root must be \
+                 Independent/PerHarness, not promoted to a universal link"
             );
         }
 
