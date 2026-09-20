@@ -841,11 +841,11 @@ fn outdated_separates_an_unknown_check_from_an_untracked_skill_or_names_the_curr
     assert_eq!(json["status"], "ok", "{json:?}");
     assert_eq!(json["operation"], "outdated", "{json:?}");
     assert_eq!(
-        json["data"]["gamma"], "unknown",
+        json["data"]["gamma"]["currency"], "unknown",
         "a skills.sh skill whose lookup could not run is not up to date or behind: {json:?}"
     );
     assert_eq!(
-        json["data"]["manual-only"], "not_tracked",
+        json["data"]["manual-only"]["currency"], "not_tracked",
         "a skill no install method claims has nothing to check: {json:?}"
     );
 }
