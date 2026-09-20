@@ -39,10 +39,9 @@
 //! so they prove `ops`'s own bookkeeping around a materialized CLI result
 //! (destination checks, lock-file updates, `link_claude_code`'s tolerance of
 //! an existing link), not that the CLI itself would still write those same
-//! bytes today. Traces 03's `Io`-error assertions and the divergence
-//! assertions in 04/08 are independent in the same way as the argv check,
-//! since they assert facts about the *recorded* CLI run itself (its exit
-//! status, or an argv shape it never received), not about a replay.
+//! bytes today. The divergence assertion in trace 04 is independent in the
+//! same way as the argv check, since it asserts a fact about the *recorded*
+//! CLI run itself (an argv shape it never received), not about a replay.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -203,10 +202,16 @@ fn walk_allowed(root: &Path, home_root: &Path, project_root: Option<&Path>) -> V
             return;
         }
         let bytes = std::fs::read(&abs).unwrap();
+        // A remote skill's file body is recorded as a `stub sha256=... bytes=...`
+        // line (see `record-cli-traces.sh`'s `snapshot_tree`), not its real
+        // third-party content - so this compares the ORIGINAL hash the stub
+        // names, never the stub text's own hash, keeping this a shape/identity
+        // check rather than a body-bytes check for those paths.
+        let sha256 = stub_sha256(&bytes).unwrap_or_else(|| sha256_hex(&bytes));
         out.push(TreeEntry {
             path: rel.to_string_lossy().into_owned(),
             kind: "file".to_string(),
-            sha256: Some(sha256_hex(&bytes)),
+            sha256: Some(sha256),
             target: None,
         });
     }
@@ -216,6 +221,20 @@ fn walk_allowed(root: &Path, home_root: &Path, project_root: Option<&Path>) -> V
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
+}
+
+/// Parses a `stub sha256=<hex> bytes=<n>` line back into the original file's
+/// recorded sha256, or `None` for a file that was never stubbed (e.g. trace
+/// 03's own authored `my-local-skill` content). The stub's own bytes are
+/// never hashed for comparison - only this embedded, originally-recorded
+/// hash is, so a fixture holding a stub still proves shape/identity against
+/// `tree.json` without ever holding third-party file bodies on disk.
+fn stub_sha256(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let rest = text.strip_prefix("stub sha256=")?;
+    let (hash, rest) = rest.split_once(' ')?;
+    rest.strip_prefix("bytes=")?;
+    (hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then(|| hash.to_string())
 }
 
 /// Hex sha256, matching the recorder's Node `crypto.createHash("sha256")`
@@ -276,41 +295,19 @@ struct Divergence {
 }
 
 const KNOWN_DIVERGENCES: &[Divergence] = &[
-    // As of this fix round, `fix/project-install-runs-in-project-dir` has
-    // not landed in `main` - these three entries describe every
-    // project-scope SkillsSh install (not just a local-folder source): the
-    // real CLI has no `--cwd` flag for `add`, so a project-scope install
-    // must cd into the project first and pass no `--cwd` token at all
-    // (that is what trace 03 now records); `ops_install_cli.rs` instead
-    // pushes a `--cwd <path>` argv token the CLI ignores, and never sets
-    // `ProcessSpec.cwd` itself.
-    Divergence {
-        trace: "03-add-local-folder-project",
-        field: "args (--cwd token)",
-        cli_value: "no --cwd token at all (cd into the project instead)",
-        core_value: "--cwd <project path> (a token skills@1.7.0's add silently ignores)",
-        reason: "cli_args_and_cwd pushes a --cwd argument for every project-scope SkillsSh install; this affects all such installs, not only a local-folder source",
-    },
-    Divergence {
-        trace: "03-add-local-folder-project",
-        field: "ProcessSpec.cwd",
-        cli_value: "the process's actual working directory (the CLI has no --cwd flag for `add`)",
-        core_value: "None (cli_args_and_cwd never sets a cwd for SkillsSh; it only pushes a --cwd argument the CLI ignores)",
-        reason: "a project-scope SkillsSh install replayed through ops installs into the host process's own cwd, not the target project - this affects all project-scope SkillsSh installs, not only a local-folder source",
-    },
-    Divergence {
-        trace: "03-add-local-folder-project",
-        field: "lock file path/schema",
-        cli_value: "$PROJECT/skills-lock.json, {version:1, skills:{name:{source,sourceType:\"local\",computedHash}}}, no timestamps",
-        core_value: "$PROJECT/.agents/.skill-lock.json, {version:3, skills:{name:{source,sourceType,sourceUrl,skillFolderHash,installedAt,updatedAt}}}",
-        reason: "lock_file.rs only reads the global schema at the global path; a project-scope local install's lock file is invisible to core",
-    },
+    // Trace 03's `--cwd`-argv-token and `ProcessSpec.cwd` divergences were
+    // removed once PR #296 (`origin/main` commit a044254) set the process
+    // cwd to the project path for a project-scope SkillsSh install instead
+    // of pushing a `--cwd` token the CLI ignores - trace 03 now asserts full
+    // argv/cwd parity like every other trace, with no entry here.
+    //
+    // follow-up: see issue for unsupported harness ids
     Divergence {
         trace: "04-add-two-harnesses",
         field: "InstallOutcome",
         cli_value: "cursor never received an --agent token, so nothing was ever done for it",
         core_value: "InstallOutcome::Installed, as if every requested harness (including cursor) had succeeded",
-        reason: "cli_args_and_cwd only ever special-cases claude-code; Codex/OpenCode/pi legitimately need no --agent token at all (they read the shared universal root by design - harness.rs's reads_universal_root is Yes for all three), but cursor is a harness id the catalog does not recognize, and ops::install still reports the overall install as Installed with nothing done for it - the real gap is the silent over-reporting, not the missing token",
+        reason: "cli_args_and_cwd only ever special-cases claude-code; Codex/OpenCode/pi legitimately need no --agent token at all (they read the shared universal root by design - harness.rs's reads_universal_root is Yes for all three), but cursor is a harness id the catalog does not recognize, and ops::install still reports the overall install as Installed with nothing done for it - the real gap is the silent over-reporting, not the missing token. follow-up: see issue for unsupported harness ids.",
     },
 ];
 
@@ -528,41 +525,20 @@ impl TraceCtx {
             1,
             "{trace_name}: npx must be called exactly once"
         );
-        let (raw_args, cwd) = &recorded[0];
-        let mut args = raw_args.clone();
-        if let Some(d) = divergence(trace_name, "args (--cwd token)") {
-            // `ops` sends a `--cwd <path>` token the real CLI never
-            // received (see KNOWN_DIVERGENCES) - strip it from the actual
-            // argv before comparing, so everything else still matches
-            // exactly. The position lookup is itself the check that the
-            // divergence still reproduces.
-            let pos = args
-                .iter()
-                .position(|a| a == "--cwd")
-                .unwrap_or_else(|| panic!("{d} no longer reproduces - update KNOWN_DIVERGENCES"));
-            args.remove(pos + 1); // the path
-            args.remove(pos); // "--cwd"
-        }
+        let (args, cwd) = &recorded[0];
         assert_eq!(
-            args, expected_args,
+            args, &expected_args,
             "{trace_name}: ops's argv drifted from the recorded npx call"
         );
-        if let Some(d) = divergence(trace_name, "ProcessSpec.cwd") {
-            assert_eq!(
-                cwd, &None,
-                "{d} no longer reproduces - update KNOWN_DIVERGENCES"
-            );
-        } else {
-            let expected_cwd = match cwd_label.as_deref() {
-                Some("GLOBAL") => None,
-                Some("$PROJECT") => self.project.clone(),
-                other => panic!("unrecognized cwd label {other:?}"),
-            };
-            assert_eq!(
-                cwd, &expected_cwd,
-                "{trace_name}: ops's cwd drifted from the recorded npx call"
-            );
-        }
+        let expected_cwd = match cwd_label.as_deref() {
+            Some("GLOBAL") => None,
+            Some("$PROJECT") => self.project.clone(),
+            other => panic!("unrecognized cwd label {other:?}"),
+        };
+        assert_eq!(
+            cwd, &expected_cwd,
+            "{trace_name}: ops's cwd drifted from the recorded npx call"
+        );
     }
 
     fn assert_tree_matches_after(&self, trace_name: &str) {
@@ -666,18 +642,15 @@ fn cli_add_skillssh_slug_global_matches_the_recorded_trace_or_names_the_divergin
 }
 
 // ---------------------------------------------------------------------------
-// Trace 03: add a local folder, project scope - the recorded, real-CLI
-// divergence: `cli_args_and_cwd` never sets a process cwd for a SkillsSh
-// install (only a `--cwd` argv token the real CLI ignores for `add`), so the
-// bytes land wherever the host process's own cwd happens to be, never at
-// `req.scope`'s project path - and `install_via_cli`'s own post-call check
-// looks for the destination at that project path regardless. The real,
-// user-visible divergence is therefore that `ops::install` itself fails
-// every project-scope SkillsSh install with an `Io` error, not that it
-// silently installs to the wrong place - see KNOWN_DIVERGENCES.
+// Trace 03: add a local folder, project scope. PR #296 (`origin/main` commit
+// a044254) set the process cwd to the project path for a project-scope
+// SkillsSh install instead of pushing a `--cwd` argv token `skills@1.7.0`'s
+// `add` silently ignores - `ops::install` now writes to the same place the
+// real CLI does, and this trace asserts full argv/cwd/tree parity like every
+// other trace, with no KNOWN_DIVERGENCES entry.
 // ---------------------------------------------------------------------------
 #[test]
-fn cli_add_local_folder_project_fails_the_whole_install_or_names_the_fix() {
+fn cli_add_local_folder_project_matches_the_recorded_trace_or_names_the_diverging_field() {
     let trace_name = "03-add-local-folder-project";
     let project = ProjectRef(unique_temp_dir(&format!("cli_parity_{trace_name}_project")));
     let scope = RootScope::Project(project.clone());
@@ -689,46 +662,10 @@ fn cli_add_local_folder_project_fails_the_whole_install_or_names_the_fix() {
     // the recorded `after/` bytes, so using that same literal string here
     // keeps the argv comparison meaningful without needing a real path.
     let req = install_request("my-local-skill", "$LOCAL_SKILL_DIR", scope, Vec::new());
-    let err = ops::install(&tc.rt, &ctx(), &req).unwrap_err();
-    assert_eq!(
-        err.code,
-        skill_studio_core::error::ErrorCode::Io,
-        "if this now succeeds, ops_install_cli.rs started setting a cwd for SkillsSh - update KNOWN_DIVERGENCES and this test"
-    );
+    let outcome = ops::install(&tc.rt, &ctx(), &req).unwrap();
+    assert!(matches!(outcome, InstallOutcome::Installed { .. }));
     tc.assert_argv_matches(trace_name);
-
-    // The bytes still land somewhere - under $HOME, the spawner's fallback
-    // when `ProcessSpec.cwd` is `None` - even though the op as a whole
-    // reports failure, since the CLI call itself already ran and wrote its
-    // files before `install_via_cli`'s destination check rejects the result.
-    assert!(
-        tc.home
-            .join(".agents/skills/my-local-skill/SKILL.md")
-            .exists(),
-        "the divergence's own destination (under $HOME, not $PROJECT) must exist"
-    );
-    assert!(
-        !tc.project
-            .as_ref()
-            .unwrap()
-            .join(".agents/skills/my-local-skill/SKILL.md")
-            .exists(),
-        "the requested $PROJECT destination must stay empty - this is exactly what the Io error above reports"
-    );
-
-    // The second known divergence: core's lock_file.rs cannot see the real
-    // CLI's project-scope local lock file (wrong path and schema) - a fresh
-    // read at the path core actually looks for must come back empty.
-    let lock = read_lock_file(
-        tc.rt.ports.fs.as_ref(),
-        &lock_file_path(tc.project.as_ref().unwrap()),
-    )
-    .unwrap();
-    assert!(
-        lock.skills.is_empty(),
-        "core's lock_file.rs must not see the real CLI's $PROJECT/skills-lock.json - if it now does, update KNOWN_DIVERGENCES"
-    );
-
+    tc.assert_tree_matches_after(trace_name);
     std::fs::remove_dir_all(&tc.home).ok();
     std::fs::remove_dir_all(tc.project.as_ref().unwrap()).ok();
 }

@@ -173,6 +173,17 @@ redact_stream() {
 # link's own directory (when the target shares this call's own walked
 # root), avoids both that shape and the missing-separator bug a naive
 # substring splice on the raw value produced.
+#
+# Third-party bodies: this is a public repo, so no fetched skill's own
+# content (its `SKILL.md`, `LICENSE.txt`, scripts, or any other file) may be
+# vendored in full - only the tree shape and lock-file bookkeeping matter to
+# the parity test. Every file under a `skills/<name>/` folder is therefore
+# written to `files/` as a one-line stub (`stub sha256=<hash> bytes=<n>`)
+# when `stub_bodies` is `1`; `tree.json` still records the file's ORIGINAL
+# sha256/length, so a diff of the recorded tree still catches any real
+# content drift, without this repo ever holding the bytes themselves. Passed
+# as `0` only for a trace's own authored local-folder skill source (never
+# fetched from anywhere, so there is nothing third-party to strip).
 ALLOWED_TOP_LEVEL='.agents .claude .codex .cursor .config skills-lock.json'
 snapshot_tree() {
   root="$1"
@@ -184,13 +195,16 @@ snapshot_tree() {
   local_skill_from="$7"
   local_skill_to="$8"
   walk_root_token="$9"
+  stub_bodies="${10}"
   rm -rf "$out"
   mkdir -p "$out/files"
   "$NODE_BIN" -e '
     const fs = require("fs");
     const path = require("path");
     const crypto = require("crypto");
-    const [root, out, homeFrom, homeTo, projFrom, projTo, localFrom, localTo, walkRootToken, allowed] = process.argv.slice(1);
+    const [root, out, homeFrom, homeTo, projFrom, projTo, localFrom, localTo, walkRootToken, stubBodies, allowed] = process.argv.slice(1);
+    const stub = stubBodies === "1";
+    const isSkillBody = (rel) => /(^|\/)skills\/[^/]+\//.test(rel);
     const allowedTop = new Set(allowed.split(" ").filter(Boolean));
     // Longest/most specific prefix first (local skill source can sit inside
     // a directory that also matches home/project), and each pair redacts
@@ -248,10 +262,16 @@ snapshot_tree() {
       if (st.isFile()) {
         const bytes = normalizeBytes(fs.readFileSync(abs));
         const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+        // tree.json always keeps the ORIGINAL hash/length, whether or not
+        // this file body is stubbed on disk below.
         entries.push({ path: rel, kind: "file", len: bytes.length, sha256 });
         const dest = path.join(out, "files", rel);
         fs.mkdirSync(path.dirname(dest), { recursive: true });
-        fs.writeFileSync(dest, bytes);
+        if (stub && isSkillBody(rel)) {
+          fs.writeFileSync(dest, `stub sha256=${sha256} bytes=${bytes.length}\n`);
+        } else {
+          fs.writeFileSync(dest, bytes);
+        }
         return;
       }
       entries.push({ path: rel, kind: "other" });
@@ -259,7 +279,7 @@ snapshot_tree() {
     if (fs.existsSync(root)) walk("");
     entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     fs.writeFileSync(path.join(out, "tree.json"), JSON.stringify(entries, null, 2) + "\n");
-  ' "$root" "$out" "$home_from" "$home_to" "$proj_from" "$proj_to" "$local_skill_from" "$local_skill_to" "$walk_root_token" "$ALLOWED_TOP_LEVEL"
+  ' "$root" "$out" "$home_from" "$home_to" "$proj_from" "$proj_to" "$local_skill_from" "$local_skill_to" "$walk_root_token" "$stub_bodies" "$ALLOWED_TOP_LEVEL"
 }
 
 # Rewrites `command.txt`'s raw cwd line (written by `run_cli`) to the
@@ -309,11 +329,11 @@ trace_01() {
   dir=$(trace_dir "01-add-github-global-claude-code")
   TMP_HOME_PREFIX=$(track_tmp)
   export HOME="$TMP_HOME_PREFIX"
-  snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME'
+  snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
   RECORD_TO="$dir" run_cli "" add anthropics/skills --yes --global --skill academy-guide --agent universal --agent claude-code
   unset RECORD_TO
   write_stdout "$dir"
-  snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME'
+  snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
   finish_command "$dir"
   commit=$(resolve_commit anthropics/skills)
   cat > "$dir/meta.json" <<EOF
@@ -335,11 +355,11 @@ trace_02() {
   dir=$(trace_dir "02-add-skillssh-slug-global")
   TMP_HOME_PREFIX=$(track_tmp)
   export HOME="$TMP_HOME_PREFIX"
-  snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME'
+  snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
   RECORD_TO="$dir" run_cli "" add vercel-labs/agent-skills@web-design-guidelines --yes --global --skill web-design-guidelines --agent universal
   unset RECORD_TO
   write_stdout "$dir"
-  snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME'
+  snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
   finish_command "$dir"
   commit=$(resolve_commit vercel-labs/agent-skills)
   curl -fsSL "https://raw.githubusercontent.com/vercel-labs/agent-skills/main/LICENSE" -o "$dir/LICENSE" 2>/dev/null || true
@@ -378,11 +398,11 @@ description: A tiny local test skill for CLI trace recording.
 # My Local Skill
 Says hello.
 EOF
-  snapshot_tree "$PROJECT_DIR" "$dir/before" "$HOME" '$HOME' "$PROJECT_DIR" '$PROJECT' "$LOCAL_SKILL_DIR" '$LOCAL_SKILL_DIR' '$PROJECT'
+  snapshot_tree "$PROJECT_DIR" "$dir/before" "$HOME" '$HOME' "$PROJECT_DIR" '$PROJECT' "$LOCAL_SKILL_DIR" '$LOCAL_SKILL_DIR' '$PROJECT' "0"
   RECORD_TO="$dir" run_cli "$PROJECT_DIR" add "$LOCAL_SKILL_DIR" --yes --skill my-local-skill --agent universal
   unset RECORD_TO
   write_stdout "$dir"
-  snapshot_tree "$PROJECT_DIR" "$dir/after" "$HOME" '$HOME' "$PROJECT_DIR" '$PROJECT' "$LOCAL_SKILL_DIR" '$LOCAL_SKILL_DIR' '$PROJECT'
+  snapshot_tree "$PROJECT_DIR" "$dir/after" "$HOME" '$HOME' "$PROJECT_DIR" '$PROJECT' "$LOCAL_SKILL_DIR" '$LOCAL_SKILL_DIR' '$PROJECT' "0"
   finish_command "$dir"
   cat > "$dir/meta.json" <<EOF
 {
@@ -412,11 +432,11 @@ trace_04() {
   dir=$(trace_dir "04-add-two-harnesses")
   TMP_HOME_PREFIX=$(track_tmp)
   export HOME="$TMP_HOME_PREFIX"
-  snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME'
+  snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
   RECORD_TO="$dir" run_cli "" add anthropics/skills --yes --global --skill brand-guidelines --agent universal --agent claude-code
   unset RECORD_TO
   write_stdout "$dir"
-  snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME'
+  snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
   finish_command "$dir"
   commit=$(resolve_commit anthropics/skills)
   cat > "$dir/meta.json" <<EOF
@@ -439,11 +459,11 @@ trace_05() {
   dir=$(trace_dir "05-add-shared-root-only")
   TMP_HOME_PREFIX=$(track_tmp)
   export HOME="$TMP_HOME_PREFIX"
-  snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME'
+  snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
   RECORD_TO="$dir" run_cli "" add anthropics/skills --yes --global --skill web-artifacts-builder --agent universal
   unset RECORD_TO
   write_stdout "$dir"
-  snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME'
+  snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
   finish_command "$dir"
   commit=$(resolve_commit anthropics/skills)
   cat > "$dir/meta.json" <<EOF
@@ -474,11 +494,11 @@ trace_06() {
   PROJECT_DIR=$(track_tmp)
   run_cli "$PROJECT_DIR" add anthropics/skills --yes --skill academy-guide --agent universal > /dev/null
   printf '\nCORRUPTED FOR TRACE 06\n' >> "$PROJECT_DIR/.agents/skills/academy-guide/SKILL.md"
-  snapshot_tree "$PROJECT_DIR" "$dir/before" "$HOME" '$HOME' "$PROJECT_DIR" '$PROJECT' "" "" '$PROJECT'
+  snapshot_tree "$PROJECT_DIR" "$dir/before" "$HOME" '$HOME' "$PROJECT_DIR" '$PROJECT' "" "" '$PROJECT' "1"
   RECORD_TO="$dir" run_cli "$PROJECT_DIR" update academy-guide
   unset RECORD_TO
   write_stdout "$dir"
-  snapshot_tree "$PROJECT_DIR" "$dir/after" "$HOME" '$HOME' "$PROJECT_DIR" '$PROJECT' "" "" '$PROJECT'
+  snapshot_tree "$PROJECT_DIR" "$dir/after" "$HOME" '$HOME' "$PROJECT_DIR" '$PROJECT' "" "" '$PROJECT' "1"
   finish_command "$dir"
   cat > "$dir/meta.json" <<EOF
 {
@@ -501,11 +521,11 @@ trace_07() {
   export HOME="$TMP_HOME_PREFIX"
   PROJECT_DIR=$(track_tmp)
   run_cli "$PROJECT_DIR" add anthropics/skills --yes --skill academy-guide --agent universal > /dev/null
-  snapshot_tree "$PROJECT_DIR" "$dir/before" "$HOME" '$HOME' "$PROJECT_DIR" '$PROJECT' "" "" '$PROJECT'
+  snapshot_tree "$PROJECT_DIR" "$dir/before" "$HOME" '$HOME' "$PROJECT_DIR" '$PROJECT' "" "" '$PROJECT' "1"
   RECORD_TO="$dir" run_cli "$PROJECT_DIR" update academy-guide
   unset RECORD_TO
   write_stdout "$dir"
-  snapshot_tree "$PROJECT_DIR" "$dir/after" "$HOME" '$HOME' "$PROJECT_DIR" '$PROJECT' "" "" '$PROJECT'
+  snapshot_tree "$PROJECT_DIR" "$dir/after" "$HOME" '$HOME' "$PROJECT_DIR" '$PROJECT' "" "" '$PROJECT' "1"
   finish_command "$dir"
   cat > "$dir/meta.json" <<EOF
 {
@@ -534,11 +554,11 @@ trace_08() {
   TMP_HOME_PREFIX=$(track_tmp)
   export HOME="$TMP_HOME_PREFIX"
   run_cli "" add anthropics/skills --yes --global --skill academy-guide --agent claude-code --agent cursor --copy > /dev/null
-  snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME'
+  snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
   RECORD_TO="$dir" run_cli "" remove academy-guide --yes --global
   unset RECORD_TO
   write_stdout "$dir"
-  snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME'
+  snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
   finish_command "$dir"
   cat > "$dir/meta.json" <<EOF
 {
@@ -559,11 +579,11 @@ trace_09() {
   TMP_HOME_PREFIX=$(track_tmp)
   export HOME="$TMP_HOME_PREFIX"
   run_cli "" add anthropics/skills --yes --global --skill academy-guide --agent universal > /dev/null
-  snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME'
+  snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
   RECORD_TO="$dir" run_cli "" remove academy-guide --yes --global
   unset RECORD_TO
   write_stdout "$dir"
-  snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME'
+  snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
   finish_command "$dir"
   cat > "$dir/meta.json" <<EOF
 {
