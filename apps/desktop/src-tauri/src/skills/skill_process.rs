@@ -6,13 +6,83 @@
 // thread; this helper is what the background worker calls instead.
 // ============================================================================
 
+use std::ffi::OsString;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// The desktop app's search directories for a bare `program` name, from the
+/// login-shell `PATH` probe. A macOS app launched from Finder inherits
+/// `launchd`'s minimal `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`), where
+/// neither a bare `claude` nor `npx` (nor the `node` its `#!/usr/bin/env
+/// node` shebang needs) can be found. `LoginShellToolLookup` caches the
+/// probe process-wide, so this costs a shell spawn once per app launch, not
+/// once per command.
+fn login_shell_search_dirs() -> Vec<PathBuf> {
+    skill_studio_host::LoginShellToolLookup::new()
+        .dirs()
+        .to_vec()
+}
+
+/// Resolves a bare `program` (no path separator) to the first executable
+/// match under `search_dirs`, and builds the `PATH` its child should search
+/// for a second binary itself (`npx`'s shebang needs `node` on the child's
+/// own `PATH`, not just `argv[0]` resolved). Mirrors
+/// `RealProcessSpawner::resolve_program`/`child_path` in
+/// `skill-studio-host`'s `harness_detect.rs`; kept as a local copy because
+/// those are private methods on that crate's spawner, not a `pub` function
+/// this crate can call.
+fn resolve_program_and_path(program: &str, search_dirs: &[PathBuf]) -> (PathBuf, OsString) {
+    let resolved = if program.contains('/') {
+        PathBuf::from(program)
+    } else {
+        search_dirs
+            .iter()
+            .map(|dir| dir.join(program))
+            .find(|candidate| is_executable_file(candidate))
+            .unwrap_or_else(|| PathBuf::from(program))
+    };
+
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    // A dir containing the PATH separator can't be represented in a joined
+    // PATH string; skip just that dir rather than letting `join_paths` fail
+    // and falling back to `inherited` alone, which would silently drop every
+    // other `search_dirs` entry too.
+    let filtered_search_dirs = search_dirs
+        .iter()
+        .filter(|dir| !dir.as_os_str().to_string_lossy().contains(':'))
+        .cloned();
+    // An empty (unset or "") inherited PATH must contribute nothing, not an
+    // empty path segment: `split_paths` on "" yields one empty component,
+    // which `Command` resolves as the child's cwd.
+    let inherited_dirs: Vec<PathBuf> = if inherited.is_empty() {
+        Vec::new()
+    } else {
+        std::env::split_paths(&inherited).collect()
+    };
+    let path =
+        std::env::join_paths(filtered_search_dirs.chain(inherited_dirs)).unwrap_or(inherited);
+    (resolved, path)
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        metadata.is_file()
+    }
+}
 
 /// How long a cancelled or timed-out child gets after SIGTERM before SIGKILL.
 pub const PROCESS_CANCEL_GRACE: Duration = Duration::from_secs(2);
@@ -197,11 +267,37 @@ pub fn run_controlled_command(
     timeout: Duration,
     max_output_bytes: usize,
 ) -> Result<(), ControlledProcessError> {
+    run_controlled_command_with_search_dirs(
+        program,
+        args,
+        cwd,
+        cancel,
+        timeout,
+        max_output_bytes,
+        &login_shell_search_dirs(),
+    )
+}
+
+/// As [`run_controlled_command`], resolving `program` against `search_dirs`
+/// (production: the login-shell `PATH`) instead of always probing it. A
+/// separate seam so tests can pass fixed dirs without spawning the login
+/// shell.
+fn run_controlled_command_with_search_dirs(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    cancel: &AtomicBool,
+    timeout: Duration,
+    max_output_bytes: usize,
+    search_dirs: &[PathBuf],
+) -> Result<(), ControlledProcessError> {
     if cancel.load(Ordering::SeqCst) {
         return Err(ControlledProcessError::Cancelled);
     }
 
-    let mut command = Command::new(program);
+    let (resolved_program, child_path) = resolve_program_and_path(program, search_dirs);
+    let mut command = Command::new(&resolved_program);
+    command.env("PATH", &child_path);
     command
         .args(args)
         .stdin(Stdio::null())
@@ -292,7 +388,15 @@ pub fn run_controlled_command_output(
     control: &AddOperationControl,
     max_output_bytes: usize,
 ) -> Result<Vec<u8>, ControlledProcessError> {
-    run_controlled_command_io(program, args, cwd, control, max_output_bytes, None)
+    run_controlled_command_io(
+        program,
+        args,
+        cwd,
+        control,
+        max_output_bytes,
+        None,
+        &login_shell_search_dirs(),
+    )
 }
 
 /// Run a command under one operation deadline with stdout redirected to a
@@ -312,10 +416,15 @@ pub fn run_controlled_command_to_file(
         control,
         max_output_bytes,
         Some(output_path),
+        &login_shell_search_dirs(),
     )
     .map(|_| ())
 }
 
+/// As [`run_controlled_command_output`]/[`run_controlled_command_to_file`],
+/// resolving `program` against `search_dirs` instead of always probing the
+/// login shell. A separate seam so tests can pass fixed dirs without
+/// spawning it.
 fn run_controlled_command_io(
     program: &Path,
     args: &[String],
@@ -323,9 +432,13 @@ fn run_controlled_command_io(
     control: &AddOperationControl,
     max_output_bytes: usize,
     output_path: Option<&Path>,
+    search_dirs: &[PathBuf],
 ) -> Result<Vec<u8>, ControlledProcessError> {
     control.check()?;
-    let mut command = Command::new(program);
+    let program_str = program.to_string_lossy();
+    let (resolved_program, child_path) = resolve_program_and_path(&program_str, search_dirs);
+    let mut command = Command::new(&resolved_program);
+    command.env("PATH", &child_path);
     command
         .args(args)
         .stdin(Stdio::null())
@@ -664,5 +777,48 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error, ControlledProcessError::TimedOut);
+    }
+
+    /// Without the fix, `Command::new("fakeclaude")` resolves only against
+    /// this test process's own `PATH`, which never includes `tmp`, so the
+    /// spawn fails with "No such file or directory" - the same failure a
+    /// packaged app hits under `launchd`'s minimal `PATH` for a bare
+    /// `claude` or `npx`. `run_controlled_command_with_search_dirs` must
+    /// resolve `fakeclaude` against the given directory instead and run it.
+    #[cfg(unix)]
+    #[test]
+    fn a_bare_program_outside_the_process_path_runs_through_the_command_runner_or_names_the_spawn_error(
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("marker");
+        let script_path = tmp.path().join("fakeclaude");
+        std::fs::write(
+            &script_path,
+            format!("#!/usr/bin/env sh\ntouch \"{}\"\n", marker.display()),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let search_dirs = vec![tmp.path().to_path_buf()];
+        run_controlled_command_with_search_dirs(
+            "fakeclaude",
+            &[],
+            None,
+            &cancel,
+            Duration::from_secs(5),
+            MAX_PROCESS_OUTPUT_BYTES,
+            &search_dirs,
+        )
+        .unwrap();
+
+        assert!(
+            marker.exists(),
+            "fakeclaude ran through the command runner but never wrote its marker file"
+        );
     }
 }
