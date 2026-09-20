@@ -4160,10 +4160,14 @@ mod tests {
         .unwrap();
 
         let home_for_builder = home.clone();
+        // The process's own PATH, not a real login-shell probe: this
+        // fixture's `run_doctor` never spawns `npx`, so it doesn't need to
+        // pay for (or risk hanging on) a real `$SHELL -lic` spawn.
         let build_runtime = move || {
-            crate::skills::core_runtime::build_runtime_write_at(
+            crate::skills::core_runtime::build_runtime_write_at_with_search_dirs(
                 &home_for_builder,
                 &home_for_builder.join(".skill-studio"),
+                crate::skills::core_runtime::process_path_search_dirs(),
             )
         };
 

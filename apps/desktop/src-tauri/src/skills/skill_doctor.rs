@@ -50,7 +50,9 @@ pub(crate) fn run_doctor(rt: &Runtime) -> Result<DoctorReport, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::core_runtime::build_runtime_write_at;
+    use crate::skills::core_runtime::{
+        build_runtime_write_at_with_search_dirs, process_path_search_dirs,
+    };
 
     /// Proves `run_doctor` reaches `ops::doctor` through the real desktop
     /// adapter stack (`build_runtime_write_at`'s host ports, not the core
@@ -76,8 +78,15 @@ mod tests {
         )
         .expect("write registry");
 
-        let rt = build_runtime_write_at(home.path(), &home.path().join(".skill-studio"))
-            .expect("desktop runtime");
+        // The process's own PATH, not a real login-shell probe: `run_doctor`
+        // here never spawns `npx`, so it doesn't need to pay for (or risk
+        // hanging on) a real `$SHELL -lic` spawn.
+        let rt = build_runtime_write_at_with_search_dirs(
+            home.path(),
+            &home.path().join(".skill-studio"),
+            process_path_search_dirs(),
+        )
+        .expect("desktop runtime");
         let report = run_doctor(&rt).expect("run_doctor");
 
         assert!(

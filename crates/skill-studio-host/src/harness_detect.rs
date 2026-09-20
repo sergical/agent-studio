@@ -17,6 +17,13 @@ use crate::tools::is_executable_file;
 /// while waiting for `ProcessSpec::timeout_ms`'s deadline.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// How long the timeout path waits for a reader thread to see EOF after
+/// killing the child's whole process group, before giving up on it and
+/// returning whatever was collected so far (possibly nothing). Bounded so a
+/// reader that somehow never sees EOF can't turn the very deadline this
+/// spawner exists to enforce into a second, unbounded hang.
+const KILLED_READER_GRACE: Duration = Duration::from_millis(250);
+
 /// Runs a child process with `std::process::Command` and waits for it to
 /// exit, killing it if it outlives `ProcessSpec::timeout_ms`.
 ///
@@ -76,12 +83,26 @@ impl RealProcessSpawner {
     /// `argv[0]` resolved).
     fn child_path(&self) -> OsString {
         let inherited = std::env::var_os("PATH").unwrap_or_default();
-        let dirs = self
+        // A dir containing the PATH separator can't be represented in a
+        // joined PATH string. Skip just that dir instead of letting
+        // `join_paths` fail and falling back to `inherited` alone, which
+        // would silently drop every other `search_dirs` entry too.
+        let search_dirs = self
             .search_dirs
             .iter()
-            .cloned()
-            .chain(std::env::split_paths(&inherited));
-        std::env::join_paths(dirs).unwrap_or(inherited)
+            .filter(|dir| !dir.as_os_str().to_string_lossy().contains(':'))
+            .cloned();
+        // An empty (unset or "") inherited PATH must contribute nothing, not
+        // an empty path segment: `split_paths` on "" yields one empty
+        // component, which `Command` resolves as the child's cwd - for
+        // `npx` that is a project folder, not a directory to trust bare
+        // names from.
+        let inherited_dirs: Vec<PathBuf> = if inherited.is_empty() {
+            Vec::new()
+        } else {
+            std::env::split_paths(&inherited).collect()
+        };
+        std::env::join_paths(search_dirs.chain(inherited_dirs)).unwrap_or(inherited)
     }
 }
 
@@ -105,6 +126,42 @@ fn spawn_drain<R: Read + Send + 'static>(pipe: R) -> JoinHandle<Vec<u8>> {
     })
 }
 
+/// Kills every process in `pid`'s process group (set via `process_group(0)`
+/// at spawn below), not just `pid` itself. `npx` runs the installed package
+/// in a `node` grandchild that inherits the pipe's write end; a lone
+/// `child.kill()` only signals the direct child, leaving that grandchild
+/// running and the pipe held open, so the reader thread's `read_to_end`
+/// would never see EOF. Shells out to the `kill` binary rather than
+/// `libc::kill` so this crate doesn't need unsafe code for it (the same
+/// tradeoff `lease.rs`'s liveness probe makes with `sysinfo`).
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    let group = format!("-{pid}");
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", &group])
+        .status();
+}
+
+/// Joins `handle` if it finishes within [`KILLED_READER_GRACE`], else
+/// abandons it and returns nothing collected. Only used after the child's
+/// whole process group has already been killed, so the pipe's write end is
+/// expected to close almost immediately - the bound exists for the case
+/// where, for whatever reason, it doesn't.
+fn join_killed_reader(handle: Option<JoinHandle<Vec<u8>>>) -> Vec<u8> {
+    let Some(handle) = handle else {
+        return Vec::new();
+    };
+    let deadline = Instant::now() + KILLED_READER_GRACE;
+    while !handle.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if handle.is_finished() {
+        handle.join().unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
 impl ProcessSpawner for RealProcessSpawner {
     fn run(
         &self,
@@ -124,6 +181,15 @@ impl ProcessSpawner for RealProcessSpawner {
             command.env("PATH", self.child_path());
         }
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // Makes the child the leader of its own new process group, so
+            // the timeout path below can kill the whole group - see
+            // `kill_process_group`'s doc comment for why a lone
+            // `child.kill()` isn't enough.
+            command.process_group(0);
+        }
         let mut child = command
             .spawn()
             .map_err(|e| CoreError::io(Path::new(&spec.program), e))?;
@@ -147,19 +213,26 @@ impl ProcessSpawner for RealProcessSpawner {
         };
 
         let Some(status) = exit_status else {
-            // The child outlived its deadline: kill and reap it so the
-            // caller never blocks on a hung `--version` probe, then report
-            // `timed_out` rather than guess at output the process never
-            // finished writing. The reader threads exit shortly after: the
-            // kill closes the write end of each pipe.
-            let _ = child.kill();
+            // The child outlived its deadline: kill and reap its whole
+            // process group (not just the direct child - see
+            // `kill_process_group`), then report `timed_out` rather than
+            // guess at output the process never finished writing. The
+            // reader-thread joins are bounded (`join_killed_reader`): the
+            // group kill should close every pipe write end almost at once,
+            // but nothing here should be able to block `run` forever.
+            #[cfg(unix)]
+            kill_process_group(child.id());
+            #[cfg(not(unix))]
+            {
+                let _ = child.kill();
+            }
             let _ = child.wait();
-            let _ = stdout_reader.map(JoinHandle::join);
-            let _ = stderr_reader.map(JoinHandle::join);
+            let stdout = join_killed_reader(stdout_reader);
+            let stderr = join_killed_reader(stderr_reader);
             return Ok(ProcessOutput {
                 status: None,
-                stdout: String::new(),
-                stderr: String::new(),
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
                 timed_out: true,
             });
         };
@@ -303,7 +376,12 @@ mod tests {
             args: Vec::new(),
             cwd: None,
             env: Vec::new(),
-            timeout_ms: 2_000,
+            // Generous: this only needs to outlast a trivial `sh`/`env`
+            // spawn, but a full `cargo test --workspace` run schedules this
+            // alongside other tests that spawn and sleep real child
+            // processes, and 2s was tight enough under that load to time
+            // out this fake `npx` before it ever ran.
+            timeout_ms: 5_000,
         };
 
         let output = spawner.run(&spec, &NeverCancel).unwrap();
@@ -346,6 +424,64 @@ mod tests {
             200_000,
             "expected the full 200000 bytes the child wrote, got {}",
             output.stdout.len()
+        );
+    }
+
+    /// `a_timed_out_childs_grandchild_that_inherited_the_pipe_is_still_killed_or_names_the_orphan_left_running`:
+    /// the child backgrounds a grandchild that inherits the stdout pipe's
+    /// write end and holds it open for 30s, then the child itself blocks
+    /// past a 500ms deadline. A lone `child.kill()` (the direct child only)
+    /// leaves the grandchild running with the pipe open, so the old
+    /// unbounded `JoinHandle::join()` on the reader thread never sees EOF
+    /// and `run` never returns. Fails (red) on that: `run` hangs well past
+    /// the grandchild's own 30s sleep instead of returning near the
+    /// deadline, and the grandchild's pid is still alive afterward.
+    #[test]
+    fn a_timed_out_childs_grandchild_that_inherited_the_pipe_is_still_killed_or_names_the_orphan_left_running(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let grandchild_pid_file = tmp.path().join("grandchild_pid");
+        let spawner = RealProcessSpawner::new();
+        let spec = ProcessSpec {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(
+                    "sh -c 'echo $$ > \"{}\"; exec sleep 30' & sleep 30",
+                    grandchild_pid_file.display()
+                ),
+            ],
+            cwd: None,
+            env: Vec::new(),
+            timeout_ms: 500,
+        };
+
+        let start = Instant::now();
+        let output = spawner.run(&spec, &NeverCancel).unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(
+            output.timed_out,
+            "a child whose grandchild holds the pipe open must still report timed_out, got {output:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "run took {elapsed:?} - it waited on the grandchild's pipe instead of bounding the join"
+        );
+        let grandchild_pid = std::fs::read_to_string(&grandchild_pid_file).unwrap_or_default();
+        let grandchild_pid = grandchild_pid.trim();
+        assert!(
+            !grandchild_pid.is_empty(),
+            "the backgrounded grandchild never recorded its pid"
+        );
+        let grandchild_alive = std::process::Command::new("kill")
+            .args(["-0", grandchild_pid])
+            .status()
+            .unwrap()
+            .success();
+        assert!(
+            !grandchild_alive,
+            "the grandchild (pid {grandchild_pid}) survived the timeout - only the direct child was killed"
         );
     }
 }

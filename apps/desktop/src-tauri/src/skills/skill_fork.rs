@@ -219,9 +219,12 @@ const NPX_TIMEOUT_MS: u64 = 120_000;
 
 fn run_npx(args: &[String], cwd: Option<&Path>) -> Result<(), String> {
     // Un-fork runs outside `core_runtime`'s `Runtime`/`Ports`, so it needs
-    // its own login-shell `PATH` probe: launched from Finder, this process
-    // only has `launchd`'s minimal `PATH`, which has neither `npx` nor the
-    // `node` its shebang needs (see `core_runtime::build_runtime_write_at`).
+    // its own search dirs: launched from Finder, this process only has
+    // `launchd`'s minimal `PATH`, which has neither `npx` nor the `node` its
+    // shebang needs (see `core_runtime::build_runtime_write_at`).
+    // `LoginShellToolLookup::new()` reads the same process-wide login-shell
+    // `PATH` cache `core_runtime` does, so this doesn't spawn a second real
+    // shell when a `Runtime` has already probed one this launch.
     let search_dirs = skill_studio_host::LoginShellToolLookup::new()
         .dirs()
         .to_vec();
