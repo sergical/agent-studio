@@ -1,5 +1,3 @@
-npx
-skills@1.7.0
 skills
 add
 anthropics/skills

@@ -2,6 +2,12 @@
 │
 ●   claude-code_2-1-277_agent  Agent detected — installing non-interactively
 │
+◇  Source: $LOCAL_SKILL_DIR
+│
+◇  Local path validated
+│
+◇  Found 1 skill
+│
 ●  Selected 1 skill: my-local-skill
 
 │
@@ -11,20 +17,16 @@
 │    copy → Universal               │
 │                                   │
 ├───────────────────────────────────╯
+│
+◇  Installation complete
 
-[
-  {
-    "name": "my-local-skill",
-    "status": "installed",
-    "source": "/var/folders/dy/7zjx205j41g_gt94sgrlshv40000gn/T/tmp.QWoKF9ElUI/my-skill",
-    "ref": null,
-    "hash": "222854256926340ae167d8b3e6c43ab9755db110c5e7a79fe0fff971605a61d5",
-    "path": "/private$PROJECT/.agents/skills/my-local-skill",
-    "scope": "project",
-    "agents": [
-      "Universal"
-    ],
-    "mode": "copy",
-    "security": null
-  }
-]
+│
+◇  Installed 1 skill ───────────────────╮
+│                                       │
+│  ✓ my-local-skill (copied)            │
+│    → ./.agents/skills/my-local-skill  │
+│                                       │
+├───────────────────────────────────────╯
+
+│
+└  Done!  Review skills before use; they run with full agent permissions.

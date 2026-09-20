@@ -25,8 +25,25 @@
 //! Divergences this comparison found are named, not hidden: see
 //! [`KNOWN_DIVERGENCES`]. Comparisons skip exactly the field/path a table
 //! entry names; anything else diverging still fails the test.
+//!
+//! **Which assertions are independently checked, and which are inherently
+//! limited by this design.** `command.txt` is written by `run_cli` itself in
+//! `scripts/record-cli-traces.sh` - the exact argv/cwd/exit status a real
+//! `npx skills` call used, never a hand-typed duplicate of what `ops` is
+//! expected to build - so every `assert_argv_matches` call below is a
+//! genuine, independent fact about the real CLI, not a comparison of `ops`
+//! against itself. `assert_tree_matches_after` and the symlink-resolves
+//! check are NOT independent in the same way: the bytes/symlinks a passing
+//! test compares against were themselves written back by `ReplaySpawner`
+//! materializing the recorded `after/` fixture, not by a real `npx` call -
+//! so they prove `ops`'s own bookkeeping around a materialized CLI result
+//! (destination checks, lock-file updates, `link_claude_code`'s tolerance of
+//! an existing link), not that the CLI itself would still write those same
+//! bytes today. Traces 03's `Io`-error assertions and the divergence
+//! assertions in 04/08 are independent in the same way as the argv check,
+//! since they assert facts about the *recorded* CLI run itself (its exit
+//! status, or an argv shape it never received), not about a replay.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -215,11 +232,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
         })
 }
 
-/// Parses `command.txt`: `npx`, the pinned CLI version, then every argv
-/// token the trace's real `npx` call used (the same shape `cli_args_and_cwd`
-/// / `remove_cli_args_and_cwd` / `update_cli_args_and_cwd` build - see
-/// [`write_command`'s own doc in `scripts/record-cli-traces.sh`]), then a
-/// `--cwd--` marker and the cwd label (`GLOBAL` or `$PROJECT`).
+/// Parses `command.txt`: every argv token the trace's real `npx` call used
+/// (written by `run_cli` itself in `scripts/record-cli-traces.sh` at the
+/// moment it ran the traced call - never hand-typed), then a `--cwd--`
+/// marker and the cwd label (`GLOBAL` or `$PROJECT`).
 fn load_command(dir: &Path) -> (Vec<String>, Option<String>) {
     let text = std::fs::read_to_string(dir.join("command.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
@@ -227,12 +243,20 @@ fn load_command(dir: &Path) -> (Vec<String>, Option<String>) {
         .iter()
         .position(|l| *l == "--cwd--")
         .expect("command.txt must have a --cwd-- marker");
-    // Skip the first two lines (`npx`, the pinned version) - `ops` itself
-    // never sends those; it only ever calls the already-resolved `npx`
-    // binary with the CLI's own subcommand argv.
-    let args: Vec<String> = lines[2..marker].iter().map(ToString::to_string).collect();
+    let args: Vec<String> = lines[..marker].iter().map(ToString::to_string).collect();
     let cwd_label = lines.get(marker + 1).map(ToString::to_string);
     (args, cwd_label)
+}
+
+/// Reads `<dir>/meta.json`'s `exit_status` field - the real recorded `npx`
+/// exit code, so `ReplaySpawner` never lies about a failed run by reporting
+/// a fixed 0.
+fn load_exit_status(dir: &Path) -> i32 {
+    let bytes = std::fs::read(dir.join("meta.json")).unwrap();
+    let meta: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    meta["exit_status"]
+        .as_i64()
+        .expect("meta.json must have an integer exit_status") as i32
 }
 
 // ---------------------------------------------------------------------------
@@ -252,12 +276,27 @@ struct Divergence {
 }
 
 const KNOWN_DIVERGENCES: &[Divergence] = &[
+    // As of this fix round, `fix/project-install-runs-in-project-dir` has
+    // not landed in `main` - these three entries describe every
+    // project-scope SkillsSh install (not just a local-folder source): the
+    // real CLI has no `--cwd` flag for `add`, so a project-scope install
+    // must cd into the project first and pass no `--cwd` token at all
+    // (that is what trace 03 now records); `ops_install_cli.rs` instead
+    // pushes a `--cwd <path>` argv token the CLI ignores, and never sets
+    // `ProcessSpec.cwd` itself.
+    Divergence {
+        trace: "03-add-local-folder-project",
+        field: "args (--cwd token)",
+        cli_value: "no --cwd token at all (cd into the project instead)",
+        core_value: "--cwd <project path> (a token skills@1.7.0's add silently ignores)",
+        reason: "cli_args_and_cwd pushes a --cwd argument for every project-scope SkillsSh install; this affects all such installs, not only a local-folder source",
+    },
     Divergence {
         trace: "03-add-local-folder-project",
         field: "ProcessSpec.cwd",
         cli_value: "the process's actual working directory (the CLI has no --cwd flag for `add`)",
         core_value: "None (cli_args_and_cwd never sets a cwd for SkillsSh; it only pushes a --cwd argument the CLI ignores)",
-        reason: "a project-scope SkillsSh install replayed through ops installs into the host process's own cwd, not the target project",
+        reason: "a project-scope SkillsSh install replayed through ops installs into the host process's own cwd, not the target project - this affects all project-scope SkillsSh installs, not only a local-folder source",
     },
     Divergence {
         trace: "03-add-local-folder-project",
@@ -268,10 +307,10 @@ const KNOWN_DIVERGENCES: &[Divergence] = &[
     },
     Divergence {
         trace: "04-add-two-harnesses",
-        field: "args (--agent tokens)",
-        cli_value: "--agent universal --agent claude-code --agent cursor",
-        core_value: "--agent universal --agent claude-code (cursor silently dropped)",
-        reason: "cli_args_and_cwd only ever special-cases claude-code; any other requested harness never reaches the CLI's argv",
+        field: "InstallOutcome",
+        cli_value: "cursor never received an --agent token, so nothing was ever done for it",
+        core_value: "InstallOutcome::Installed, as if every requested harness (including cursor) had succeeded",
+        reason: "cli_args_and_cwd only ever special-cases claude-code; Codex/OpenCode/pi legitimately need no --agent token at all (they read the shared universal root by design - harness.rs's reads_universal_root is Yes for all three), but cursor is a harness id the catalog does not recognize, and ops::install still reports the overall install as Installed with nothing done for it - the real gap is the silent over-reporting, not the missing token",
     },
 ];
 
@@ -329,6 +368,7 @@ struct ReplaySpawner {
     trace_dir: PathBuf,
     home_root: PathBuf,
     project_root: Option<PathBuf>,
+    exit_status: i32,
     recorded: Mutex<Vec<(Vec<String>, Option<PathBuf>)>>,
 }
 
@@ -375,7 +415,7 @@ impl ProcessSpawner for ReplaySpawner {
             self.project_root.as_deref(),
         );
         Ok(ProcessOutput {
-            status: Some(0),
+            status: Some(self.exit_status),
             stdout: String::new(),
             stderr: String::new(),
             timed_out: false,
@@ -441,6 +481,7 @@ fn load_trace(trace_name: &str, scope: &RootScope) -> TraceCtx {
         trace_dir: dir.clone(),
         home_root: home.clone(),
         project_root: project.clone(),
+        exit_status: load_exit_status(&dir),
         recorded: Mutex::new(Vec::new()),
     });
     let rt = runtime_with(&home, project.as_deref(), spawner.clone());
@@ -463,12 +504,14 @@ impl TraceCtx {
     /// for this trace.
     fn assert_argv_matches(&self, trace_name: &str) {
         let (mut expected_args, cwd_label) = load_command(&self.dir);
-        // `command.txt` normalizes a project-scope `--cwd` token to the
-        // `$PROJECT` placeholder, the same way `after/`'s symlink targets
-        // are normalized - resolve it against this replay's own temp
-        // project before comparing. `$LOCAL_SKILL_DIR` (the source token for
-        // a local-folder install) is left as the literal placeholder, since
-        // [`install_request`]'s callers pass that same literal as `source`.
+        // Any `$PROJECT`/`$LOCAL_SKILL_DIR` placeholder left in a recorded
+        // argv token (e.g. the source argv for a local-folder install) is
+        // left as the literal placeholder, since [`install_request`]'s
+        // callers pass that same literal as `source`. `$PROJECT` can still
+        // appear standalone if a real project-scope value must be resolved
+        // for comparison; nothing currently needs that, so this loop is a
+        // no-op today and exists to keep the placeholder handling in one
+        // place if a future trace's argv needs it.
         for arg in &mut expected_args {
             if arg == "$PROJECT" {
                 *arg = self
@@ -479,29 +522,29 @@ impl TraceCtx {
                     .into_owned();
             }
         }
-        if let Some(d) = divergence(trace_name, "args (--agent tokens)") {
-            // The divergence is that `cursor` never reaches the CLI - drop
-            // its `--agent cursor` pair from the expected argv so the
-            // comparison below asserts everything else still matches
-            // exactly. The position lookup below itself is the check that
-            // the divergence still reproduces: if `cursor` is no longer in
-            // `command.txt`'s own argv shape, this table entry is stale.
-            let pos = expected_args
-                .iter()
-                .position(|a| a == "cursor")
-                .unwrap_or_else(|| panic!("{d} no longer reproduces - update KNOWN_DIVERGENCES"));
-            expected_args.remove(pos); // "cursor"
-            expected_args.remove(pos - 1); // the "--agent" naming it
-        }
         let recorded = self.spawner.recorded.lock().unwrap();
         assert_eq!(
             recorded.len(),
             1,
             "{trace_name}: npx must be called exactly once"
         );
-        let (args, cwd) = &recorded[0];
+        let (raw_args, cwd) = &recorded[0];
+        let mut args = raw_args.clone();
+        if let Some(d) = divergence(trace_name, "args (--cwd token)") {
+            // `ops` sends a `--cwd <path>` token the real CLI never
+            // received (see KNOWN_DIVERGENCES) - strip it from the actual
+            // argv before comparing, so everything else still matches
+            // exactly. The position lookup is itself the check that the
+            // divergence still reproduces.
+            let pos = args
+                .iter()
+                .position(|a| a == "--cwd")
+                .unwrap_or_else(|| panic!("{d} no longer reproduces - update KNOWN_DIVERGENCES"));
+            args.remove(pos + 1); // the path
+            args.remove(pos); // "--cwd"
+        }
         assert_eq!(
-            args, &expected_args,
+            args, expected_args,
             "{trace_name}: ops's argv drifted from the recorded npx call"
         );
         if let Some(d) = divergence(trace_name, "ProcessSpec.cwd") {
@@ -526,6 +569,24 @@ impl TraceCtx {
         let actual = walk_allowed(self.root(), &self.home, self.project.as_deref());
         let expected = load_tree(&self.dir.join("after"));
         assert_tree_matches(trace_name, &actual, &expected);
+        self.assert_symlinks_resolve(&expected);
+    }
+
+    /// For every symlink `after/tree.json` names, asserts it actually
+    /// resolves on disk (`std::fs::metadata` follows the link) - the
+    /// functional property that matters, independent of whatever exact
+    /// string form the target happens to be stored in.
+    fn assert_symlinks_resolve(&self, expected: &[TreeEntry]) {
+        for entry in expected.iter().filter(|e| e.kind == "symlink") {
+            let dest = self.root().join(&entry.path);
+            std::fs::metadata(&dest).unwrap_or_else(|e| {
+                panic!(
+                    "{}: symlink at {} does not resolve: {e}",
+                    entry.path,
+                    dest.display()
+                )
+            });
+        }
     }
 }
 
@@ -618,10 +679,7 @@ fn cli_add_skillssh_slug_global_matches_the_recorded_trace_or_names_the_divergin
 #[test]
 fn cli_add_local_folder_project_fails_the_whole_install_or_names_the_fix() {
     let trace_name = "03-add-local-folder-project";
-    let project = ProjectRef(std::env::temp_dir().join(format!(
-        "cli_parity_{trace_name}_project_{}",
-        std::process::id()
-    )));
+    let project = ProjectRef(unique_temp_dir(&format!("cli_parity_{trace_name}_project")));
     let scope = RootScope::Project(project.clone());
     let tc = load_trace(trace_name, &scope);
     // `command.txt` records the source argv token as the literal
@@ -676,11 +734,16 @@ fn cli_add_local_folder_project_fails_the_whole_install_or_names_the_fix() {
 }
 
 // ---------------------------------------------------------------------------
-// Trace 04: add requesting two harnesses - the known divergence is
-// `cli_args_and_cwd` silently dropping every harness but Claude Code.
+// Trace 04: add requesting two harnesses, one of which (`cursor`) the
+// harness catalog does not recognize - the recorded CLI call never received
+// an `--agent cursor` token (correctly: `cli_args_and_cwd` only ever
+// special-cases Claude Code, and an unrecognized harness has nothing to
+// send), yet `ops::install` still reports the overall install as
+// `Installed`, as if `cursor` had been set up too. That silent
+// over-reporting is the known divergence - see `KNOWN_DIVERGENCES`.
 // ---------------------------------------------------------------------------
 #[test]
-fn cli_add_two_harnesses_drops_the_second_harness_or_names_the_fix() {
+fn cli_add_two_harnesses_reports_installed_even_for_an_unrecognized_harness_or_names_the_fix() {
     let trace_name = "04-add-two-harnesses";
     let tc = load_trace(trace_name, &RootScope::Global);
     let req = install_request(
@@ -690,12 +753,12 @@ fn cli_add_two_harnesses_drops_the_second_harness_or_names_the_fix() {
         vec![AgentId::from(AgentId::CLAUDE_CODE), AgentId::from("cursor")],
     );
     let outcome = ops::install(&tc.rt, &ctx(), &req).unwrap();
-    assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+    assert!(
+        matches!(outcome, InstallOutcome::Installed { .. }),
+        "{} no longer reproduces - update KNOWN_DIVERGENCES",
+        divergence(trace_name, "InstallOutcome").unwrap()
+    );
     tc.assert_argv_matches(trace_name);
-    // `after/`'s own tree already reflects the CLI, which our argv can never
-    // reach for `cursor` - the on-disk comparison stays a plain match: the
-    // divergence is in the argv this replay sent, not in what the fake
-    // spawner then wrote back.
     tc.assert_tree_matches_after(trace_name);
     std::fs::remove_dir_all(&tc.home).ok();
 }
@@ -726,14 +789,11 @@ fn cli_add_shared_root_only_matches_the_recorded_trace_or_names_the_diverging_fi
 #[test]
 fn cli_update_newer_source_matches_the_recorded_trace_or_names_the_diverging_field() {
     let trace_name = "06-update-newer-source";
-    let project = ProjectRef(std::env::temp_dir().join(format!(
-        "cli_parity_{trace_name}_project_{}",
-        std::process::id()
-    )));
+    let project = ProjectRef(unique_temp_dir(&format!("cli_parity_{trace_name}_project")));
     let scope = RootScope::Project(project.clone());
     let tc = load_trace(trace_name, &scope);
     let req = UpdateRequest {
-        skill: SkillName("my-update-skill".to_string()),
+        skill: SkillName("academy-guide".to_string()),
         method: InstallMethod::SkillsSh,
         scope,
         files: Vec::new(),
@@ -753,14 +813,11 @@ fn cli_update_newer_source_matches_the_recorded_trace_or_names_the_diverging_fie
 #[test]
 fn cli_update_already_current_matches_the_recorded_trace_or_names_the_diverging_field() {
     let trace_name = "07-update-already-current";
-    let project = ProjectRef(std::env::temp_dir().join(format!(
-        "cli_parity_{trace_name}_project_{}",
-        std::process::id()
-    )));
+    let project = ProjectRef(unique_temp_dir(&format!("cli_parity_{trace_name}_project")));
     let scope = RootScope::Project(project.clone());
     let tc = load_trace(trace_name, &scope);
     let req = UpdateRequest {
-        skill: SkillName("my-current-skill".to_string()),
+        skill: SkillName("academy-guide".to_string()),
         method: InstallMethod::SkillsSh,
         scope,
         files: Vec::new(),
@@ -808,8 +865,3 @@ fn cli_remove_last_deployment_matches_the_recorded_trace_or_names_the_diverging_
     );
     std::fs::remove_dir_all(&tc.home).ok();
 }
-
-// Keeps `BTreeMap` used if a future trace needs a keyed diff; silences an
-// unused-import warning otherwise while that shape is still being decided.
-#[allow(dead_code)]
-fn _unused(_: BTreeMap<String, String>) {}

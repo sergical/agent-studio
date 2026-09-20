@@ -1,5 +1,6 @@
 {
   "cli_version": "skills@1.7.0",
-  "source": "local folder, edited between add and update",
-  "notes": "InstallMethod::SkillsSh, project scope. update_cli_args_and_cwd's SkillsSh branch never passes -y for update - skills@1.7.0's own agent-detection ran non-interactively anyway (see stdout.txt); recorded as-is."
+  "source_repo": "anthropics/skills",
+  "exit_status": 0,
+  "notes": "InstallMethod::SkillsSh, project scope. academy-guide is installed, then its SKILL.md is corrupted by this script (not the CLI) so update has a real, deterministic content change to refetch and restore - verified by before/after sha256, not stdout wording (skills update always prints Updated regardless of whether content changed). Surprising real-CLI behavior found while recording: even though neither the initial add nor this update ever passed --agent claude-code, update on its own initiative added a .claude/skills/academy-guide symlink not present in before/ - recorded as-is, since UpdateRequest carries no harness selector for ops to claim anything about either."
 }

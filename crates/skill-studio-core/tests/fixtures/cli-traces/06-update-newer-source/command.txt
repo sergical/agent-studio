@@ -1,7 +1,5 @@
-npx
-skills@1.7.0
 skills
 update
-my-update-skill
+academy-guide
 --cwd--
 $PROJECT

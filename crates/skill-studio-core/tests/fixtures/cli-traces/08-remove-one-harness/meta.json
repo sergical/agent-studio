@@ -1,5 +1,6 @@
 {
   "cli_version": "skills@1.7.0",
   "source_repo": "anthropics/skills",
-  "notes": "Setup installed to two harnesses with --copy (two physical folders). remove_cli_args_and_cwd never sends --agent at all, matching skills@1.7.0's real all-or-nothing remove; naming one harness on the CLI's own remove command made no difference in manual verification, so this is not treated as a divergence."
+  "exit_status": 0,
+  "notes": "Setup installed to two harnesses with --copy (two physical folders). remove is called with the exact positional-name argv ops_remove.rs builds; it removes the whole deployment - matching RemoveRequest's own lack of a harness field, so this is not a divergence."
 }

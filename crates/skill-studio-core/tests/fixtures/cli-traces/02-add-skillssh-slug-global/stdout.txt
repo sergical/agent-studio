@@ -2,6 +2,10 @@
 │
 ●   claude-code_2-1-277_agent  Agent detected — installing non-interactively
 │
+◇  Source: https://github.com/vercel-labs/agent-skills.git @web-design-guidelines
+│
+◒  Fetching skills…◐  Fetching skills…◓  Fetching skills…◑  Fetching skills…◒  Fetching skills…◐  Fetching skills…◓  Fetching skills…◑  Fetching skills…◒  Fetching skills….◐  Fetching skills….◓  Fetching skills….◑  Fetching skills….◒  Fetching skills….◐  Fetching skills….◇  Found 1 skill
+│
 ●  Selected 1 skill: web-design-guidelines
 
 │
@@ -11,20 +15,16 @@
 │    copy → Universal                      │
 │                                          │
 ├──────────────────────────────────────────╯
+│
+◇  Installation complete
 
-[
-  {
-    "name": "web-design-guidelines",
-    "status": "installed",
-    "source": "vercel-labs/agent-skills",
-    "ref": null,
-    "hash": "f3bc47f890f42a44db1007ab390709ec368e4b8c089baee6b0007182236ac474",
-    "path": "$HOME/.agents/skills/web-design-guidelines",
-    "scope": "global",
-    "agents": [
-      "Universal"
-    ],
-    "mode": "copy",
-    "security": null
-  }
-]
+│
+◇  Installed 1 skill ──────────────────────────╮
+│                                              │
+│  ✓ web-design-guidelines (copied)            │
+│    → ~/.agents/skills/web-design-guidelines  │
+│                                              │
+├──────────────────────────────────────────────╯
+
+│
+└  Done!  Review skills before use; they run with full agent permissions.

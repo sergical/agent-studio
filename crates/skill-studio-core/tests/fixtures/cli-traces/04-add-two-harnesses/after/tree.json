@@ -3,7 +3,7 @@
     "path": ".agents/.skill-lock.json",
     "kind": "file",
     "len": 475,
-    "sha256": "c63f069aafe20c1a336d8118cf8836367a58157afc05f43ba905bd83f7a5adf5"
+    "sha256": "ec0295c0e8037ea04df7fa05734d4663b56187119dfb67500e4e41d6909ef691"
   },
   {
     "path": ".agents/skills/brand-guidelines/LICENSE.txt",
@@ -20,6 +20,6 @@
   {
     "path": ".claude/skills/brand-guidelines",
     "kind": "symlink",
-    "target": "../../../../../../../../..$HOME/.agents/skills/brand-guidelines"
+    "target": "../../.agents/skills/brand-guidelines"
   }
 ]

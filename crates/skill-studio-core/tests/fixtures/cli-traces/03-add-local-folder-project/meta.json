@@ -1,5 +1,6 @@
 {
   "cli_version": "skills@1.7.0",
   "source": "local folder (authored for this fixture, not fetched)",
-  "notes": "InstallMethod::SkillsSh, project scope. Recorded by cd-ing into $PROJECT first, since skills@1.7.0's add has no working --cwd flag; ops_install_cli.rs's SkillsSh builder assumes one exists (see KNOWN_DIVERGENCES). Also: skills@1.7.0 writes this project's lock file at $PROJECT/skills-lock.json (version 1, computedHash, no timestamps) rather than $PROJECT/.agents/.skill-lock.json (version 3) - a second KNOWN_DIVERGENCE, since crate::lock_file only reads the latter shape at the latter path."
+  "exit_status": 0,
+  "notes": "InstallMethod::SkillsSh, project scope. Recorded by cd-ing into $PROJECT first and never passing --cwd, since skills@1.7.0's add has no working --cwd flag. Whether this still diverges from ops_install_cli.rs's SkillsSh builder is decided in cli_parity.rs's KNOWN_DIVERGENCES, not here."
 }

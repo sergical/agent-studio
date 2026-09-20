@@ -2,6 +2,12 @@
 │
 ●   claude-code_2-1-277_agent  Agent detected — installing non-interactively
 │
+◇  Source: https://github.com/anthropics/skills.git
+│
+◒  Cloning repository…◐  Cloning repository…◓  Cloning repository…◑  Cloning repository…◒  Cloning repository…◐  Cloning repository…◓  Cloning repository…◑  Cloning repository…◒  Cloning repository….◐  Cloning repository….◓  Cloning repository….◑  Cloning repository….◒  Cloning repository….◐  Cloning repository….◓  Cloning repository….◑  Cloning repository….◒  Cloning repository…..◐  Cloning repository…..◓  Cloning repository…..◑  Cloning repository…..◒  Cloning repository…..◐  Cloning repository…..◓  Cloning repository…..◑  Cloning repository…..◒  Cloning repository…...◐  Cloning repository…...◓  Cloning repository…...◑  Cloning repository…...◒  Cloning repository…...◐  Cloning repository…...◓  Cloning repository…...◑  Cloning repository…...◒  Cloning repository…...◐  Cloning repository…◓  Cloning repository…◑  Cloning repository…◒  Cloning repository…◐  Cloning repository…◓  Cloning repository…◑  Cloning repository…◒  Cloning repository…◐  Cloning repository….◓  Cloning repository….◑  Cloning repository….◒  Cloning repository….◐  Cloning repository….◓  Cloning repository….◑  Cloning repository….◒  Cloning repository….◐  Cloning repository…..◓  Cloning repository…..◑  Cloning repository…..◒  Cloning repository…..◐  Cloning repository…..◓  Cloning repository…..◑  Cloning repository…..◒  Cloning repository…..◐  Cloning repository…...◓  Cloning repository…...◑  Cloning repository…...◒  Cloning repository…...◐  Cloning repository…...◓  Cloning repository…...◑  Cloning repository…...◒  Cloning repository…...◐  Cloning repository…...◓  Cloning repository…◑  Cloning repository…◒  Cloning repository…◐  Cloning repository…◓  Cloning repository…◑  Cloning repository…◒  Cloning repository…◐  Cloning repository…◓  Cloning repository….◑  Cloning repository….◒  Cloning repository….◐  Cloning repository….◓  Cloning repository….◑  Cloning repository….◒  Cloning repository….◐  Cloning repository….◓  Cloning repository…..◑  Cloning repository…..◒  Cloning repository…..◐  Cloning repository…..◓  Cloning repository…..◑  Cloning repository…..◒  Cloning repository…..◐  Cloning repository…..◓  Cloning repository…...◑  Cloning repository…...◒  Cloning repository…...◐  Cloning repository…...◓  Cloning repository…...◑  Cloning repository…...◒  Cloning repository…...◐  Cloning repository…...◓  Cloning repository…...◑  Cloning repository…◒  Cloning repository…◐  Cloning repository…◓  Cloning repository…◑  Cloning repository…◒  Cloning repository…◐  Cloning repository…◓  Cloning repository…◑  Cloning repository….◒  Cloning repository….◐  Cloning repository….◓  Cloning repository….◑  Cloning repository….◒  Cloning repository….◐  Cloning repository….◓  Cloning repository….◑  Cloning repository…..◒  Cloning repository…..◐  Cloning repository…..◓  Cloning repository…..◑  Cloning repository…..◒  Cloning repository…..◐  Cloning repository…..◓  Cloning repository…..◑  Cloning repository…...◒  Cloning repository…...◐  Cloning repository…...◓  Cloning repository…...◑  Cloning repository…...◒  Cloning repository…...◐  Cloning repository…...◓  Cloning repository…...◇  Repository cloned
+│
+◇  Found 20 skills
+│
 ●  Selected 1 skill: brand-guidelines
 
 │
@@ -11,26 +17,23 @@
 │  Example Skills                     │
 │                                     │
 │  ~/.agents/skills/brand-guidelines  │
-│    universal: Universal, Cursor     │
+│    universal: Universal             │
 │    symlink → Claude Code            │
 │                                     │
 ├─────────────────────────────────────╯
+│
+◇  Installation complete
 
-[
-  {
-    "name": "brand-guidelines",
-    "status": "installed",
-    "source": "anthropics/skills",
-    "ref": null,
-    "hash": "e48840db6ea772ceecdb68b4e50f8cc77e2534b7580aeaf4a6fe6ee7bd845d7d",
-    "path": "$HOME/.agents/skills/brand-guidelines",
-    "scope": "global",
-    "agents": [
-      "Universal",
-      "Claude Code",
-      "Cursor"
-    ],
-    "mode": "symlink",
-    "security": null
-  }
-]
+│
+◇  Installed 1 skill ───────────────────╮
+│                                       │
+│                                       │
+│  Example Skills                       │
+│  ✓ ~/.agents/skills/brand-guidelines  │
+│    universal: Universal               │
+│    symlinked: Claude Code             │
+│                                       │
+├───────────────────────────────────────╯
+
+│
+└  Done!  Review skills before use; they run with full agent permissions.

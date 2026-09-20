@@ -1,10 +1,11 @@
 {
   "version": 1,
   "skills": {
-    "my-current-skill": {
-      "source": "../../../../../../../var/folders/dy/7zjx205j41g_gt94sgrlshv40000gn/T/tmp.TUkU9onfxW/my-skill",
-      "sourceType": "local",
-      "computedHash": "d4b6d19b63c9356fd6850768bd02c39f476d553918f34e8cf41617193cf127a5"
+    "academy-guide": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/academy-guide/SKILL.md",
+      "computedHash": "07075be5acc7c54fd6b06a1e7636608fa195b83eb98cbddb02e61b9ac1356889"
     }
   }
 }

@@ -1,5 +1,6 @@
 {
   "cli_version": "skills@1.7.0",
   "source_repo": "anthropics/skills",
+  "exit_status": 0,
   "notes": "Single-harness setup (universal root only, unlike trace 01's same skill with a claude-code link); removing it drops the .skill-lock.json entry entirely. Uses academy-guide (not canvas-design) to keep the fixture small - canvas-design ships ~5MB of font assets."
 }

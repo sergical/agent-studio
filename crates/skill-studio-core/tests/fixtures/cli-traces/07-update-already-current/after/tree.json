@@ -1,14 +1,25 @@
 [
   {
-    "path": ".agents/skills/my-current-skill/SKILL.md",
+    "path": ".agents/skills/academy-guide/LICENSE.txt",
     "kind": "file",
-    "len": 113,
-    "sha256": "7bb00889305636058c37652e81064db57ec22077dbd089098820efc422785f7b"
+    "len": 11345,
+    "sha256": "bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362"
+  },
+  {
+    "path": ".agents/skills/academy-guide/SKILL.md",
+    "kind": "file",
+    "len": 7755,
+    "sha256": "f27992510c051355dfe68c92394d509af730da5298094ec86834ee40bbd31376"
+  },
+  {
+    "path": ".claude/skills/academy-guide",
+    "kind": "symlink",
+    "target": "../../.agents/skills/academy-guide"
   },
   {
     "path": "skills-lock.json",
     "kind": "file",
-    "len": 300,
-    "sha256": "b5e7283ed51e43ec81ed0acf7438c5945aafebe7f8cb975bc270ceac5f34c303"
+    "len": 275,
+    "sha256": "b364f6d55227025d228a660c7ada1778d303959bbb954d77d9fe34051900a9b7"
   }
 ]

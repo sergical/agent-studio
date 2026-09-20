@@ -3,7 +3,7 @@
     "path": ".agents/.skill-lock.json",
     "kind": "file",
     "len": 485,
-    "sha256": "8d2ffc4c9bac157aa13fca4b8f55ad21c627322a6f6512e14a07fec1fbaba33c"
+    "sha256": "70174f8f94ed6c3341ef602d4d38481dee6deed2cc87c496cebf3abd4568f1c0"
   },
   {
     "path": ".agents/skills/web-artifacts-builder/LICENSE.txt",

@@ -3,7 +3,7 @@
     "path": ".agents/.skill-lock.json",
     "kind": "file",
     "len": 468,
-    "sha256": "17678f58f6d4a5e32fc001a110bba9f45226e0975f4dd564108e7336d74101c0"
+    "sha256": "a789757fbda1c87d49c63bca248379b8619619dd1cc56a5bbc9b26f27d20800b"
   },
   {
     "path": ".agents/skills/academy-guide/LICENSE.txt",
@@ -20,6 +20,6 @@
   {
     "path": ".claude/skills/academy-guide",
     "kind": "symlink",
-    "target": "../../../../../../../../..$HOME/.agents/skills/academy-guide"
+    "target": "../../.agents/skills/academy-guide"
   }
 ]

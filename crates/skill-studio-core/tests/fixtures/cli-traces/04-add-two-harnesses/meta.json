@@ -1,5 +1,7 @@
 {
   "cli_version": "skills@1.7.0",
   "source_repo": "anthropics/skills",
-  "notes": "InstallMethod::SkillsSh, global scope, requested harnesses = [claude-code, cursor]. cli_args_and_cwd only ever appends --agent claude-code, silently dropping cursor - a KNOWN_DIVERGENCE."
+  "source_commit": "34040c9c568585f6929bedeaad110ad08f079624",
+  "exit_status": 0,
+  "notes": "InstallMethod::SkillsSh, global scope, requested harnesses = [claude-code, cursor]. cursor is an id the harness catalog does not recognize; ops::install still reports Installed even though nothing was done for it - the real KNOWN_DIVERGENCE."
 }

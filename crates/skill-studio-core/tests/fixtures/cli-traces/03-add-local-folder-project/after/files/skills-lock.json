@@ -2,7 +2,7 @@
   "version": 1,
   "skills": {
     "my-local-skill": {
-      "source": "../../../../../../../var/folders/dy/7zjx205j41g_gt94sgrlshv40000gn/T/tmp.QWoKF9ElUI/my-skill",
+      "source": "../../../../../../..$LOCAL_SKILL_DIR",
       "sourceType": "local",
       "computedHash": "222854256926340ae167d8b3e6c43ab9755db110c5e7a79fe0fff971605a61d5"
     }
