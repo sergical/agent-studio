@@ -69,28 +69,33 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
 
         {rows != null && (
           <ul className="divide-y divide-border rounded-md border border-border">
-            {rows.map((row) => (
-              <li key={row.id} className="flex flex-col gap-1 px-4 py-3">
-                <div className="flex items-center justify-between gap-3">
-                  <label className="flex items-center gap-3">
-                    <Checkbox
-                      checked={kept.has(row.id)}
-                      onCheckedChange={(checked) => toggleRow(row.id, checked === true)}
-                    />
-                    <span className="text-sm font-medium">{row.display_name}</span>
-                  </label>
-                  <span className="text-sm text-muted-foreground">
-                    {STATE_LABEL[row.state]}
-                    {row.version.value != null ? ` · ${row.version.value}` : ""}
-                  </span>
-                </div>
-                {row.state === "data_only" && (
-                  <p className="pl-8 text-sm text-muted-foreground">
-                    Settings or history found, but its command is not on your PATH.
-                  </p>
-                )}
-              </li>
-            ))}
+            {rows.map((row) => {
+              const hasHint = row.state === "data_only";
+              const hintId = hasHint ? `${row.id}-hint` : undefined;
+              return (
+                <li key={row.id} className="flex flex-col gap-1 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="flex items-center gap-3">
+                      <Checkbox
+                        checked={kept.has(row.id)}
+                        onCheckedChange={(checked) => toggleRow(row.id, checked === true)}
+                        aria-describedby={hintId}
+                      />
+                      <span className="text-sm font-medium">{row.display_name}</span>
+                    </label>
+                    <span className="text-sm text-muted-foreground">
+                      {STATE_LABEL[row.state]}
+                      {row.version.value != null ? ` · ${row.version.value}` : ""}
+                    </span>
+                  </div>
+                  {hasHint && (
+                    <p id={hintId} className="pl-8 text-sm text-muted-foreground">
+                      Settings or history found, but its command is not on your PATH.
+                    </p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
 

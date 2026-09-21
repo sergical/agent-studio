@@ -88,7 +88,7 @@ Pitfalls: `~/.pi/agent/bin/` holds vendored helper binaries such as `fd`; they a
 
 Both are in the app's agent list for install targets but are not first-class Activity sources.
 
-- Cursor: the editor version is `CFBundleShortVersionString` in `/Applications/Cursor.app/Contents/Info.plist` (3.20.21 here); the separate Cursor CLI installs as either `agent` or `cursor-agent` into `~/.local/bin` (`--version` on whichever name resolves; `agent` wins when both are on `PATH`). `~/.cursor/argv.json` and `~/.cursor/extensions/` prove the editor ran. Treat editor and CLI as two detections.
+- Cursor: the editor version is `CFBundleShortVersionString` in `/Applications/Cursor.app/Contents/Info.plist` (3.20.21 here); the separate Cursor CLI installs into `~/.local/bin` as `cursor-agent` (current) or the older `agent` name (`--version` on whichever resolves; `cursor-agent` is tried first since `agent` is generic enough that another tool could shadow it). `~/.cursor/argv.json` and `~/.cursor/extensions/` prove the editor ran. Treat editor and CLI as two detections.
 - Grok Build: documented install is the `x.ai/cli/install.sh` script only; binary name, version flag, and config folder are Unknown. `/Applications/Grok Bot.app` is the chat client, not Grok Build.
 
 ## What the core must handle
