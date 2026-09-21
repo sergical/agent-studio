@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a problem with Skill Studio
+labels: ["bug"]
+body:
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: Find this in the app's About panel, or run `skill-studio --version`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version and chip
+      placeholder: "macOS 15.1, Apple M2"
+    validations:
+      required: true
+  - type: textarea
+    id: harnesses
+    attributes:
+      label: Installed harnesses
+      description: Which of Claude Code, Codex, OpenCode, or pi do you have installed?
+      placeholder: "Claude Code, Codex"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the exact steps, in order.
+      placeholder: |
+        1. Open the app
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste any relevant logs. Remove secrets, tokens, and file paths that contain your username before posting.
+      render: shell
+    validations:
+      required: false

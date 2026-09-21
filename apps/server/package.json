@@ -2,6 +2,7 @@
   "name": "@skill-studio/server",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "node --env-file=../../.env --import tsx src/server.ts",
