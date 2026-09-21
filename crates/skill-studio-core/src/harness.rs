@@ -1026,6 +1026,15 @@ pub trait HarnessAdapter: Send + Sync {
     /// Binary name to resolve on `PATH` and to probe with `--version`, when
     /// the harness has one.
     fn binary_name(&self) -> Option<&'static str>;
+    /// Every command name that counts as this harness's CLI, tried in
+    /// order; `detect` resolves the first one `find_binary` finds. An
+    /// adapter with more than one known command name (for example
+    /// Cursor's `agent`/`cursor-agent` rename) overrides this; `detect`
+    /// falls back to [`HarnessAdapter::binary_name`] when this default
+    /// empty slice is left in place.
+    fn binary_names(&self) -> &'static [&'static str] {
+        &[]
+    }
     /// Config file path relative to the home root, checked at global scope
     /// only, per `docs/action-map/harnesses/harness-detection.md`.
     fn config_relative_path(&self) -> Option<&'static str>;
@@ -1047,9 +1056,14 @@ pub trait HarnessAdapter: Send + Sync {
 
     /// Runs the shared detection recipe against one set of ports.
     fn detect(&self, ports: &DetectionPorts<'_>) -> HarnessDetection {
-        let executable = self
-            .binary_name()
-            .and_then(|bin| ports.tools.and_then(|lookup| lookup.find_binary(bin)));
+        let fallback = self.binary_name().map(|bin| [bin]);
+        let names: &[&'static str] = match (self.binary_names(), &fallback) {
+            ([], Some(single)) => single,
+            (multi, _) => multi,
+        };
+        let executable = ports
+            .tools
+            .and_then(|lookup| names.iter().find_map(|bin| lookup.find_binary(bin)));
         let (version, install_method) = probe_version(self, executable.as_ref(), ports);
         let configured = self
             .config_relative_path()
@@ -1275,6 +1289,9 @@ impl HarnessAdapter for CursorAdapter {
     }
     fn binary_name(&self) -> Option<&'static str> {
         Some("agent")
+    }
+    fn binary_names(&self) -> &'static [&'static str] {
+        &["agent", "cursor-agent"]
     }
     fn config_relative_path(&self) -> Option<&'static str> {
         Some(".cursor/argv.json")
@@ -1542,7 +1559,7 @@ mod tests {
     use super::*;
     use crate::error::CoreError;
     use crate::ports::{CancelToken, ProcessOutput};
-    use crate::testing::FixtureBuilder;
+    use crate::testing::{FakeToolLookup, FixtureBuilder};
 
     /// A spawner whose every probe outlives its deadline.
     struct TimedOutSpawner;
@@ -1586,6 +1603,93 @@ mod tests {
             reason.contains("did not finish within 2000 ms"),
             "the reason must name the timeout, got: {reason:?}"
         );
+    }
+
+    /// `a_path_with_only_cursor_agent_is_found_and_not_data_only`: a machine
+    /// that renamed the Cursor CLI to `cursor-agent` (no `agent` on `PATH`)
+    /// must resolve an executable and land past `DataOnly`. Before the
+    /// `binary_names` fallback this failed: `CursorAdapter::binary_name`
+    /// only ever asked for `agent`, so `find_binary` never saw
+    /// `cursor-agent` and the row fell back to config/session evidence
+    /// alone (issue #315).
+    #[test]
+    fn a_path_with_only_cursor_agent_is_found_and_not_data_only() {
+        let fs = FixtureBuilder::default().build_fs();
+        let home = PathBuf::from("/home");
+        let cursor_agent_path = PathBuf::from("/home/.local/bin/cursor-agent");
+        let mut tools = FakeToolLookup::default();
+        tools
+            .binaries
+            .insert("cursor-agent".to_string(), cursor_agent_path.clone());
+        let ports = DetectionPorts {
+            fs: &fs,
+            home: &home,
+            tools: Some(&tools),
+            spawner: None,
+        };
+
+        let detection = CursorAdapter.detect(&ports);
+
+        assert_ne!(
+            detection.state,
+            HarnessState::DataOnly,
+            "a resolved cursor-agent must not read as data-only"
+        );
+        assert_eq!(detection.executable, Some(cursor_agent_path));
+    }
+
+    /// `a_path_with_both_agent_and_cursor_agent_prefers_agent`: when both
+    /// names resolve, `agent` wins because it is the name Cursor's own
+    /// docs and the catalog list first; a fix that searched the names in
+    /// the wrong order would silently prefer the newer rename instead.
+    #[test]
+    fn a_path_with_both_agent_and_cursor_agent_prefers_agent() {
+        let fs = FixtureBuilder::default().build_fs();
+        let home = PathBuf::from("/home");
+        let agent_path = PathBuf::from("/usr/local/bin/agent");
+        let mut tools = FakeToolLookup::default();
+        tools
+            .binaries
+            .insert("agent".to_string(), agent_path.clone());
+        tools.binaries.insert(
+            "cursor-agent".to_string(),
+            PathBuf::from("/home/.local/bin/cursor-agent"),
+        );
+        let ports = DetectionPorts {
+            fs: &fs,
+            home: &home,
+            tools: Some(&tools),
+            spawner: None,
+        };
+
+        let detection = CursorAdapter.detect(&ports);
+
+        assert_eq!(detection.executable, Some(agent_path));
+    }
+
+    /// `no_cursor_command_but_argv_json_present_still_reads_data_only`: with
+    /// neither `agent` nor `cursor-agent` on `PATH`, the presence of
+    /// `.cursor/argv.json` alone must still read as `DataOnly`, so the
+    /// `binary_names` fallback does not accidentally widen what counts as
+    /// "installed".
+    #[test]
+    fn no_cursor_command_but_argv_json_present_still_reads_data_only() {
+        let fs = FixtureBuilder::default()
+            .file("/home/.cursor/argv.json", b"{}")
+            .build_fs();
+        let home = PathBuf::from("/home");
+        let tools = FakeToolLookup::default();
+        let ports = DetectionPorts {
+            fs: &fs,
+            home: &home,
+            tools: Some(&tools),
+            spawner: None,
+        };
+
+        let detection = CursorAdapter.detect(&ports);
+
+        assert_eq!(detection.state, HarnessState::DataOnly);
+        assert_eq!(detection.executable, None);
     }
 
     #[test]
