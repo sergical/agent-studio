@@ -23,9 +23,10 @@ The server refuses to start without it. `PORT` defaults to `8787`, bound to
 
 The same app also runs as a public Cloudflare Worker (`src/worker.ts`), for
 release builds of the desktop app that don't have a local server to talk to
-(see `SKILL_STUDIO_SERVER_URL` in the root `apps/desktop` release build).
+(see `SKILL_STUDIO_SERVER_URL` in the root `apps/desktop` release build). It's
+hosted at `https://api.useskillstudio.com`.
 
-One-time setup, from `apps/server`:
+The shortest path, from `apps/server`:
 
 ```bash
 npx wrangler login
@@ -33,13 +34,12 @@ npx wrangler secret put SKILLS_SH_API_KEY   # paste the real skills.sh key when 
 npm run deploy -w @skill-studio/server
 ```
 
-`.github/workflows/deploy-server.yml` redeploys on demand
-(`workflow_dispatch`) using `CLOUDFLARE_API_TOKEN` and
+The optional second path is `.github/workflows/deploy-server.yml`, which
+redeploys on demand (`workflow_dispatch`) using `CLOUDFLARE_API_TOKEN` and
 `CLOUDFLARE_ACCOUNT_ID` repo secrets - it never sees the skills.sh key.
 
-Once a custom domain is ready, add it under a `"routes"` entry in
-`wrangler.jsonc` (see the comment there) instead of relying on the
-`workers.dev` subdomain.
+The repo variable `SKILL_STUDIO_SERVER_URL` must be `https://api.useskillstudio.com`
+for release builds. Set it only after the first deploy answers on `/health`.
 
 ### Abuse control
 
