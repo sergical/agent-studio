@@ -47,8 +47,9 @@ CI runs the same checks (job `test` from `rust.yml`, job `check` from
 2. Make your change and commit it.
 3. Open a pull request against `main`.
 4. CI must go green on both required checks, `test` and `check`.
-5. If you are an outside contributor, a maintainer approves your first
-   workflow run before CI starts.
+5. If you are an outside contributor, every workflow run from your fork
+   waits for a maintainer's approval; CI starts only after they approve it.
+   This applies to each push, not just the first one.
 6. A maintainer squash-merges the pull request. There is no required review
    count, but a maintainer may still ask for changes.
 
