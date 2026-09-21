@@ -58,10 +58,7 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
       <div className="w-full max-w-lg space-y-6">
         <div className="space-y-1">
           <h1 className="text-xl font-semibold">Welcome to Skill Studio</h1>
-          <p className="text-sm text-muted-foreground">
-            Here is what we found on this machine. A value we can&apos;t prove prints Unknown - it
-            is never guessed.
-          </p>
+          <p className="text-sm text-muted-foreground">Here is what we found on this Mac.</p>
         </div>
 
         {error != null && <p className="text-sm text-destructive">{error}</p>}
@@ -72,21 +69,33 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
 
         {rows != null && (
           <ul className="divide-y divide-border rounded-md border border-border">
-            {rows.map((row) => (
-              <li key={row.id} className="flex items-center justify-between gap-3 px-4 py-3">
-                <label className="flex items-center gap-3">
-                  <Checkbox
-                    checked={kept.has(row.id)}
-                    onCheckedChange={(checked) => toggleRow(row.id, checked === true)}
-                  />
-                  <span className="text-sm font-medium">{row.display_name}</span>
-                </label>
-                <span className="text-sm text-muted-foreground">
-                  {STATE_LABEL[row.state]}
-                  {row.version.value != null ? ` · ${row.version.value}` : ""}
-                </span>
-              </li>
-            ))}
+            {rows.map((row) => {
+              const hasHint = row.state === "data_only";
+              const hintId = hasHint ? `${row.id}-hint` : undefined;
+              return (
+                <li key={row.id} className="flex flex-col gap-1 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="flex items-center gap-3">
+                      <Checkbox
+                        checked={kept.has(row.id)}
+                        onCheckedChange={(checked) => toggleRow(row.id, checked === true)}
+                        aria-describedby={hintId}
+                      />
+                      <span className="text-sm font-medium">{row.display_name}</span>
+                    </label>
+                    <span className="text-sm text-muted-foreground">
+                      {STATE_LABEL[row.state]}
+                      {row.version.value != null ? ` · ${row.version.value}` : ""}
+                    </span>
+                  </div>
+                  {hasHint && (
+                    <p id={hintId} className="pl-8 text-sm text-muted-foreground">
+                      Settings or history found, but its command is not on your PATH.
+                    </p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
 
