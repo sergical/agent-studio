@@ -14,12 +14,21 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 const UPSTREAM_BASE = "https://skills.sh/api/v1";
 
+/** Why a proxy result carried a body the proxy wrote itself rather than one
+ * skills.sh produced: the network call to skills.sh failed, or skills.sh
+ * replied with something that isn't JSON. `null` when skills.sh itself
+ * answered, so the request log can tell the proxy's own synthetic 502 apart
+ * from a 502 skills.sh really sent. */
+type ProxyFailure = "upstream_unreachable" | "upstream_non_json";
+
 /** One proxied GET's outcome: the upstream's own status and JSON body when
  * it responded at all (any status, not just 2xx), or a synthetic `{ error }`
- * body when the request to skills.sh itself couldn't be made. */
+ * body when the request to skills.sh itself couldn't be made. `failure`
+ * names which synthetic case it was, for the caller's request log. */
 interface ProxyResult {
   status: number;
   body: unknown;
+  failure: ProxyFailure | null;
 }
 
 /** The exact skills.sh URL for `path` (e.g. `"/skills/search"`) and a
@@ -48,12 +57,19 @@ export async function proxyGet(
     return {
       status: 502,
       body: { error: e instanceof Error ? e.message : "Failed to reach skills.sh" },
+      failure: "upstream_unreachable",
     };
   }
-  const body = await response
-    .json()
-    .catch(() => ({ error: "skills.sh returned a non-JSON response" }));
-  return { status: response.status, body };
+  try {
+    const body = await response.json();
+    return { status: response.status, body, failure: null };
+  } catch {
+    return {
+      status: response.status,
+      body: { error: "skills.sh returned a non-JSON response" },
+      failure: "upstream_non_json",
+    };
+  }
 }
 
 /** True only when no decoding layer turns a path segment into traversal or a separator. */
@@ -161,6 +177,41 @@ function normalizedSearch(path: string, url: string): string {
   return search ? `?${search}` : "";
 }
 
+/** Per-request state the completion log reads back off Hono's context. Each
+ * field is set by the middleware or handler that learns it, so one finished
+ * request can carry the cache outcome, the rate-limit verdict, and what
+ * skills.sh answered - none of which the request line alone exposed. */
+interface ProxyLogVariables {
+  cacheOutcome: "hit" | "miss" | "bypass";
+  rateLimited: boolean;
+  upstreamStatus: number | null;
+  upstreamFailure: ProxyFailure | null;
+}
+
+/** The one event emitted per request, once its response is decided. Field
+ * names are stable so Workers Logs and `wrangler tail` can query them
+ * (e.g. `status = 502 AND upstream_failure = "upstream_unreachable"`), and the
+ * Node dev server's stdout shows the same shape. */
+export interface RequestLogEvent {
+  event: "http_request";
+  request_id: string;
+  method: string;
+  path: string;
+  status: number;
+  duration_ms: number;
+  cache: "hit" | "miss" | "bypass";
+  rate_limited: boolean;
+  upstream_status: number | null;
+  upstream_failure: ProxyFailure | null;
+  error: string | null;
+}
+
+/** Writes one JSON line to stdout - the runtime-neutral channel this app
+ * already logged to, which both the Node dev server and Workers capture. */
+function emitRequestLog(event: RequestLogEvent): void {
+  process.stdout.write(`${JSON.stringify(event)}\n`);
+}
+
 /** Builds the Hono app for `apiKey` - split out from each runtime's entry so
  * tests can exercise routes without starting a real listener, and so the
  * Node and Worker entries share one implementation. */
@@ -170,14 +221,52 @@ export function createSkillsProxyApp({
   limiter,
   cache,
   waitUntil,
-}: CreateSkillsProxyAppOptions): Hono {
-  const app = new Hono();
+}: CreateSkillsProxyAppOptions): Hono<{ Variables: ProxyLogVariables }> {
+  const app = new Hono<{ Variables: ProxyLogVariables }>();
 
+  // Outermost middleware: seeds the per-request log fields, then emits exactly
+  // one event once the response is decided. Alongside method/path/status/
+  // duration it carries a request id and the fields the old request line never
+  // exposed - cache outcome, the rate-limit verdict, which status skills.sh
+  // answered with, and the message of any handler error.
   app.use("*", async (c, next) => {
+    const requestId = crypto.randomUUID();
+    c.set("cacheOutcome", "bypass");
+    c.set("rateLimited", false);
+    c.set("upstreamStatus", null);
+    c.set("upstreamFailure", null);
     const start = Date.now();
-    await next();
-    const ms = Date.now() - start;
-    process.stdout.write(`${c.req.method} ${c.req.path} ${c.res.status} ${ms}ms\n`);
+
+    let status = 500;
+    let error: string | null = null;
+    try {
+      await next();
+      status = c.res.status;
+      // Hono's own error handling turns a thrown handler/middleware error into
+      // a 500 response (and records the cause on `c.error`) before `next()`
+      // resolves, so this is the only place the crash's message is still
+      // reachable - it never surfaces as a rejection here.
+      error = c.error?.message ?? null;
+    } catch (e) {
+      // Only a non-`Error` throw escapes Hono's handler; keep the request
+      // logged before it propagates.
+      error = e instanceof Error ? e.message : "unhandled error";
+      throw e;
+    } finally {
+      emitRequestLog({
+        event: "http_request",
+        request_id: requestId,
+        method: c.req.method,
+        path: c.req.path,
+        status,
+        duration_ms: Date.now() - start,
+        cache: c.get("cacheOutcome"),
+        rate_limited: c.get("rateLimited"),
+        upstream_status: c.get("upstreamStatus"),
+        upstream_failure: c.get("upstreamFailure"),
+        error,
+      });
+    }
   });
 
   app.get("/health", (c) => c.json({ ok: true }));
@@ -200,6 +289,7 @@ export function createSkillsProxyApp({
     const key = c.req.header("CF-Connecting-IP") ?? "unknown";
     const { success } = await limiter.limit({ key });
     if (!success) {
+      c.set("rateLimited", true);
       return c.json({ error: "Too many requests" }, 429, {
         "Retry-After": String(RATE_LIMIT_WINDOW_SECONDS),
       });
@@ -216,9 +306,11 @@ export function createSkillsProxyApp({
     const cacheKey = new Request(`${new URL(c.req.url).origin}${c.req.path}${normalized}`);
     const cached = await cache.match(cacheKey);
     if (cached) {
+      c.set("cacheOutcome", "hit");
       c.res = cached.clone();
       return;
     }
+    c.set("cacheOutcome", "miss");
     await next();
     if (c.res.status === 200) {
       const ttl = cacheTtlSecondsFor(c.req.path);
@@ -238,12 +330,17 @@ export function createSkillsProxyApp({
   });
 
   app.get("/api/v1/skills", async (c) => {
-    const { status, body } = await proxyGet(
+    const { status, body, failure } = await proxyGet(
       apiKey,
       "/skills",
       normalizedSearch(c.req.path, c.req.url),
       fetchImpl,
     );
+    // `upstream_status` stays null when there was no upstream response at
+    // all (skills.sh unreachable); otherwise it is skills.sh's own status,
+    // whatever the proxy relays to the caller.
+    c.set("upstreamStatus", failure === "upstream_unreachable" ? null : status);
+    c.set("upstreamFailure", failure);
     // SAFETY: `status` is skills.sh's own response status, always a valid
     // HTTP status code - Hono's `ContentfulStatusCode` union just doesn't
     // widen back to `number`.
@@ -251,12 +348,15 @@ export function createSkillsProxyApp({
   });
 
   app.get("/api/v1/skills/search", async (c) => {
-    const { status, body } = await proxyGet(
+    const { status, body, failure } = await proxyGet(
       apiKey,
       "/skills/search",
       normalizedSearch(c.req.path, c.req.url),
       fetchImpl,
     );
+    // See the /api/v1/skills handler for the `upstream_*` fields.
+    c.set("upstreamStatus", failure === "upstream_unreachable" ? null : status);
+    c.set("upstreamFailure", failure);
     // SAFETY: see the /api/v1/skills handler above.
     return c.json(body, status as ContentfulStatusCode);
   });
@@ -267,7 +367,7 @@ export function createSkillsProxyApp({
     if (hasMalformedSkillDetailEncoding(c.req.url) || !segments.every(decodesToSafePathSegment)) {
       return c.json({ error: "Invalid skill detail path" }, 400);
     }
-    const { status, body } = await proxyGet(
+    const { status, body, failure } = await proxyGet(
       apiKey,
       `/skills/${segments.map((segment) => encodeURIComponent(segment)).join("/")}`,
       // The detail route takes no query params - not just for the cache key,
@@ -275,6 +375,9 @@ export function createSkillsProxyApp({
       normalizedSearch(c.req.path, c.req.url),
       fetchImpl,
     );
+    // See the /api/v1/skills handler for the `upstream_*` fields.
+    c.set("upstreamStatus", failure === "upstream_unreachable" ? null : status);
+    c.set("upstreamFailure", failure);
     // SAFETY: see the /api/v1/skills handler above.
     return c.json(body, status as ContentfulStatusCode);
   });
