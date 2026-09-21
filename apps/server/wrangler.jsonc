@@ -3,12 +3,12 @@
   "name": "skill-studio-server",
   "main": "src/worker.ts",
   "compatibility_date": "2026-09-18",
+  "account_id": "a6221d3398c2e695ab8e1a2f1237bd1b",
   "workers_dev": true,
+  "routes": [{ "pattern": "api.useskillstudio.com", "custom_domain": true }],
   "observability": {
     "enabled": true,
   },
-  // No route/custom domain yet - add one under `"routes"` here once the
-  // hosted URL has a domain (see README.md's "Deploy to Cloudflare Workers").
   "ratelimits": [
     {
       "name": "RATE_LIMITER",
