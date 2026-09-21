@@ -97,6 +97,16 @@ checklist this is built for.
 
 Universal agent instructions file supported by multiple AI coding tools.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the local gate, and how a
+change lands. This project follows the
+[Contributor Covenant](CODE_OF_CONDUCT.md).
+
+## Security
+
+See [SECURITY.md](SECURITY.md) to report a vulnerability.
+
 ## License
 
-MIT
+[MIT](LICENSE)
