@@ -86,40 +86,57 @@ jobs:
         # "set" and `security import`s an empty file. They must be
         # entirely ABSENT from the build step's environment when the
         # certificate secret is empty, which is why this step (not the
-        # build step's own `env:`) is the only place that ever writes them,
-        # and only inside this `if`. `$GITHUB_ENV` receives them - never
-        # `echo`d to stdout - and the heredoc form guards a multi-line
-        # secret (the .p12 is base64, expected to be one line, but this
-        # doesn't assume it).
+        # build step's own `env:`) is the only place that ever writes them.
+        # `$GITHUB_ENV` receives them - never `echo`d to stdout - and the
+        # heredoc form guards a multi-line secret (the .p12 is base64,
+        # expected to be one line, but this doesn't assume it).
+        #
+        # A missing secret is a hard failure here, not a fallback. This
+        # step runs immediately before tauri-action, which creates the
+        # release and uploads the DMGs while `releaseDraft: false`; an
+        # unsigned, unnotarized build is not a rehearsal anyone can use -
+        # every download hits Gatekeeper's unverified-developer warning
+        # (and, unnotarized, often the "app is damaged and can't be opened"
+        # dead end). So every Apple signing and notarization secret must be
+        # set or the job stops before anything is published. The four
+        # v0.1.0-rc.* releases were published before this gate existed and
+        # are unsigned (docs/action-map/release-readiness.md, step 1).
         run: |
           set -euo pipefail
-          if [ -n "$APPLE_CERTIFICATE" ]; then
-            delimiter="$(openssl rand -hex 16)"
-            {
-              echo "APPLE_CERTIFICATE<<$delimiter"
-              echo "$APPLE_CERTIFICATE"
-              echo "$delimiter"
-              echo "APPLE_CERTIFICATE_PASSWORD<<$delimiter"
-              echo "$APPLE_CERTIFICATE_PASSWORD"
-              echo "$delimiter"
-              echo "APPLE_SIGNING_IDENTITY=Developer ID Application"
-              echo "KEYCHAIN_PASSWORD<<$delimiter"
-              echo "$APPLE_KEYCHAIN_PASSWORD"
-              echo "$delimiter"
-              echo "APPLE_ID<<$delimiter"
-              echo "$APPLE_ID"
-              echo "$delimiter"
-              echo "APPLE_PASSWORD<<$delimiter"
-              echo "$APPLE_APP_SPECIFIC_PASSWORD"
-              echo "$delimiter"
-              echo "APPLE_TEAM_ID<<$delimiter"
-              echo "$APPLE_TEAM_ID"
-              echo "$delimiter"
-            } >> "$GITHUB_ENV"
-            echo "Apple code signing secrets present - build will sign and notarize."
-          else
-            echo "Apple code signing secrets are unset - building an unsigned rehearsal."
+          missing=""
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_KEYCHAIN_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "$(printenv "$name" 2>/dev/null)" ]; then
+              missing="${missing:+$missing, }$name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Apple code signing secrets are unset ($missing) - refusing to build a release that would be unsigned and unnotarized."
+            echo "Set the missing repository secrets, then re-run the release (docs/action-map/release-readiness.md, step 1)."
+            exit 1
           fi
+          delimiter="$(openssl rand -hex 16)"
+          {
+            echo "APPLE_CERTIFICATE<<$delimiter"
+            echo "$APPLE_CERTIFICATE"
+            echo "$delimiter"
+            echo "APPLE_CERTIFICATE_PASSWORD<<$delimiter"
+            echo "$APPLE_CERTIFICATE_PASSWORD"
+            echo "$delimiter"
+            echo "APPLE_SIGNING_IDENTITY=Developer ID Application"
+            echo "KEYCHAIN_PASSWORD<<$delimiter"
+            echo "$APPLE_KEYCHAIN_PASSWORD"
+            echo "$delimiter"
+            echo "APPLE_ID<<$delimiter"
+            echo "$APPLE_ID"
+            echo "$delimiter"
+            echo "APPLE_PASSWORD<<$delimiter"
+            echo "$APPLE_APP_SPECIFIC_PASSWORD"
+            echo "$delimiter"
+            echo "APPLE_TEAM_ID<<$delimiter"
+            echo "$APPLE_TEAM_ID"
+            echo "$delimiter"
+          } >> "$GITHUB_ENV"
+          echo "Apple code signing secrets present - build will sign and notarize."
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -139,8 +156,9 @@ jobs:
           SKILL_STUDIO_SERVER_URL: ${{ vars.SKILL_STUDIO_SERVER_URL }}
           # Apple's APPLE_CERTIFICATE/APPLE_SIGNING_IDENTITY/etc. are
           # deliberately NOT set here - see "Configure Apple code signing"
-          # above, which appends them to $GITHUB_ENV (so they still reach
-          # this step) only when the certificate secret is non-empty.
+          # above, the only place that writes them; that step fails the job
+          # unless every one of them is set, so this step only ever runs for
+          # a build that signs and notarizes.
           #
           # Minisign key pair for the in-app updater (unit 6.2): the public
           # half is committed in tauri.conf.json; the private half signs
