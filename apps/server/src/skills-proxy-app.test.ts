@@ -143,6 +143,26 @@ function fakeCache(): ResponseCache & { size: number } {
   };
 }
 
+describe("GET /version", () => {
+  it("reports the commit the deploy workflow injected", async () => {
+    const commit = "0".repeat(40);
+    const response = await createSkillsProxyApp({ apiKey: "sk-secret", version: commit }).request(
+      "http://localhost/version",
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ version: commit });
+  });
+
+  it("falls back to `unknown` when no version is injected", async () => {
+    const response = await createSkillsProxyApp({ apiKey: "sk-secret" }).request(
+      "http://localhost/version",
+    );
+
+    expect(await response.json()).toEqual({ version: "unknown" });
+  });
+});
+
 describe("rate limit middleware", () => {
   it("returns 429 with Retry-After when the limiter refuses, without calling upstream", async () => {
     const fetchMock = vi.fn();

@@ -14,6 +14,9 @@ import { createSkillsProxyApp, type RateLimiter, type ResponseCache } from "./sk
 interface Env {
   SKILLS_SH_API_KEY: string;
   RATE_LIMITER: RateLimiter;
+  /** The deployed commit, injected by `.github/workflows/deploy-server.yml`
+   * with `wrangler deploy --var SKILL_STUDIO_SERVER_VERSION:$GITHUB_SHA`. */
+  SKILL_STUDIO_SERVER_VERSION?: string;
 }
 
 /** The Workers fetch handler's third argument - its `waitUntil` schedules the
@@ -38,6 +41,7 @@ export default {
       limiter: env.RATE_LIMITER,
       cache: caches.default,
       waitUntil: (promise) => ctx.waitUntil(promise),
+      version: env.SKILL_STUDIO_SERVER_VERSION,
     });
     return app.fetch(request);
   },
