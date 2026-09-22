@@ -2,18 +2,20 @@
 // Skill Studio - Worker
 // The Cloudflare Workers entry point for the skills.sh proxy: this URL is
 // public (unlike the Node dev server, which only ever binds 127.0.0.1), so it
-// wires the Workers Rate Limiting binding and the Cache API into
+// wires the Workers Rate Limiting bindings and the Cache API into
 // `createSkillsProxyApp` before every request reaches skills.sh.
 // ============================================================================
 
 import { createSkillsProxyApp, type RateLimiter, type ResponseCache } from "./skills-proxy-app";
 
 /** The subset of Workers' `Fetcher.env` this proxy reads: the skills.sh key
- * (set once with `wrangler secret put SKILLS_SH_API_KEY`) and the rate limit
- * binding declared in `wrangler.jsonc`. */
+ * (set once with `wrangler secret put SKILLS_SH_API_KEY`), the per-caller
+ * limiter, and the aggregate budget that caps what this Worker spends the key
+ * on no matter who is calling - all three declared in `wrangler.jsonc`. */
 interface Env {
   SKILLS_SH_API_KEY: string;
   RATE_LIMITER: RateLimiter;
+  UPSTREAM_BUDGET: RateLimiter;
 }
 
 /** The Workers fetch handler's third argument - its `waitUntil` schedules the
@@ -36,6 +38,7 @@ export default {
     const app = createSkillsProxyApp({
       apiKey: env.SKILLS_SH_API_KEY,
       limiter: env.RATE_LIMITER,
+      budget: env.UPSTREAM_BUDGET,
       cache: caches.default,
       waitUntil: (promise) => ctx.waitUntil(promise),
     });
