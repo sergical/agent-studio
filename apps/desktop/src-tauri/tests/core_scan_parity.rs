@@ -250,6 +250,30 @@ fn home_env_lock() -> &'static std::sync::Mutex<()> {
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
+/// `write_fork_registry`, for a test that is not already holding
+/// [`home_env_lock`].
+///
+/// `write_fork_registry` roots its advisory lease at `registry_lease_root()`
+/// (`core_runtime::data_root()`'s `leases` directory), and `data_root()`
+/// reads the *process-global* `HOME` rather than its `home` argument.
+/// `run_desktop` points `HOME` at the fixture it is scanning and the fixture
+/// is deleted once that lock is released, so a write that ran while a
+/// fixture was the ambient `HOME` would root its lease inside a directory
+/// another test then removes. `FileLease::acquire` creates that lease
+/// directory and then opens the lock file inside it, so the removal lands
+/// between the two and the write fails with
+/// `Io: No such file or directory (os error 2)`. Holding the lock keeps the
+/// ambient `HOME` at the real one for the whole write.
+fn write_fork_registry_under_home_lock(
+    home: &Path,
+    registry: &skill_studio_lib::skill_fork_registry::ForkRegistry,
+) -> Result<(), String> {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    write_fork_registry(home, registry)
+}
+
 /// Runs the desktop's assembly path. The caller must already hold
 /// [`home_env_lock`]: this swaps the process-global `HOME` var (see the
 /// lock's own doc), and the lock is not reentrant - a caller that also
@@ -614,7 +638,7 @@ fn registered_copy_record_owns_the_copy() {
             disabled: false,
         },
     );
-    skill_studio_lib::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+    write_fork_registry_under_home_lock(&home, &registry).unwrap();
 
     let core = run_core("copy-owner", &home);
 
@@ -663,7 +687,7 @@ fn fork_record_owns_the_fork() {
             base_commit: "deadbeef".to_string(),
         },
     );
-    skill_studio_lib::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+    write_fork_registry_under_home_lock(&home, &registry).unwrap();
 
     let core = run_core("fork-owner", &home);
 
@@ -1133,7 +1157,7 @@ fn copy_ownership_requires_an_exact_recorded_deployment_identity() {
             content_hash.clone(),
         ),
     );
-    skill_studio_lib::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+    write_fork_registry_under_home_lock(&home, &registry).unwrap();
 
     let matched = core_scan(&home, &[], None);
     assert_eq!(
@@ -1147,8 +1171,7 @@ fn copy_ownership_requires_an_exact_recorded_deployment_identity() {
         wrong_id.clone(),
         copy_record(&wrong_id, "find-bugs", &skill_dir, content_hash),
     );
-    skill_studio_lib::skill_fork_registry::write_fork_registry(&home, &mismatched_registry)
-        .unwrap();
+    write_fork_registry_under_home_lock(&home, &mismatched_registry).unwrap();
 
     let mismatched = core_scan(&home, &[], None);
     assert_eq!(
@@ -1187,7 +1210,7 @@ fn copy_ownership_rejects_edited_content() {
         deployment_id.clone(),
         copy_record(&deployment_id, "find-bugs", &skill_dir, content_hash),
     );
-    skill_studio_lib::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+    write_fork_registry_under_home_lock(&home, &registry).unwrap();
 
     write_skill_content(&skill_dir, "edited content");
 
@@ -1226,7 +1249,7 @@ fn copy_ownership_rejects_an_empty_legacy_content_hash() {
         deployment_id.clone(),
         copy_record(&deployment_id, "find-bugs", &skill_dir, String::new()),
     );
-    skill_studio_lib::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+    write_fork_registry_under_home_lock(&home, &registry).unwrap();
 
     let inventory = core_scan(&home, &[], None);
     let row = deployment_at(&inventory, "find-bugs", &home, &skill_dir);
