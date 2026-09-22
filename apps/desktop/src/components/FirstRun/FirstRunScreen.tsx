@@ -5,9 +5,9 @@
 // thread (useFirstRun.ts's `useFirstRunScreen`), lets the user keep or
 // remove a row and choose whether to search harness history for project
 // folders, and saves the choice so the next launch skips this screen. Nothing
-// here decides what a row means - the state label and the value shown for
-// each signal come straight from the core's `HarnessDetection`; this
-// component only renders it and collects the keep/remove choice.
+// here decides what a row means - the `HarnessDetection` state comes
+// straight from the core; this component only renders it and collects the
+// keep/remove choice.
 // ============================================================================
 
 import { useEffect } from "react";
@@ -19,13 +19,22 @@ interface FirstRunScreenProps {
   onComplete: () => void;
 }
 
-const STATE_LABEL = {
-  not_found: "Not found",
-  data_only: "Data only",
-  installed: "Installed",
-  configured: "Configured",
-  used: "Used",
-} satisfies Record<HarnessDetection["state"], string>;
+/** The only thing a user needs from a row's state: will Activity show
+ * anything for this harness. `used` already answers that by being kept, so
+ * it gets no secondary text. */
+function secondaryText(state: HarnessDetection["state"]): string | null {
+  switch (state) {
+    case "used":
+      return null;
+    case "installed":
+    case "configured":
+      return "No activity yet";
+    case "data_only":
+      return "Settings found, command not on PATH";
+    case "not_found":
+      return "Not found";
+  }
+}
 
 /** Renders nothing until the saved-choice check resolves, and skips straight
  * to `onComplete` when a choice already exists, so a returning user never
@@ -58,7 +67,10 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
       <div className="w-full max-w-lg space-y-6">
         <div className="space-y-1">
           <h1 className="text-xl font-semibold">Welcome to Skill Studio</h1>
-          <p className="text-sm text-muted-foreground">Here is what we found on this Mac.</p>
+          <p className="text-sm text-muted-foreground">
+            Pick the agents Skill Studio manages. It installs and syncs skills for them and shows
+            how they use them. These are on this Mac:
+          </p>
         </div>
 
         {error != null && <p className="text-sm text-destructive">{error}</p>}
@@ -70,28 +82,22 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
         {rows != null && (
           <ul className="divide-y divide-border rounded-md border border-border">
             {rows.map((row) => {
-              const hasHint = row.state === "data_only";
-              const hintId = hasHint ? `${row.id}-hint` : undefined;
+              const secondary = secondaryText(row.state);
+              const secondaryId = secondary != null ? `${row.id}-secondary` : undefined;
               return (
-                <li key={row.id} className="flex flex-col gap-1 px-4 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <label className="flex items-center gap-3">
-                      <Checkbox
-                        checked={kept.has(row.id)}
-                        onCheckedChange={(checked) => toggleRow(row.id, checked === true)}
-                        aria-describedby={hintId}
-                      />
-                      <span className="text-sm font-medium">{row.display_name}</span>
-                    </label>
-                    <span className="text-sm text-muted-foreground">
-                      {STATE_LABEL[row.state]}
-                      {row.version.value != null ? ` · ${row.version.value}` : ""}
+                <li key={row.id} className="flex items-center justify-between gap-3 px-4 py-3">
+                  <label className="flex items-center gap-3">
+                    <Checkbox
+                      checked={kept.has(row.id)}
+                      onCheckedChange={(checked) => toggleRow(row.id, checked === true)}
+                      aria-describedby={secondaryId}
+                    />
+                    <span className="text-sm font-medium">{row.display_name}</span>
+                  </label>
+                  {secondary != null && (
+                    <span id={secondaryId} className="text-sm text-muted-foreground">
+                      {secondary}
                     </span>
-                  </div>
-                  {hasHint && (
-                    <p id={hintId} className="pl-8 text-sm text-muted-foreground">
-                      Settings or history found, but its command is not on your PATH.
-                    </p>
                   )}
                 </li>
               );
@@ -100,7 +106,7 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
         )}
 
         <label className="flex items-center justify-between gap-3">
-          <span className="text-sm">Search harness history for project folders</span>
+          <span className="text-sm">Find my projects from agent history</span>
           <Switch checked={searchProjectFolders} onCheckedChange={setSearchProjectFolders} />
         </label>
 
