@@ -121,6 +121,11 @@ interface CreateSkillsProxyAppOptions {
   fetch?: typeof fetch;
   /** Only set on the public Worker entry; the Node dev server leaves this unset. */
   limiter?: RateLimiter;
+  /** Caps the app total upstream calls no matter who is calling, so a caller
+   * that rotates IPs still cannot spend the shared skills.sh key allowance on
+   * its own. Only set on the public Worker entry; the Node dev server leaves
+   * this unset. */
+  budget?: RateLimiter;
   /** Only set on the public Worker entry; the Node dev server leaves this unset. */
   cache?: ResponseCache;
   /** Schedules work past the response, e.g. Workers' `ExecutionContext.waitUntil` -
@@ -129,6 +134,17 @@ interface CreateSkillsProxyAppOptions {
 }
 
 const RATE_LIMIT_WINDOW_SECONDS = 60;
+
+/** The one fixed key every caller shares for the aggregate upstream budget. The
+ * per-caller limiter bounds what a single IP may ask for, but nothing bounds
+ * what the Worker as a whole sends to skills.sh: a caller with rotating egress
+ * IPs multiplies the per-IP budget for free, and ten callers at that limit
+ * already spend the whole 600-requests-per-minute allowance that skills.sh
+ * documents for the shared key (https://skills.sh/docs/api). This bucket caps
+ * the Worker itself, so the proxy alone can never push the key past that
+ * ceiling. It is only spent on a cache miss, so shared edge-cached reads - the
+ * bulk of legitimate traffic - stay free. */
+const UPSTREAM_BUDGET_KEY = "upstream";
 
 /** Edge-cache lifetime per route family, in seconds - list/search results
  * churn faster than a single skill's detail page. */
@@ -168,6 +184,7 @@ export function createSkillsProxyApp({
   apiKey,
   fetch: fetchImpl = fetch,
   limiter,
+  budget,
   cache,
   waitUntil,
 }: CreateSkillsProxyAppOptions): Hono {
@@ -193,7 +210,7 @@ export function createSkillsProxyApp({
     return next();
   });
 
-  // Only the public Worker entry passes `limiter`/`cache`; the Node dev
+  // Only the public Worker entry passes `limiter`/`budget`/`cache`; the Node dev
   // server's routes fall straight through to `next()` on both.
   app.use("/api/v1/*", async (c, next) => {
     if (!limiter) return next();
@@ -235,6 +252,21 @@ export function createSkillsProxyApp({
         await putPromise;
       }
     }
+  });
+
+  // The aggregate upstream budget. Registered after the cache middleware, so
+  // it is reached only when that middleware misses and calls downstream: a
+  // request answered from the edge cache never spends it, and exactly the
+  // requests that reach skills.sh count against the shared key.
+  app.use("/api/v1/*", async (c, next) => {
+    if (!budget) return next();
+    const { success } = await budget.limit({ key: UPSTREAM_BUDGET_KEY });
+    if (!success) {
+      return c.json({ error: "Too many requests" }, 429, {
+        "Retry-After": String(RATE_LIMIT_WINDOW_SECONDS),
+      });
+    }
+    return next();
   });
 
   app.get("/api/v1/skills", async (c) => {

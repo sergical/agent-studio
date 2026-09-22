@@ -43,11 +43,22 @@ for release builds. Set it only after the first deploy answers on `/health`.
 
 ### Abuse control
 
-The Worker is public, so it adds two things the Node dev server doesn't need:
+The Worker is public, so it adds three things the Node dev server doesn't need:
 
 - **Rate limit**: 60 requests per 60 seconds per caller IP
   (`CF-Connecting-IP`), via the Workers Rate Limiting binding. A refused
   request gets `429` with `Retry-After: 60`.
+- **Upstream budget**: 500 requests per 60 seconds for the Worker as a whole,
+  no matter which caller sends them, spent only when a request misses the edge
+  cache and actually reaches skills.sh. skills.sh allows 600 requests per
+  minute for the shared key ([rate limits](https://skills.sh/docs/api)), and
+  the per-IP limit alone cannot keep the proxy inside it - ten IPs at 60
+  requests/minute already spend the whole allowance, and a caller that rotates
+  egress IPs is unbounded. The budget caps what this Worker can spend, so the
+  proxy alone can never push the key past that ceiling (500 leaves room for the
+  dev server, which spends the same key). A refused request gets `429` with
+  `Retry-After: 60`, the same shape as the per-IP refusal.
 - **Edge cache**: successful (`200`) responses only, keyed by the full
   request URL - 300 seconds for the list/search routes, 3600 seconds for a
-  skill's detail route. `/health` is never rate limited or cached.
+  skill's detail route. `/health` is never rate limited or cached, and a cached
+  response costs nothing against the upstream budget.
