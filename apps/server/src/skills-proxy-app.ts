@@ -126,6 +126,9 @@ interface CreateSkillsProxyAppOptions {
   /** Schedules work past the response, e.g. Workers' `ExecutionContext.waitUntil` -
    * when absent, the cache write is awaited inline instead. */
   waitUntil?: (promise: Promise<unknown>) => void;
+  /** The commit the deploy workflow shipped, injected as a Worker variable -
+   * exposed on `GET /version` so the live version is readable. Unset locally. */
+  version?: string;
 }
 
 const RATE_LIMIT_WINDOW_SECONDS = 60;
@@ -170,6 +173,7 @@ export function createSkillsProxyApp({
   limiter,
   cache,
   waitUntil,
+  version,
 }: CreateSkillsProxyAppOptions): Hono {
   const app = new Hono();
 
@@ -181,6 +185,11 @@ export function createSkillsProxyApp({
   });
 
   app.get("/health", (c) => c.json({ ok: true }));
+
+  // The commit CI deployed, so the running version is readable off the live
+  // Worker instead of only from the deploy run's history. `unknown` when the
+  // var is absent (local dev, or a hand deploy that skipped the workflow).
+  app.get("/version", (c) => c.json({ version: version ?? "unknown" }));
 
   // The rate limiter and cache both key on GET-only semantics (an idempotent,
   // side-effect-free request whose URL fully determines the response), so a
