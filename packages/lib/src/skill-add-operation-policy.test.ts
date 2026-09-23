@@ -113,6 +113,7 @@ describe("add skill operation phase policy", () => {
           tool: "dotagents",
           command: "npx",
           deployments_created: [],
+          warning: null,
         },
       }),
     ).toEqual({
@@ -128,14 +129,17 @@ describe("add skill operation phase policy", () => {
           {
             name: "other",
             error: "already exists",
+            result: null,
           },
           {
             name: "visual-recap",
+            error: null,
             result: {
               name: "visual-recap",
               tool: "copy",
               command: "copy",
               deployments_created: [],
+              warning: null,
             },
           },
         ],
