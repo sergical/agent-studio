@@ -8,6 +8,13 @@ on:
 permissions:
   contents: read
 
+# The tag ruleset lets a tag be updated, so a re-pushed tag can start a second
+# run that mutates the same release with `--clobber` assets; serialize runs per
+# tag. Never cancel one that is mid-publish.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   check-version:
     runs-on: ubuntu-latest
@@ -20,8 +27,9 @@ jobs:
   build:
     needs: check-version
     runs-on: macos-14
-    # tauri-action creates the GitHub release and `gh release upload` attaches
-    # the .dSYM archive; the default GITHUB_TOKEN is read-only.
+    # tauri-action creates the GitHub release as a draft and `gh release
+    # upload` attaches the .dSYM archive to it; the default GITHUB_TOKEN is
+    # read-only. Publication happens later, in the `publish` job.
     permissions:
       contents: write
     strategy:
@@ -32,8 +40,10 @@ jobs:
       # race-free.
       max-parallel: 1
       # A failure on one architecture must not cancel the other leg still
-      # running - each leg uploads its own artifacts to the same release,
-      # so the surviving leg's build is still worth finishing and shipping.
+      # running - each leg uploads its own artifacts to the same draft
+      # release, so the surviving leg's build is still worth finishing. The
+      # release is not published until both legs land and `publish` verifies
+      # the result, so a failed leg cannot ship a half release.
       fail-fast: false
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
@@ -155,7 +165,11 @@ jobs:
           args: --target ${{ matrix.target }} --config src-tauri/tauri.release.conf.json
           tagName: ${{ github.ref_name }}
           releaseName: "Skill Studio ${{ github.ref_name }}"
-          releaseDraft: false
+          # Create the release as a draft; the `publish` job flips it public
+          # only after asserting both matrix legs' artifacts are present, so a
+          # failure anywhere in this job leaves an unpublished draft rather
+          # than a public release missing an architecture.
+          releaseDraft: true
           # A tag with a pre-release suffix (e.g. v0.1.0-rc.1) publishes as a
           # GitHub pre-release; a plain vX.Y.Z tag publishes normally.
           prerelease: ${{ contains(github.ref_name, '-') }}
@@ -191,6 +205,38 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.ref_name }}" "$dsym_zip" --clobber
 
+  # Publication is a separate job on purpose: it runs only after both matrix
+  # legs have finished, and it verifies the draft release actually carries both
+  # architectures before anyone can download it. This is what makes a release
+  # atomic - a leg that failed leaves the draft unpublished instead of a public
+  # release that only ships one architecture.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Assert the draft release is complete
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/release/check-release-complete.sh "${{ github.ref_name }}"
+      # A pre-release tag (e.g. v0.1.0-rc.1) stays a GitHub pre-release; a
+      # plain vX.Y.Z tag becomes the latest release. Same rule tauri-action's
+      # `prerelease` input used when it created the draft.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.ref_name }}" == *-* ]]; then
+            gh release edit "${{ github.ref_name }}" --draft=false --prerelease
+          else
+            gh release edit "${{ github.ref_name }}" --draft=false --latest
+          fi
+
   # Unit 6.3: prints the rollback rehearsal checklist once per release
   # (not once per `build` matrix leg) so the release author has one place
   # to record it. This is a summary, not a gate - nothing here blocks the
@@ -199,7 +245,7 @@ jobs:
   # that ran the previous tag, and copies this section into the release
   # notes (`docs/action-map/release-readiness.md` carries the same steps).
   rehearsal-summary:
-    needs: build
+    needs: publish
     runs-on: ubuntu-latest
     steps:
       - name: Print the n-1 over n rollback rehearsal checklist
