@@ -16,6 +16,34 @@ jobs:
         with:
           persist-credentials: false
       - run: ./scripts/release/check-version-matches-tag.sh "${{ github.ref_name }}"
+      - name: Require SKILL_STUDIO_SERVER_URL for release builds
+        # The released binary's skills.sh backend is compiled in from this
+        # repository variable (see `default_server_url` in
+        # apps/desktop/src-tauri/src/skills/api.rs). Unset or blank, the
+        # build falls back to the `http://127.0.0.1:8787` local-dev URL with
+        # no error, so every shipped discovery call fails and the app tells
+        # users to run `npm run dev:server` - a fail-silent path on the
+        # product's core journey, at the moment the artifact goes public.
+        # Fail before the build rather than publish a binary pointed at
+        # localhost. See also the sibling hard fail for the Apple signing
+        # secrets in the `build` job below.
+        env:
+          SKILL_STUDIO_SERVER_URL: ${{ vars.SKILL_STUDIO_SERVER_URL }}
+        run: |
+          set -euo pipefail
+          url="$(printf '%s' "$SKILL_STUDIO_SERVER_URL" | tr -d '[:space:]')"
+          if [ -z "$url" ]; then
+            echo "::error::Repository variable SKILL_STUDIO_SERVER_URL is unset or blank - refusing to build a release whose compiled backend URL would fall back to http://127.0.0.1:8787."
+            echo "Set it to https://api.useskillstudio.com (Settings -> Secrets and variables -> Actions -> Variables), then re-run the release."
+            exit 1
+          fi
+          case "${url,,}" in
+            http://127.*|https://127.*|http://localhost*|https://localhost*|http://\[::1\]*|https://\[::1\]*)
+              echo "::error::Repository variable SKILL_STUDIO_SERVER_URL points at a loopback host ($url) - refusing to build a release pointed at a local dev server."
+              exit 1
+              ;;
+          esac
+          echo "SKILL_STUDIO_SERVER_URL is set to '$url'; the release build will bake it in."
 
   build:
     needs: check-version
