@@ -31,6 +31,7 @@
   --color-bg-primary: oklch(0.155 0.004 285.899);
   --color-bg-secondary: oklch(0.188 0.006 285.806);
   --color-bg-tertiary: oklch(0.224 0.008 285.761);
+  --color-bg-tertiary-hover: oklch(0.262 0.008 285.761);
   --color-bg-elevated: oklch(0.197 0.006 285.84);
   --color-bg-hover: oklch(1 0 0 / 0.04);
   --color-bg-active: oklch(1 0 0 / 0.07);
@@ -56,6 +57,8 @@
   --color-accent-hover: oklch(0.725 0.145 294.824);
   --color-accent-soft: oklch(0.668 0.176 293.133 / 0.16);
   --color-accent-softer: oklch(0.668 0.176 293.133 / 0.08);
+  --color-accent-soft-hover: oklch(0.668 0.176 293.133 / 0.26);
+  --color-accent-softer-hover: oklch(0.668 0.176 293.133 / 0.16);
   /* Solid accent fills behind white text - darker than --color-accent so the
      label clears 4.5:1; --color-accent stays the text and ring colour. */
   --color-accent-solid: oklch(0.58 0.19 293);
@@ -164,6 +167,7 @@
   --color-bg-primary: oklch(1 0 0);
   --color-bg-secondary: oklch(0.967 0.001 286.375);
   --color-bg-tertiary: oklch(0.92 0.004 286.32);
+  --color-bg-tertiary-hover: oklch(0.885 0.004 286.32);
   --color-bg-elevated: oklch(1 0 0);
   --color-bg-hover: oklch(0 0 0 / 0.04);
   --color-bg-active: oklch(0 0 0 / 0.08);
@@ -183,6 +187,8 @@
   --color-accent-hover: oklch(0.491 0.241 292.581);
   --color-accent-soft: oklch(0.541 0.247 293.009 / 0.12);
   --color-accent-softer: oklch(0.541 0.247 293.009 / 0.06);
+  --color-accent-soft-hover: oklch(0.541 0.247 293.009 / 0.2);
+  --color-accent-softer-hover: oklch(0.541 0.247 293.009 / 0.12);
   --color-accent-solid: oklch(0.541 0.247 293.009);
   --color-accent-solid-hover: oklch(0.491 0.241 292.581);
 
