@@ -134,7 +134,7 @@ describe("dayBreakdown totals", () => {
     ];
     const breakdown = dayBreakdown(stats, baseDayKey, ALL_ACTIVITY);
     const sumOf = (counts: Record<string, number | undefined>) =>
-      Object.values(counts).reduce((sum, n) => sum + (n ?? 0), 0);
+      Object.values(counts).reduce<number>((sum, n) => sum + (n ?? 0), 0);
     expect(breakdown.total).toBe(5);
     expect(sumOf(breakdown.bySkill)).toBe(breakdown.total);
     expect(sumOf(breakdown.byHarness)).toBe(breakdown.total);

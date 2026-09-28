@@ -150,7 +150,7 @@ const ALLOWED_QUERY_PARAMS = {
  * sorted order - used for both the upstream request and the cache key so the
  * two always agree. */
 function normalizedSearch(path: string, url: string): string {
-  const allowed = ALLOWED_QUERY_PARAMS[path] ?? [];
+  const allowed = Object.entries(ALLOWED_QUERY_PARAMS).find(([route]) => route === path)?.[1] ?? [];
   const params = new URL(url).searchParams;
   const kept = new URLSearchParams();
   for (const key of allowed) {

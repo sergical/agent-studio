@@ -28,6 +28,16 @@ function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
     symlink_is_broken: false,
     content_hash: "abc",
     disabled: false,
+    id: "dep:v1/global/universal/find-bugs",
+    destination: "universal",
+    owner_kind: "manual",
+    mutability: "read-only",
+    backing: { kind: "canonical" },
+    disabled_by: null,
+    codex_implicit_invocation: null,
+    invocation: "both",
+    spec_violations: [],
+    shared_via_whole_dir_link: false,
     ...overrides,
   };
 }
@@ -53,6 +63,15 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     folder_truncated: false,
     parked: false,
     invocation: "both",
+    updated_at: null,
+    skill_path: null,
+    source_url: null,
+    update_owners: [],
+    update_commit: null,
+    update_commit_at: null,
+    description: null,
+    fork: null,
+    parked_at: null,
     ...overrides,
     update_owner_ids: overrides.update_owner_ids ?? [],
   };
@@ -70,6 +89,8 @@ function fixtureStats(overrides: Partial<SkillInvocationStats> = {}): SkillInvoc
     by_day: {},
     by_harness_30_days: {},
     by_trigger_30_days: { user: 0, agent: 0, file_read: 0 },
+    last_used: null,
+    by_hour: [],
     ...overrides,
   };
 }
@@ -83,6 +104,11 @@ function fixtureSnapshot(overrides: Partial<SkillSnapshot> = {}): SkillSnapshot 
     scanned_at: "2026-01-01T00:00:00Z",
     last_test_by_skill: {},
     update_check: { checked_at: null, gh_status: "ok", message: null, updates_available: 0 },
+    revision: 0,
+    opencode_config_kind: null,
+    scan_partial: false,
+    scan_observations: [],
+    unread_roots: [],
     ...overrides,
   };
 }
@@ -117,7 +143,13 @@ describe("homeSummaryCounts", () => {
         deployments: [
           fixtureDeployment({
             agent: "Claude Code",
-            plugin: { name: "acme", harness: "claude-code" },
+            plugin: {
+              name: "acme",
+              harness: "claude-code",
+              version: null,
+              marketplace: "acme",
+              id: "acme@acme",
+            },
           }),
         ],
       }),
@@ -140,7 +172,13 @@ describe("homeSummaryCounts", () => {
         deployments: [
           fixtureDeployment({
             agent: "Claude Code",
-            plugin: { name: "acme", harness: "claude-code" },
+            plugin: {
+              name: "acme",
+              harness: "claude-code",
+              version: null,
+              marketplace: "acme",
+              id: "acme@acme",
+            },
           }),
         ],
       }),
@@ -212,7 +250,13 @@ describe("homeInvocationCounts", () => {
         deployments: [
           fixtureDeployment({
             agent: "Claude Code",
-            plugin: { name: "acme", harness: "claude-code" },
+            plugin: {
+              name: "acme",
+              harness: "claude-code",
+              version: null,
+              marketplace: "acme",
+              id: "acme@acme",
+            },
           }),
         ],
       }),

@@ -25,3 +25,13 @@ jobs:
       - run: npm run format:check
       - run: npm run doctor
       - run: npm run test
+      - name: Typecheck server package
+        run: npm run typecheck -w @skill-studio/server
+      - name: Typecheck shared library
+        run: npm run typecheck -w @skill-studio/lib
+      - name: Typecheck marketing site
+        run: npm run typecheck -w @skill-studio/marketing
+      - name: Build marketing site
+        run: npm run build -w @skill-studio/marketing
+      - name: Build desktop frontend
+        run: npm run build -w skill-studio

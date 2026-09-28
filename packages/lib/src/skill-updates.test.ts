@@ -27,6 +27,15 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
     folder_truncated: false,
     parked: false,
     invocation: "both",
+    updated_at: null,
+    skill_path: null,
+    source_url: null,
+    update_owners: [],
+    update_commit: null,
+    update_commit_at: null,
+    description: null,
+    fork: null,
+    parked_at: null,
     ...overrides,
     update_owner_ids:
       overrides.update_owner_ids ?? (overrides.has_update ? ["owner:v1/global/agent-browser"] : []),
@@ -42,6 +51,11 @@ function fixtureSnapshot(skills: InstalledSkill[]): SkillSnapshot {
     scanned_at: "2026-01-01T00:00:00Z",
     last_test_by_skill: {},
     update_check: { checked_at: null, gh_status: "ok", message: null, updates_available: 0 },
+    revision: 0,
+    opencode_config_kind: null,
+    scan_partial: false,
+    scan_observations: [],
+    unread_roots: [],
   };
 }
 
