@@ -414,6 +414,23 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // Consent lives in the same home `ScopeArgs::resolve`'s unflagged branch
+    // reads, resolved once here rather than per-command: `--fixture`/`--home`
+    // point a single invocation's scope elsewhere, but the switch itself
+    // always lives on the real machine.
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let registry_reporting_enabled = skill_studio_host::telemetry::consent_from_registry(&home);
+    let consent =
+        skill_studio_host::telemetry::Consent::new(skill_studio_host::telemetry::resolve_consent(
+            std::env::var("SKILL_STUDIO_TELEMETRY").ok(),
+            registry_reporting_enabled,
+        ));
+    let _telemetry_guard = skill_studio_host::telemetry::init(
+        skill_studio_host::telemetry::Surface::Cli,
+        env!("CARGO_PKG_VERSION"),
+        consent,
+    );
+
     let cli = Cli::parse();
     let time = cli.time;
     match cli.command {
@@ -604,6 +621,10 @@ fn build_runtime_write_with_project<T: ops::Outcome + serde::Serialize>(
     let catalog = Arc::new(HarnessCatalog::builtin());
     let db_path = runtime_scope.history_root.join("events.sqlite3");
     let mut ports = skill_studio_host::default_ports_with_history(lease_root, catalog, db_path);
+    ports.telemetry = skill_studio_host::telemetry::port(
+        skill_studio_host::telemetry::Surface::Cli,
+        env!("CARGO_PKG_VERSION"),
+    );
     if runtime_scope.kind == skill_studio_core::scope::ScopeKind::Fixture {
         ports.discovery = None;
     } else {
@@ -633,6 +654,10 @@ fn build_runtime<T: ops::Outcome + serde::Serialize>(
     let (runtime_scope, lease_root) = scope.resolve();
     let catalog = Arc::new(HarnessCatalog::builtin());
     let mut ports = skill_studio_host::default_ports_with_discovery(lease_root, catalog);
+    ports.telemetry = skill_studio_host::telemetry::port(
+        skill_studio_host::telemetry::Surface::Cli,
+        env!("CARGO_PKG_VERSION"),
+    );
     ports.spawner = Some(Arc::new(skill_studio_host::RealProcessSpawner::new()));
     if runtime_scope.kind == skill_studio_core::scope::ScopeKind::Fixture {
         // Fixture scopes name their own projects explicitly; discovery would

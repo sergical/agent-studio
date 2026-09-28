@@ -39,6 +39,8 @@ fn skill_content_hash_fails_cancelled_instead_of_hashing() {
         discovery: None,
         tools: None,
         catalog: Arc::new(HarnessCatalog::builtin()),
+
+        telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
     };
     let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
     let ctx = OpContext {

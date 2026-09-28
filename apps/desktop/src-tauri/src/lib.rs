@@ -286,18 +286,27 @@ pub fn run() {
             // first: a panic anywhere else in setup, including that
             // migration and `skill_refresh::init`, is still caught by the
             // hook `telemetry::init` installs.
-            let error_reporting_enabled = dirs::home_dir()
+            let registry_reporting_enabled = dirs::home_dir()
                 .and_then(|home| skills::skill_fork_registry::read_fork_registry(&home).ok())
                 .is_some_and(|registry| registry.error_reporting_enabled);
+            let error_reporting_enabled = skill_studio_host::telemetry::resolve_consent(
+                std::env::var("SKILL_STUDIO_TELEMETRY").ok(),
+                registry_reporting_enabled,
+            );
             let consent = skill_studio_host::telemetry::Consent::new(error_reporting_enabled);
             let telemetry_guard = skill_studio_host::telemetry::init(
                 skill_studio_host::telemetry::Surface::Desktop,
                 env!("CARGO_PKG_VERSION"),
                 consent.clone(),
             );
+            let telemetry = skill_studio_host::telemetry::port(
+                skill_studio_host::telemetry::Surface::Desktop,
+                env!("CARGO_PKG_VERSION"),
+            );
             app.manage(skills::error_reporting::ReportingState {
                 consent,
                 guard: std::sync::Mutex::new(telemetry_guard),
+                telemetry,
             });
 
             // Unit 6.3: check the data folder's schema_version before

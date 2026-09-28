@@ -3,13 +3,16 @@
 //! context - gated end-to-end by a live [`Consent`] flag. See `docs/spec-headless-performance-observability.md`.
 
 use std::panic::PanicHookInfo;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use sentry::protocol::{Event, Map};
+use sentry::protocol::{Context, Event, Map, Span, SpanStatus, TraceContext, Transaction};
 use sentry::transports::ReqwestHttpTransportOptions;
-use sentry::{ClientInitGuard, ClientOptions, Envelope, Level, Transport, TransportFactory};
+use sentry::{ClientInitGuard, ClientOptions, Envelope, Hub, Level, Transport, TransportFactory};
+
+use skill_studio_core::ports::{NoopTelemetry, OpOutcome, OpRecord, Telemetry};
 
 /// Run-time fallback for the compile-time DSN; see [`resolve_dsn`].
 const DSN_ENV_VAR: &str = "SKILL_STUDIO_SENTRY_DSN";
@@ -323,9 +326,447 @@ fn install_panic_hook(surface: Surface) {
     });
 }
 
+/// One [`OpRecord`]/desktop command, turned into a Sentry transaction by
+/// hand: `record`/`record_command` bypass `before_send` entirely (it only
+/// runs for `Event`s), so every field a shipped transaction needs is set
+/// here instead of relying on the SDK's defaults.
+pub struct SentryTelemetry {
+    surface: Surface,
+    release: String,
+    environment: &'static str,
+}
+
+impl SentryTelemetry {
+    fn environment() -> &'static str {
+        if cfg!(debug_assertions) {
+            "development"
+        } else {
+            "production"
+        }
+    }
+}
+
+impl Telemetry for SentryTelemetry {
+    fn record(&self, record: OpRecord) {
+        let ok = matches!(record.outcome, OpOutcome::Ok);
+        let elapsed = Duration::from_millis(record.timing.elapsed_ms);
+        let timestamp = SystemTime::now();
+        let start_timestamp = timestamp - elapsed;
+        let op = format!("skill.{}", record.timing.op);
+        let root_span_id = sentry::protocol::SpanId::default();
+        let trace_id = sentry::protocol::TraceId::default();
+
+        let mut spans = Vec::with_capacity(record.timing.steps.len());
+        let mut offset = Duration::ZERO;
+        for step in &record.timing.steps {
+            let step_elapsed = Duration::from_millis(step.elapsed_ms);
+            let step_start = start_timestamp + offset;
+            spans.push(Span {
+                span_id: sentry::protocol::SpanId::default(),
+                trace_id,
+                parent_span_id: Some(root_span_id),
+                op: Some("skill.step".to_string()),
+                description: Some(step.name.clone()),
+                start_timestamp: step_start,
+                timestamp: Some(step_start + step_elapsed),
+                status: Some(SpanStatus::Ok),
+                ..Default::default()
+            });
+            offset += step_elapsed;
+        }
+
+        let mut tags = Map::new();
+        tags.insert("surface".to_string(), self.surface.as_str().to_string());
+        tags.insert(
+            "outcome".to_string(),
+            (if ok { "ok" } else { "error" }).to_string(),
+        );
+        if let OpOutcome::Err { code } = &record.outcome {
+            tags.insert("error_code".to_string(), code.clone());
+        }
+
+        let mut contexts = Map::new();
+        contexts.insert(
+            "trace".to_string(),
+            Context::Trace(Box::new(TraceContext {
+                trace_id,
+                span_id: root_span_id,
+                op: Some(op.clone()),
+                status: Some(if ok {
+                    SpanStatus::Ok
+                } else {
+                    SpanStatus::InternalError
+                }),
+                ..Default::default()
+            })),
+        );
+
+        let transaction = Transaction {
+            name: Some(op),
+            release: Some(self.release.clone().into()),
+            environment: Some(self.environment.into()),
+            platform: "native".into(),
+            timestamp: Some(timestamp),
+            start_timestamp,
+            spans,
+            contexts,
+            tags,
+            server_name: None,
+            user: None,
+            ..Default::default()
+        };
+
+        if let Some(client) = Hub::current().client() {
+            let mut envelope = Envelope::new();
+            envelope.add_item(transaction);
+            client.send_envelope(envelope);
+        }
+    }
+}
+
+/// `SentryTelemetry` when `init` bound a client, [`NoopTelemetry`] otherwise
+/// - the same "no DSN, nothing happens" fallback [`init`] uses.
+pub fn port(surface: Surface, app_version: &str) -> Arc<dyn Telemetry> {
+    if Hub::current().client().is_some() {
+        Arc::new(SentryTelemetry {
+            surface,
+            release: format!("skill-studio@{app_version}"),
+            environment: SentryTelemetry::environment(),
+        })
+    } else {
+        Arc::new(NoopTelemetry)
+    }
+}
+
+/// One transaction per desktop Tauri command, parallel to [`SentryTelemetry::record`]
+/// but without spans: `command`'s error text is free text a `CommandOutcome`
+/// can carry a path in, so only `ok`/`error` and the command name itself are
+/// ever tagged - never the error text.
+pub fn record_command(surface: Surface, command: &'static str, elapsed_ms: u64, ok: bool) {
+    let Some(client) = Hub::current().client() else {
+        return;
+    };
+    let elapsed = Duration::from_millis(elapsed_ms);
+    let timestamp = SystemTime::now();
+    let start_timestamp = timestamp - elapsed;
+    let name = format!("command.{command}");
+    let mut tags = Map::new();
+    tags.insert("surface".to_string(), surface.as_str().to_string());
+    tags.insert(
+        "outcome".to_string(),
+        (if ok { "ok" } else { "error" }).to_string(),
+    );
+
+    let mut contexts = Map::new();
+    contexts.insert(
+        "trace".to_string(),
+        Context::Trace(Box::new(TraceContext {
+            op: Some("command".to_string()),
+            status: Some(if ok {
+                SpanStatus::Ok
+            } else {
+                SpanStatus::InternalError
+            }),
+            ..Default::default()
+        })),
+    );
+
+    let release = client.options().release.clone();
+    let environment = client.options().environment.clone();
+    let transaction = Transaction {
+        name: Some(name),
+        release,
+        environment,
+        platform: "native".into(),
+        timestamp: Some(timestamp),
+        start_timestamp,
+        contexts,
+        tags,
+        server_name: None,
+        user: None,
+        ..Default::default()
+    };
+
+    let mut envelope = Envelope::new();
+    envelope.add_item(transaction);
+    client.send_envelope(envelope);
+}
+
+/// The one key this reads out of `<home>/.agents/skill-studio.json` -
+/// `#[serde(default)]` so a missing key, not just a missing file, still
+/// resolves to `false` rather than failing to deserialize.
+#[derive(serde::Deserialize, Default)]
+struct TelemetryRegistry {
+    #[serde(default)]
+    error_reporting_enabled: bool,
+}
+
+/// Reads only `error_reporting_enabled` from `<home>/.agents/skill-studio.json`.
+/// Missing file, malformed file, or missing key all resolve to `false` -
+/// consent defaults closed, never open.
+pub fn consent_from_registry(home: &Path) -> bool {
+    let path = home.join(".agents").join("skill-studio.json");
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    serde_json::from_str::<TelemetryRegistry>(&contents)
+        .map(|registry| registry.error_reporting_enabled)
+        .unwrap_or(false)
+}
+
+/// `SKILL_STUDIO_TELEMETRY=0|1` (also `"false"`/`"true"`) overrides the
+/// registry value; any other string, or no variable at all, leaves the
+/// registry's value untouched.
+// `env_override` takes ownership, not a borrow, to match every call site
+// (`std::env::var(..).ok()`) and the CLI/MCP/desktop's shared call shape.
+#[allow(clippy::needless_pass_by_value)]
+pub fn resolve_consent(env_override: Option<String>, registry: bool) -> bool {
+    match env_override.as_deref() {
+        Some("1" | "true") => true,
+        Some("0" | "false") => false,
+        _ => registry,
+    }
+}
+
 #[cfg(all(test, feature = "telemetry"))]
 mod tests {
     use super::*;
+    use sentry::protocol::EnvelopeItem;
+    use skill_studio_core::identity::CorrelationId;
+    use skill_studio_core::ops::Operation;
+    use skill_studio_core::timing::{OpTiming, StepTiming};
+
+    fn transaction_from(envelope: &Envelope) -> Transaction<'static> {
+        let mut transactions = envelope.items().filter_map(|item| match item {
+            EnvelopeItem::Transaction(t) => Some((**t).clone()),
+            _ => None,
+        });
+        let transaction = transactions
+            .next()
+            .expect("envelope must hold one transaction item");
+        assert!(
+            transactions.next().is_none(),
+            "envelope must hold exactly one transaction item"
+        );
+        transaction
+    }
+
+    fn three_step_record(op: &str) -> OpRecord {
+        OpRecord {
+            operation: Operation::Scan,
+            correlation_id: CorrelationId("c-telemetry".into()),
+            outcome: OpOutcome::Ok,
+            timing: OpTiming {
+                op: op.to_string(),
+                elapsed_ms: 60,
+                steps: vec![
+                    StepTiming {
+                        name: "read_roots".into(),
+                        elapsed_ms: 10,
+                    },
+                    StepTiming {
+                        name: "read_skills".into(),
+                        elapsed_ms: 20,
+                    },
+                    StepTiming {
+                        name: "build_inventory".into(),
+                        elapsed_ms: 30,
+                    },
+                ],
+            },
+        }
+    }
+
+    fn telemetry() -> SentryTelemetry {
+        SentryTelemetry {
+            surface: Surface::Desktop,
+            release: "skill-studio@9.9.9".to_string(),
+            environment: "development",
+        }
+    }
+
+    /// guards: a step's start offset must equal the sum of the steps before
+    /// it, not (say) always start at the root's own start - the three spans
+    /// otherwise overlap or drift from the timings they represent.
+    #[test]
+    fn an_op_record_with_three_steps_becomes_one_transaction_with_three_child_spans() {
+        let record = three_step_record("scan");
+        let envelopes = sentry::test::with_captured_envelopes(|| {
+            telemetry().record(record.clone());
+        });
+        assert_eq!(envelopes.len(), 1);
+        let transaction = transaction_from(&envelopes[0]);
+
+        assert_eq!(transaction.name.as_deref(), Some("skill.scan"));
+        assert_eq!(transaction.release.as_deref(), Some("skill-studio@9.9.9"));
+        assert_eq!(transaction.environment.as_deref(), Some("development"));
+        assert!(transaction.server_name.is_none());
+        assert!(transaction.user.is_none());
+        assert_eq!(
+            transaction.tags.get("surface").map(String::as_str),
+            Some("desktop")
+        );
+        assert_eq!(
+            transaction.tags.get("outcome").map(String::as_str),
+            Some("ok")
+        );
+        assert_eq!(transaction.tags.len(), 2, "no tag beyond surface/outcome");
+        assert!(matches!(
+            transaction.contexts.get("trace"),
+            Some(Context::Trace(_))
+        ));
+
+        assert_eq!(transaction.spans.len(), 3);
+        let root_span_id = transaction
+            .contexts
+            .get("trace")
+            .and_then(|context| match context {
+                Context::Trace(trace) => Some(trace.span_id),
+                _ => None,
+            })
+            .expect("trace context missing");
+        let expected_offsets_ms = [0u64, 10, 30];
+        let expected_durations_ms = [10u64, 20, 30];
+        for (i, span) in transaction.spans.iter().enumerate() {
+            assert_eq!(span.parent_span_id, Some(root_span_id));
+            assert_eq!(span.op.as_deref(), Some("skill.step"));
+            let start_offset = span
+                .start_timestamp
+                .duration_since(transaction.start_timestamp)
+                .expect("span starts after the root");
+            assert_eq!(start_offset.as_millis() as u64, expected_offsets_ms[i]);
+            let duration = span
+                .timestamp
+                .expect("span timestamp")
+                .duration_since(span.start_timestamp)
+                .expect("span ends after it starts");
+            assert_eq!(duration.as_millis() as u64, expected_durations_ms[i]);
+        }
+        assert_eq!(
+            transaction.spans[0].description.as_deref(),
+            Some("read_roots")
+        );
+        assert_eq!(
+            transaction.spans[2].description.as_deref(),
+            Some("build_inventory")
+        );
+    }
+
+    /// guards: a failed op losing its error code tag, or reporting the trace
+    /// context status as `ok` despite the failure.
+    #[test]
+    fn a_failed_op_record_carries_the_error_code_tag_and_error_status() {
+        let record = OpRecord {
+            operation: Operation::Install,
+            correlation_id: CorrelationId("c-fail".into()),
+            outcome: OpOutcome::Err {
+                code: "invalid_request".to_string(),
+            },
+            timing: OpTiming {
+                op: "install".to_string(),
+                elapsed_ms: 5,
+                steps: Vec::new(),
+            },
+        };
+        let envelopes = sentry::test::with_captured_envelopes(|| {
+            telemetry().record(record);
+        });
+        let transaction = transaction_from(&envelopes[0]);
+
+        assert_eq!(
+            transaction.tags.get("outcome").map(String::as_str),
+            Some("error")
+        );
+        assert_eq!(
+            transaction.tags.get("error_code").map(String::as_str),
+            Some("invalid_request")
+        );
+        let trace_status = transaction
+            .contexts
+            .get("trace")
+            .and_then(|context| match context {
+                Context::Trace(trace) => Some(trace.status),
+                _ => None,
+            })
+            .expect("trace context missing");
+        assert_eq!(trace_status, Some(SpanStatus::InternalError));
+    }
+
+    /// guards: `record`'s typed-fields-only shape - the type itself, not a
+    /// redaction pass, is what keeps a path or a skill name out, since no
+    /// field on `OpRecord` can carry one.
+    #[test]
+    fn a_home_path_and_a_skill_name_never_appear_in_a_serialized_transaction() {
+        let record = three_step_record("scan");
+        let envelopes = sentry::test::with_captured_envelopes(|| {
+            telemetry().record(record);
+        });
+        let mut bytes = Vec::new();
+        envelopes[0].to_writer(&mut bytes).expect("serialize");
+        let serialized = String::from_utf8_lossy(&bytes);
+
+        assert!(!serialized.contains("/Users/"));
+        assert!(!serialized.contains("sentinel-skill-name"));
+    }
+
+    /// guards: `consent_from_registry` reading any key besides the switch,
+    /// or a present-but-false switch resolving to `true`.
+    #[test]
+    fn consent_from_registry_reads_only_the_switch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agents_dir = dir.path().join(".agents");
+        std::fs::create_dir_all(&agents_dir).expect("mkdir");
+        let registry_path = agents_dir.join("skill-studio.json");
+
+        assert!(
+            !consent_from_registry(dir.path()),
+            "a missing registry file must resolve to false"
+        );
+
+        std::fs::write(&registry_path, "not json").expect("write");
+        assert!(
+            !consent_from_registry(dir.path()),
+            "a malformed registry file must resolve to false"
+        );
+
+        std::fs::write(&registry_path, r#"{"skills_sh_api_key": "x"}"#).expect("write");
+        assert!(
+            !consent_from_registry(dir.path()),
+            "an absent switch key must resolve to false"
+        );
+
+        std::fs::write(
+            &registry_path,
+            r#"{"skills_sh_api_key": "x", "error_reporting_enabled": true}"#,
+        )
+        .expect("write");
+        assert!(
+            consent_from_registry(dir.path()),
+            "a true switch alongside other keys must resolve to true"
+        );
+    }
+
+    /// guards: the env override losing to the registry, or an unrecognized
+    /// override string silently disabling telemetry instead of falling
+    /// back to the registry.
+    #[test]
+    fn the_env_override_wins_over_the_registry() {
+        let cases: &[(Option<&str>, bool, bool)] = &[
+            (Some("0"), true, false),
+            (Some("1"), false, true),
+            (Some("false"), true, false),
+            (Some("true"), false, true),
+            (None, true, true),
+            (None, false, false),
+        ];
+        for (env, registry, expected) in cases {
+            let actual = resolve_consent(env.map(str::to_string), *registry);
+            assert_eq!(
+                actual, *expected,
+                "resolve_consent({env:?}, {registry}) should be {expected}"
+            );
+        }
+    }
     use std::sync::Mutex;
 
     // Panic hooks are process-global; this test binary's other tests must

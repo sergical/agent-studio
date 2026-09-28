@@ -114,7 +114,7 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
 
         <div className="space-y-1">
           <label className="flex items-center justify-between gap-3">
-            <span className="text-sm">Send crash reports to Skill Studio</span>
+            <span className="text-sm">Send crash reports and timings to Skill Studio</span>
             <Switch
               checked={telemetryEnabled}
               onCheckedChange={setTelemetryEnabled}
@@ -122,8 +122,9 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
             />
           </label>
           <p id="telemetry-help" className="text-sm text-muted-foreground">
-            It sends only where in its own code the crash happened, never your skill names, files,
-            or paths. You can change this later in Settings.
+            Skill Studio removes everything sensitive first: no skill names, files, paths, or
+            machine name. It uses this data only to improve the app. You can change this later in
+            Settings.
           </p>
         </div>
 

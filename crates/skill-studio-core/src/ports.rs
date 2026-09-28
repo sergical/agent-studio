@@ -836,6 +836,51 @@ pub trait EventSink: Send + Sync {
     fn notify(&self, notice: CoreNotice);
 }
 
+/// Outcome of one op call, as [`OpRecord`] tags it. Never carries the
+/// message text of the error - only its stable [`ErrorCode`] string - so a
+/// telemetry port can send this without redacting free text itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpOutcome {
+    /// The op returned `Ok`.
+    Ok,
+    /// The op returned `Err`; `code` is `CoreError::code.as_str()`.
+    Err {
+        /// The error's stable code.
+        code: String,
+    },
+}
+
+/// What one operation run looked like. Built only from typed fields: no free
+/// text can carry a path or a skill name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpRecord {
+    /// Which operation ran.
+    pub operation: crate::ops::Operation,
+    /// The call's correlation id.
+    pub correlation_id: CorrelationId,
+    /// Whether it succeeded, and the error code if not.
+    pub outcome: OpOutcome,
+    /// Elapsed time and step timings, as filed through [`OpContext::record_timing`].
+    /// Empty `steps` when the op failed before recording them.
+    pub timing: crate::timing::OpTiming,
+}
+
+/// Receives one [`OpRecord`] per op call. Must not block: a telemetry port
+/// runs on the same thread as the op it is recording.
+pub trait Telemetry: Send + Sync {
+    /// Records one op call.
+    fn record(&self, record: OpRecord);
+}
+
+/// A [`Telemetry`] that does nothing - the default until a host binds a real
+/// one.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopTelemetry;
+
+impl Telemetry for NoopTelemetry {
+    fn record(&self, _record: OpRecord) {}
+}
+
 /// A child process to run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProcessSpec {
@@ -916,6 +961,8 @@ pub struct Ports {
     pub tools: Option<Arc<dyn ToolLookup>>,
     /// Harness facts.
     pub catalog: Arc<HarnessCatalog>,
+    /// Op-call telemetry sink.
+    pub telemetry: Arc<dyn Telemetry>,
 }
 
 /// Per-call context.
@@ -967,6 +1014,17 @@ impl OpContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
     }
+
+    /// Clones the timing the last op function run through this context
+    /// filed, without taking it - [`Runtime::run`] reads it this way so
+    /// [`crate::ops::ResultEnvelope::from_result`]'s own `take_timing` still
+    /// finds it afterward.
+    pub fn peek_timing(&self) -> Option<crate::timing::OpTiming> {
+        self.timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 /// A normalized scope bound to its ports.
@@ -989,6 +1047,54 @@ impl Runtime {
             ports.discovery.as_deref(),
         )?;
         Ok(Runtime { scope, ports })
+    }
+
+    /// Runs one operation body and records it. Elapsed time comes from
+    /// `ports.clock`; the steps come from what the body filed through
+    /// `ctx.record_timing`. Every public op in [`crate::ops`] and its
+    /// sibling modules is a one-liner over this, so a call cannot bypass
+    /// telemetry.
+    pub fn run<T>(
+        &self,
+        operation: crate::ops::Operation,
+        ctx: &OpContext,
+        body: impl FnOnce() -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        let clock = self.ports.clock.as_ref();
+        let start = clock.monotonic();
+        let result = body();
+        let filed = ctx.peek_timing();
+        let fallback = || crate::timing::OpTiming {
+            op: op_snake_case_name(operation),
+            elapsed_ms: clock.monotonic().saturating_sub(start).as_millis() as u64,
+            steps: Vec::new(),
+        };
+        let (outcome, timing) = match &result {
+            Ok(_) => (OpOutcome::Ok, filed.unwrap_or_else(fallback)),
+            Err(e) => (
+                OpOutcome::Err {
+                    code: e.code.as_str().to_string(),
+                },
+                filed.unwrap_or_else(fallback),
+            ),
+        };
+        self.ports.telemetry.record(OpRecord {
+            operation,
+            correlation_id: ctx.correlation_id.clone(),
+            outcome,
+            timing,
+        });
+        result
+    }
+}
+
+/// `operation`'s serde `snake_case` wire name - used as [`crate::timing::OpTiming::op`]
+/// when a body files no timing of its own, so the fallback still matches the
+/// op it measured.
+fn op_snake_case_name(operation: crate::ops::Operation) -> String {
+    match serde_json::to_value(operation) {
+        Ok(serde_json::Value::String(name)) => name,
+        _ => unreachable!("Operation always serializes to a string"),
     }
 }
 

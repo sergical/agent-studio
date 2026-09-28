@@ -47,6 +47,7 @@ use crate::events::{fingerprint_path, EventDraft, EventKind, EventStatus};
 use crate::fsops::{self, Root};
 use crate::identity::{PlanId, RootScope, SkillName, UNIVERSAL_ROOT_RELATIVE};
 use crate::journal::{FsJournal, PlanWriter};
+use crate::ops::Operation;
 use crate::ops_install;
 use crate::ports::{ExclusiveGuard, MutationSession, OpContext, PlanStatus, Runtime, ScopeFs};
 
@@ -323,6 +324,14 @@ pub fn update(
     ctx: &OpContext,
     req: &UpdateRequest,
 ) -> Result<UpdateOutcome, CoreError> {
+    rt.run(Operation::Update, ctx, || update_body(rt, ctx, req))
+}
+
+fn update_body(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &UpdateRequest,
+) -> Result<UpdateOutcome, CoreError> {
     ctx.checkpoint()?;
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
@@ -449,6 +458,23 @@ pub fn update_all(
     ctx: &OpContext,
     requests: &[UpdateRequest],
     mut on_outcome: impl FnMut(&SkillName, &Result<UpdateOutcome, CoreError>),
+) -> UpdateAllOutcome {
+    // Infallible: each `update` call already files its own `Operation::Update`
+    // record (`Ok` or `Err`), so this batch's own record only needs to exist
+    // - it always reports `Ok`, with the clock spanning the whole loop.
+    match rt.run(Operation::UpdateAll, ctx, || {
+        Ok(update_all_body(rt, ctx, requests, &mut on_outcome))
+    }) {
+        Ok(outcome) => outcome,
+        Err(_) => unreachable!("update_all_body never returns Err"),
+    }
+}
+
+fn update_all_body(
+    rt: &Runtime,
+    ctx: &OpContext,
+    requests: &[UpdateRequest],
+    on_outcome: &mut impl FnMut(&SkillName, &Result<UpdateOutcome, CoreError>),
 ) -> UpdateAllOutcome {
     let mut items = Vec::with_capacity(requests.len());
     let mut errors = std::collections::BTreeMap::new();

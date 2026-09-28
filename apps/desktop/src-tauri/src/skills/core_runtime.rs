@@ -114,6 +114,10 @@ pub fn build_runtime_write_at_with_search_dirs(
     let lease_root = data_root.join("leases");
     let db_path = history_db_path(data_root);
     let mut ports = skill_studio_host::default_ports_with_history(lease_root, catalog, db_path);
+    ports.telemetry = skill_studio_host::telemetry::port(
+        skill_studio_host::telemetry::Surface::Desktop,
+        env!("CARGO_PKG_VERSION"),
+    );
     ports.discovery = Some(Arc::new(skill_studio_host::HostProjectDiscovery::new()));
     // A packaged `.app` launched from Finder gets `launchd`'s minimal `PATH`
     // (`/usr/bin:/bin:/usr/sbin:/sbin`), which has neither `npx` nor the

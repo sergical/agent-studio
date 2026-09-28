@@ -383,6 +383,10 @@ impl<T: Outcome> ResultEnvelope<T> {
 /// also reads, and walking it again under this harness would double-report
 /// the same directory.
 pub fn scan(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Inventory, CoreError> {
+    rt.run(Operation::Scan, ctx, || scan_body(rt, ctx, req))
+}
+
+fn scan_body(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Inventory, CoreError> {
     ctx.checkpoint()?;
     let _guard = acquire_shared(rt.ports.leases.as_ref(), &rt.scope)?;
     scan_inner(rt, ctx, req)
@@ -2948,6 +2952,10 @@ pub fn skill_content_hash(
 /// repairable"/"not readable" rather than surfaced as an error: `diagnose`
 /// never fails just because one deployment's extra read did.
 pub fn diagnose(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Diagnosis, CoreError> {
+    rt.run(Operation::Diagnose, ctx, || diagnose_body(rt, ctx, req))
+}
+
+fn diagnose_body(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Diagnosis, CoreError> {
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
     let step_start = clock.monotonic();
@@ -2978,6 +2986,16 @@ pub fn diagnose(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Diag
 ///
 /// Preconditions: shared lease (through [`diagnose`]'s [`scan`]).
 pub fn diagnose_conflict(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &crate::dto::DiagnoseConflictRequest,
+) -> Result<crate::dto::ConflictReport, CoreError> {
+    rt.run(Operation::DiagnoseConflict, ctx, || {
+        diagnose_conflict_body(rt, ctx, req)
+    })
+}
+
+fn diagnose_conflict_body(
     rt: &Runtime,
     ctx: &OpContext,
     _req: &crate::dto::DiagnoseConflictRequest,
@@ -3047,6 +3065,14 @@ fn conflicts_in(inventory: &Inventory) -> Vec<crate::dto::ConflictSummary> {
 /// Preconditions: none beyond what the sub-operations this composes need;
 /// each runs its own lease.
 pub fn fix_skill(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &crate::dto::FixSkillRequest,
+) -> Result<crate::dto::FixSkillOutcome, CoreError> {
+    rt.run(Operation::FixSkill, ctx, || fix_skill_body(rt, ctx, req))
+}
+
+fn fix_skill_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &crate::dto::FixSkillRequest,
@@ -3252,6 +3278,19 @@ fn issue_path(diagnosis: &Diagnosis, issue: &Issue) -> PathBuf {
 /// three more `Option<Arc<dyn _>>` fields (and every existing `Ports`
 /// literal in this crate's other tests) for a single caller.
 pub fn outdated(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &ScanRequest,
+    tree_lookup: &dyn crate::skill_update_check::SourceTreeLookup,
+    commit_lookup: &dyn crate::skill_update_check::CommitLookup,
+    plugin_lookup: &dyn crate::skill_update_check::PluginManifestLookup,
+) -> Result<BTreeMap<String, crate::skill_update_check::OutdatedRecord>, CoreError> {
+    rt.run(Operation::Outdated, ctx, || {
+        outdated_body(rt, ctx, req, tree_lookup, commit_lookup, plugin_lookup)
+    })
+}
+
+fn outdated_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &ScanRequest,
@@ -3561,6 +3600,16 @@ pub fn capabilities(
     ctx: &OpContext,
     req: &CapabilitiesRequest,
 ) -> Result<Capabilities, CoreError> {
+    rt.run(Operation::Capabilities, ctx, || {
+        capabilities_body(rt, ctx, req)
+    })
+}
+
+fn capabilities_body(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &CapabilitiesRequest,
+) -> Result<Capabilities, CoreError> {
     ctx.checkpoint()?;
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
@@ -3620,6 +3669,14 @@ pub fn capabilities(
 /// as absent; without a `ProcessSpawner` port version and install method
 /// stay `Unknown` even when the binary is found.
 pub fn harnesses(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &HarnessesRequest,
+) -> Result<HarnessReport, CoreError> {
+    rt.run(Operation::Harnesses, ctx, || harnesses_body(rt, ctx, req))
+}
+
+fn harnesses_body(
     rt: &Runtime,
     ctx: &OpContext,
     _req: &HarnessesRequest,
@@ -3756,6 +3813,16 @@ pub fn preview_frontmatter_repair(
     ctx: &OpContext,
     req: &RepairPreviewRequest,
 ) -> Result<FrontmatterRepairPreview, CoreError> {
+    rt.run(Operation::PreviewFrontmatterRepair, ctx, || {
+        preview_frontmatter_repair_body(rt, ctx, req)
+    })
+}
+
+fn preview_frontmatter_repair_body(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &RepairPreviewRequest,
+) -> Result<FrontmatterRepairPreview, CoreError> {
     ctx.checkpoint()?;
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
@@ -3839,6 +3906,16 @@ pub fn preview_frontmatter_repair(
 /// ([`ErrorCode::OwnershipChanged`] otherwise); mode allowed. Records
 /// `repair_skill_frontmatter` before the write and finishes it after.
 pub fn apply_frontmatter_repair(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &RepairApplyRequest,
+) -> Result<RepairOutcome, CoreError> {
+    rt.run(Operation::ApplyFrontmatterRepair, ctx, || {
+        apply_frontmatter_repair_body(rt, ctx, req)
+    })
+}
+
+fn apply_frontmatter_repair_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &RepairApplyRequest,
@@ -4006,6 +4083,16 @@ pub fn apply_frontmatter_repair(
 /// the recorded ones and reports [`crate::dto::DriftState`]; otherwise
 /// `drift` is `Unchecked`.
 pub fn list_events(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &ListEventsRequest,
+) -> Result<Vec<EventDto>, CoreError> {
+    rt.run(Operation::ListEvents, ctx, || {
+        list_events_body(rt, ctx, req)
+    })
+}
+
+fn list_events_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &ListEventsRequest,
@@ -4359,6 +4446,16 @@ fn restore_symlink_event(
 /// restore event's own id before applying the inverse, so the restore is
 /// itself restorable and `force` never destroys the only copy of anything.
 pub fn restore_event(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &RestoreRequest,
+) -> Result<RestoreOutcome, CoreError> {
+    rt.run(Operation::RestoreEvent, ctx, || {
+        restore_event_body(rt, ctx, req)
+    })
+}
+
+fn restore_event_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &RestoreRequest,
@@ -4771,6 +4868,10 @@ pub use crate::ops_update::{update, update_all};
 /// Code link (if any) is removed first, then the directory is renamed into
 /// `.agents/skills-parked`.
 pub fn park(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOutcome, CoreError> {
+    rt.run(Operation::Park, ctx, || park_body(rt, ctx, req))
+}
+
+fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOutcome, CoreError> {
     ctx.checkpoint()?;
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
@@ -4896,6 +4997,14 @@ pub fn park(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOutc
 /// build, or the row aged out) still unparks: the Claude Code link is then
 /// simply not recreated.
 pub fn unpark(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &UnparkRequest,
+) -> Result<UnparkOutcome, CoreError> {
+    rt.run(Operation::Unpark, ctx, || unpark_body(rt, ctx, req))
+}
+
+fn unpark_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &UnparkRequest,
@@ -5044,6 +5153,16 @@ pub fn unpark(
 /// message, not a cross-path transaction; see the module doc on
 /// `harness_switch.rs` for the scope this narrows).
 pub fn set_harness_enabled(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &SetHarnessEnabledRequest,
+) -> Result<SetHarnessEnabledOutcome, CoreError> {
+    rt.run(Operation::SetHarnessEnabled, ctx, || {
+        set_harness_enabled_body(rt, ctx, req)
+    })
+}
+
+fn set_harness_enabled_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &SetHarnessEnabledRequest,
@@ -5916,6 +6035,8 @@ mod tests {
             discovery: None,
             tools: None,
             catalog: Arc::new(HarnessCatalog::builtin()),
+
+            telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
         };
         let ctx = OpContext::uncancellable(CorrelationId("c4".into()));
 
@@ -5976,6 +6097,8 @@ mod tests {
             discovery: None,
             tools: Some(Arc::new(lookup)),
             catalog: Arc::new(HarnessCatalog::builtin()),
+
+            telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
         };
         let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
         let ctx = OpContext::uncancellable(CorrelationId("c5".into()));
@@ -6044,6 +6167,8 @@ mod tests {
             discovery: None,
             tools: Some(Arc::new(lookup)),
             catalog: Arc::new(HarnessCatalog::builtin()),
+
+            telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
         };
         let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
         let ctx = OpContext::uncancellable(CorrelationId("c6".into()));
@@ -6460,6 +6585,8 @@ mod tests {
                 discovery: None,
                 tools: None,
                 catalog: Arc::new(HarnessCatalog::builtin()),
+
+                telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
             };
             Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap()
         }
@@ -6499,6 +6626,8 @@ mod tests {
                 discovery: None,
                 tools: None,
                 catalog: Arc::new(HarnessCatalog::builtin()),
+
+                telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
             };
             let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
             let inv = scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
@@ -6815,6 +6944,8 @@ mod tests {
                 discovery: None,
                 tools: None,
                 catalog: Arc::new(HarnessCatalog::builtin()),
+
+                telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
             };
 
             // Run the same fixture with no project roots at all through a
@@ -6914,6 +7045,8 @@ mod tests {
                 discovery: None,
                 tools: None,
                 catalog: Arc::new(HarnessCatalog::builtin()),
+
+                telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
             };
             let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
             let inv = scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
@@ -6929,6 +7062,180 @@ mod tests {
                 "the readable skill must still be found"
             );
             assert_eq!(inv.skills[0].name.0, "good-skill");
+        }
+    }
+
+    /// [`Runtime::run`]'s own coverage: every op records itself, the
+    /// recorded timing matches the envelope's, a failure carries its error
+    /// code with no steps, and the `Operation` -> [`crate::timing::OpTiming::op`]
+    /// mapping every body relies on stays pinned.
+    mod telemetry_tests {
+        use super::*;
+        use crate::dto::{InstallMethod, InstallRequest};
+        use crate::harness::HarnessCatalog;
+        use crate::identity::{ProjectRef, RootScope, SkillName};
+        use crate::ports::{OpOutcome, Ports};
+        use crate::testing::{
+            FakeClock, FakeIds, FakeLease, NoHistory, RecordingSink, RecordingTelemetry,
+        };
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        fn runtime_with(
+            fs: crate::testing::FixtureFs,
+            telemetry: Arc<RecordingTelemetry>,
+        ) -> Runtime {
+            let ports = Ports {
+                fs: Arc::new(fs),
+                clock: Arc::new(FakeClock::at(0)),
+                ids: Arc::new(FakeIds::default()),
+                leases: Arc::new(FakeLease::default()),
+                history: Arc::new(NoHistory),
+                sink: Arc::new(RecordingSink::default()),
+                spawner: None,
+                discovery: None,
+                tools: None,
+                catalog: Arc::new(HarnessCatalog::builtin()),
+                telemetry,
+            };
+            Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap()
+        }
+
+        #[test]
+        fn a_successful_scan_records_one_op_record_whose_timing_equals_the_envelope_timing() {
+            let fs = FixtureBuilder::new()
+                .dir("/h/.claude/skills/good-skill")
+                .file(
+                    "/h/.claude/skills/good-skill/SKILL.md",
+                    b"---\nname: good-skill\ndescription: Fine.\n---\n",
+                )
+                .build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-scan".into()));
+
+            let result = scan(&rt, &ctx, &ScanRequest::default());
+            let env = ResultEnvelope::from_result(Operation::Scan, &rt.scope, &ctx, result);
+
+            let records = telemetry.records();
+            assert_eq!(records.len(), 1, "exactly one op record per scan call");
+            let record = &records[0];
+            assert_eq!(record.operation, Operation::Scan);
+            assert_eq!(record.outcome, OpOutcome::Ok);
+            assert_eq!(record.correlation_id, CorrelationId("c-scan".into()));
+            assert_eq!(Some(record.timing.clone()), env.timings);
+        }
+
+        #[test]
+        fn a_failed_install_records_the_error_code_and_no_steps() {
+            let fs = FixtureBuilder::new().dir("/h").build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-install".into()));
+
+            // `SkillsSh` against a project path that does not exist fails
+            // `validate_cli_project_path` before anything else runs, so no
+            // step ever gets filed.
+            let req = InstallRequest {
+                skill: SkillName("missing-project".into()),
+                method: InstallMethod::SkillsSh,
+                scope: RootScope::Project(ProjectRef(PathBuf::from("/h/no-such-project"))),
+                harnesses: Vec::new(),
+                files: Vec::new(),
+                source: Some("owner/repo".into()),
+                trust_identity: None,
+                trust_confirmed: false,
+                save_as_preference: false,
+            };
+            let err = install(&rt, &ctx, &req).unwrap_err();
+
+            let records = telemetry.records();
+            assert_eq!(records.len(), 1, "exactly one op record per install call");
+            let record = &records[0];
+            assert_eq!(record.operation, Operation::Install);
+            assert_eq!(
+                record.outcome,
+                OpOutcome::Err {
+                    code: err.code.as_str().to_string()
+                }
+            );
+            assert!(
+                record.timing.steps.is_empty(),
+                "a call that fails before recording a step must file no steps"
+            );
+        }
+
+        #[test]
+        fn every_operation_name_matches_its_timing_op_string() {
+            let cases: &[(Operation, &str)] = &[
+                (Operation::Scan, "scan"),
+                (Operation::Diagnose, "diagnose"),
+                (Operation::Capabilities, "capabilities"),
+                (Operation::Harnesses, "harnesses"),
+                (
+                    Operation::PreviewFrontmatterRepair,
+                    "preview_frontmatter_repair",
+                ),
+                (
+                    Operation::ApplyFrontmatterRepair,
+                    "apply_frontmatter_repair",
+                ),
+                (Operation::ListEvents, "list_events"),
+                (Operation::RestoreEvent, "restore_event"),
+                (Operation::Park, "park"),
+                (Operation::Unpark, "unpark"),
+                (Operation::SetHarnessEnabled, "set_harness_enabled"),
+                (Operation::FixSkill, "fix_skill"),
+                (Operation::DiagnoseConflict, "diagnose_conflict"),
+                (Operation::Remove, "remove"),
+                (Operation::Update, "update"),
+                (Operation::UpdateAll, "update_all"),
+                (Operation::Install, "install"),
+                (Operation::InstallPreferences, "install_preferences"),
+                (Operation::Doctor, "doctor"),
+                (Operation::Outdated, "outdated"),
+                (Operation::SweepQuarantine, "sweep_quarantine"),
+            ];
+            for (operation, expected) in cases {
+                let value = serde_json::to_value(operation).unwrap();
+                assert_eq!(
+                    value,
+                    serde_json::Value::String((*expected).to_string()),
+                    "Operation::{operation:?} must serialize to {expected:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn an_op_that_files_no_timing_still_records_with_the_clock_elapsed() {
+            let fake_clock = Arc::new(FakeClock::at(0));
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let ports = Ports {
+                fs: Arc::new(FixtureBuilder::new().dir("/h").build_fs()),
+                clock: Arc::clone(&fake_clock) as Arc<dyn crate::ports::Clock>,
+                ids: Arc::new(FakeIds::default()),
+                leases: Arc::new(FakeLease::default()),
+                history: Arc::new(NoHistory),
+                sink: Arc::new(RecordingSink::default()),
+                spawner: None,
+                discovery: None,
+                tools: None,
+                catalog: Arc::new(HarnessCatalog::builtin()),
+                telemetry: Arc::clone(&telemetry) as Arc<dyn crate::ports::Telemetry>,
+            };
+            let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
+            let ctx = OpContext::uncancellable(CorrelationId("c-noop".into()));
+
+            let result: Result<(), crate::error::CoreError> = rt.run(Operation::Scan, &ctx, || {
+                fake_clock.advance(Duration::from_millis(42));
+                Ok(())
+            });
+            result.unwrap();
+
+            let records = telemetry.records();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].timing.elapsed_ms, 42);
+            assert!(records[0].timing.steps.is_empty());
         }
     }
 }

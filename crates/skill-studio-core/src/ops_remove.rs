@@ -39,6 +39,7 @@ use crate::dto::{RemoveOutcome, RemoveRequest};
 use crate::error::{CoreError, ErrorCode};
 use crate::events::{EventDraft, EventKind, EventStatus};
 use crate::identity::{BackingRelationship, LifecycleOwnerKind, RootKind, RootScope};
+use crate::ops::Operation;
 use crate::ports::{ExclusiveGuard, MutationSession, OpContext, ProcessSpec, Runtime, ScopeFs};
 
 /// The `npx` package `req`'s owner kind shells out to, or `None` for
@@ -346,6 +347,14 @@ pub fn remove(
     ctx: &OpContext,
     req: &RemoveRequest,
 ) -> Result<RemoveOutcome, CoreError> {
+    rt.run(Operation::Remove, ctx, || remove_body(rt, ctx, req))
+}
+
+fn remove_body(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &RemoveRequest,
+) -> Result<RemoveOutcome, CoreError> {
     ctx.checkpoint()?;
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
@@ -548,6 +557,16 @@ pub fn remove(
 /// renders the row without a skill subject when it sees one (see
 /// `SkillHistorySection.tsx`).
 pub fn sweep_quarantine(rt: &Runtime, ctx: &OpContext, scope: &RootScope) -> Result<(), CoreError> {
+    rt.run(Operation::SweepQuarantine, ctx, || {
+        sweep_quarantine_body(rt, ctx, scope)
+    })
+}
+
+fn sweep_quarantine_body(
+    rt: &Runtime,
+    ctx: &OpContext,
+    scope: &RootScope,
+) -> Result<(), CoreError> {
     ctx.checkpoint()?;
     let mut session = MutationSession::begin(rt, ctx)?;
     let fs = rt.ports.fs.as_ref();

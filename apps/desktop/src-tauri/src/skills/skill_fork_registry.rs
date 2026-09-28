@@ -547,6 +547,8 @@ mod tests {
             discovery: None,
             tools: None,
             catalog: std::sync::Arc::new(skill_studio_core::harness::HarnessCatalog::builtin()),
+
+            telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
         };
         let rt = skill_studio_core::ports::Runtime::new(
             &skill_studio_core::scope::RuntimeScope::fixture(home),

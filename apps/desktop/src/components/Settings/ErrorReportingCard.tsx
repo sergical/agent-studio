@@ -59,7 +59,7 @@ export function ErrorReportingCard() {
     <SettingsCard
       icon={<Bug size={15} className="text-text-tertiary" />}
       title="Telemetry"
-      description="When Skill Studio crashes, it sends only where in its own code the crash happened, never your skill names, files, or paths."
+      description="Sends where in its own code a crash happened and how long each action took. Skill Studio removes everything sensitive first: no skill names, files, paths, or machine name. It uses this data only to improve the app."
     >
       <label className="flex h-9 items-center gap-2 px-2 text-body text-text-secondary">
         <SwitchControl

@@ -346,6 +346,8 @@ mod tests {
             discovery: None,
             tools: None,
             catalog: Arc::new(HarnessCatalog::builtin()),
+
+            telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
         };
         let scope = scope_for("doctor", &home());
         let rt = Runtime::new(&scope, ports).expect("runtime");

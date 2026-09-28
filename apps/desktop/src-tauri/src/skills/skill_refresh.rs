@@ -1743,7 +1743,11 @@ pub(crate) fn core_scan_installed_skills(
     scope.read_timeout_ms = 60_000;
 
     let catalog = std::sync::Arc::new(skill_studio_core::harness::HarnessCatalog::builtin());
-    let ports = skill_studio_host::default_ports(lease_root, catalog);
+    let mut ports = skill_studio_host::default_ports(lease_root, catalog);
+    ports.telemetry = skill_studio_host::telemetry::port(
+        skill_studio_host::telemetry::Surface::Desktop,
+        env!("CARGO_PKG_VERSION"),
+    );
     let request = skill_studio_core::dto::ScanRequest {
         skills: names
             .iter()

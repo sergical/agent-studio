@@ -25,8 +25,8 @@ use crate::identity::EventId;
 use crate::ports::{
     CancelToken, Clock, CoreNotice, DirEntryFacts, EventSink, ExclusiveGuard, FileFacts, FileKind,
     HistoryAccess, HistoryOpener, HistoryStore, IdSource, LeaseHandle, LeaseKey, LeaseMode,
-    LeaseProvider, ProcessOutput, ProcessSpawner, ProcessSpec, ProjectDiscovery, ScopeFs,
-    ScopedPath, ToolLookup,
+    LeaseProvider, OpRecord, ProcessOutput, ProcessSpawner, ProcessSpec, ProjectDiscovery, ScopeFs,
+    ScopedPath, Telemetry, ToolLookup,
 };
 use crate::scope::NormalizedScope;
 
@@ -1434,6 +1434,31 @@ impl EventSink for RecordingSink {
     }
 }
 
+/// Collects [`OpRecord`]s for assertions, instead of sending them anywhere.
+#[derive(Debug, Default)]
+pub struct RecordingTelemetry {
+    records: Mutex<Vec<OpRecord>>,
+}
+
+impl RecordingTelemetry {
+    /// Everything recorded so far.
+    pub fn records(&self) -> Vec<OpRecord> {
+        self.records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl Telemetry for RecordingTelemetry {
+    fn record(&self, record: OpRecord) {
+        self.records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(record);
+    }
+}
+
 /// Rewrites absolute fixture paths and ids so two runs compare equal.
 ///
 /// Invariant: array order is preserved; only string values that start with
@@ -1740,6 +1765,7 @@ pub mod golden {
             discovery: None,
             tools: None,
             catalog: Arc::new(HarnessCatalog::builtin()),
+            telemetry: Arc::new(crate::ports::NoopTelemetry),
         }
     }
 

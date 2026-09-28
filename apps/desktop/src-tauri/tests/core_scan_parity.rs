@@ -324,6 +324,8 @@ fn core_scan(
         discovery: None,
         tools: None,
         catalog: Arc::new(HarnessCatalog::builtin()),
+
+        telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
     };
     let mut scope = RuntimeScope::fixture(home);
     scope.read_timeout_ms = 10_000;

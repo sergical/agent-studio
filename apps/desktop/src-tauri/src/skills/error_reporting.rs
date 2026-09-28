@@ -12,8 +12,9 @@
 // ============================================================================
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use skill_studio_core::ports::Telemetry;
 use skill_studio_host::telemetry::{Consent, TelemetryGuard};
 use tauri::Manager;
 
@@ -27,6 +28,10 @@ pub struct ReportingState {
     /// `None` when `telemetry::init` found no DSN (every build until
     /// `SKILL_STUDIO_SENTRY_DSN` is set) - there is nothing to flush.
     pub guard: Mutex<Option<TelemetryGuard>>,
+    /// The one `Telemetry` port every `default_ports` call site under
+    /// `apps/desktop/src-tauri` wires in, so a call never spins up a second
+    /// `SentryTelemetry` of its own.
+    pub telemetry: Arc<dyn Telemetry>,
 }
 
 /// The saved switch, straight off disk - like `get_discovery_sources`, this
