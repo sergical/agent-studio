@@ -122,7 +122,8 @@ function App() {
       action: {
         label: "Try again",
         onClick: () => {
-          void requestRescan();
+          // The hook stores a failed retry in `error`; this effect shows it.
+          requestRescan().catch(() => undefined);
         },
       },
     });
