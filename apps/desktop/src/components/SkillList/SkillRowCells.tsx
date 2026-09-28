@@ -19,7 +19,7 @@ import { formatTokens } from "@skill-studio/lib";
 import type { InstalledSkill } from "@skill-studio/lib";
 import { CheckboxControl } from "../ui/CheckboxControl";
 import { RichTooltip } from "../ui/RichTooltip";
-import { isDecision } from "./skill-row-state";
+import { fixesFor, isDecision } from "./skill-row-state";
 import type { RowLevel, RowState } from "./skill-row-state";
 
 /** The shared hit box: bigger than the 14px glyph so the button is easy to land a click on. Sized
@@ -53,17 +53,26 @@ function glyphFor(state: RowState, size = 14): ReactNode {
       return <CircleArrowDown size={size} aria-hidden />;
     case "parked":
       return <CirclePause size={size} aria-hidden />;
+    case "issue":
+      return state.level === "error" ? (
+        <CircleAlert size={size} aria-hidden />
+      ) : (
+        <TriangleAlert size={size} aria-hidden />
+      );
   }
 }
 
 /** The state glyph's tooltip: the label in its level colour, the detail line when there is one,
- * and a hint that the glyph opens a menu of fixes. */
+ * and a hint that the glyph opens a menu of fixes - only when it has any (Home's "issue" kind has
+ * no menu, so its glyph is a plain fact, not a click target). */
 function StateTooltip({ state }: { state: RowState }) {
   return (
     <div className="flex flex-col gap-0.5">
       <span className={`font-medium ${LEVEL_TEXT[state.level]}`}>{state.label}</span>
       {state.detail && <span className="text-text-secondary">{state.detail}</span>}
-      <span className="text-caption text-text-tertiary">Click for actions</span>
+      {fixesFor(state).length > 0 && (
+        <span className="text-caption text-text-tertiary">Click for actions</span>
+      )}
     </div>
   );
 }

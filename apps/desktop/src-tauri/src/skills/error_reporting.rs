@@ -6,10 +6,11 @@
 // screen offers it on and `save_harnesses_choice` writes the user's
 // explicit choice; Settings' "Telemetry" card keeps it in sync afterward.
 // When on, a panic is sanitized - see `skill_studio_core::report_sanitizer`
-// - and queued on a `skill_studio_host::QueuedReportSink`; when off, the
-// sink is never built, so a panic makes no network call. `ReportingState`
-// is the piece of Tauri-managed state the toggle command flips at runtime,
-// so switching Settings takes effect without a restart.
+// - and queued on a `skill_studio_host::QueuedReportSink`; when off,
+// `maybe_report` drops the panic before it reaches the sink, so nothing is
+// queued and no network call is made. `ReportingState` is the piece of
+// Tauri-managed state the toggle command flips at runtime, so switching
+// Settings takes effect without a restart.
 // ============================================================================
 
 use std::panic::PanicHookInfo;

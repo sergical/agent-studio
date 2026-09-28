@@ -230,8 +230,10 @@ pub struct ForkRegistry {
     /// Telemetry (Settings' "Telemetry" toggle) - see `error_reporting`.
     /// Off in the registry by default; the welcome screen offers it on
     /// (`FIRST_RUN_TELEMETRY_DEFAULT` in `useFirstRun.ts`) and
-    /// `save_harnesses_choice` writes the user's explicit choice here, so
-    /// this field is never read before a value has actually been chosen.
+    /// `save_harnesses_choice` writes the user's explicit choice here.
+    /// `lib.rs` reads it on every launch; before a choice exists it reads
+    /// as off, and a registry saved by an older build without the key
+    /// reads as off too.
     #[serde(default)]
     pub error_reporting_enabled: bool,
     /// The first-run screen's saved choice - see `harness_first_run`.
@@ -720,12 +722,12 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_error_reporting_key_reads_as_off_or_names_the_wrong_default() {
+    fn a_registry_with_a_saved_first_run_and_no_telemetry_key_reads_as_off_or_opts_the_user_in() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".agents")).unwrap();
         std::fs::write(
             tmp.path().join(".agents/skill-studio.json"),
-            r#"{"version":4,"write_version":0}"#,
+            r#"{"version":4,"write_version":0,"harnesses":{"kept":["claude-code"],"search_project_folders":false,"saved_at":"2026-09-28T00:00:00Z"}}"#,
         )
         .unwrap();
 

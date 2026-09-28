@@ -1,7 +1,7 @@
 //! Sanitizer for outbound error reports.
 //!
-//! Opt-in error reporting (unit 6.4) sends a panic or a command failure to
-//! Sentry, but the shape that leaves the machine must never carry a home
+//! Crash reporting (unit 6.4) sends a panic to Sentry when the user's
+//! Telemetry switch is on, but the shape that leaves the machine must never carry a home
 //! path, a skill name, a project path, or a file body - those are exactly
 //! the strings a Rust panic message or a failed op's context tends to
 //! carry. [`sanitize`] is pure: no filesystem, no clock, no network. The
