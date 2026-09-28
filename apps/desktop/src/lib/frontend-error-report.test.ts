@@ -51,6 +51,13 @@ describe("componentNameFromStack", () => {
     expect(componentNameFromStack(componentStack)).toBe("SkillList");
     expect(componentNameFromStack("\n@tauri://localhost/x.js:1:1")).toBe("unknown");
   });
+
+  it("an_anonymous_first_frame_is_not_reported_under_its_parent_name", () => {
+    // Only the first frame is the failing component. A match that may skip
+    // to the next line would tag an anonymous component's error as `App`.
+    const componentStack = "\n@tauri://localhost/x.js:1:1\nApp@tauri://localhost/x.js:3:4";
+    expect(componentNameFromStack(componentStack)).toBe("unknown");
+  });
 });
 
 describe("reportFrontendError", () => {

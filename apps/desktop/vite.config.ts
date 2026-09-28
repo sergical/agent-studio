@@ -18,10 +18,16 @@ export default defineConfig(async () => ({
   // useless in the packaged app. `mangle.keepNames` preserves only function
   // and class declaration names - everything else (locals, params) is still
   // mangled - so this costs far less bundle size than turning mangling off.
+  // The compressor has its own `keepNames`: without it a named function
+  // expression (`forwardRef(function Name ..)`) loses its name before the
+  // mangler ever sees it.
   build: {
     rolldownOptions: {
       output: {
-        minify: { mangle: { keepNames: { function: true, class: true } } },
+        minify: {
+          compress: { keepNames: { function: true, class: true } },
+          mangle: { keepNames: { function: true, class: true } },
+        },
       },
     },
   },

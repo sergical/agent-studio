@@ -17,9 +17,13 @@ import { invoke } from "@tauri-apps/api/core";
 // and WKWebView/JavaScriptCore's "Name@url:line:col" - WKWebView copies
 // native frames as-is, with no "at " keyword, so a V8-only pattern never
 // matches there and every ErrorBoundary report would be tagged "unknown" in
-// the real app. "unknown" when the stack is absent or has no such frame.
+// the real app. "unknown" when the stack is absent or its first frame has
+// no name: only the first frame is the failing component, so an anonymous
+// first frame must not be reported under the name of its parent.
 export function componentNameFromStack(componentStack: string | null | undefined): string {
-  const match = componentStack?.match(/^\s*(?:at\s+)?([A-Za-z_$][\w$.]*)(?=\s*\(|@|\s*$)/m);
+  const match = componentStack?.match(
+    /^\s*(?:at\s+)?([A-Za-z_$][\w$.]*)(?=[ \t]*\(|@|[ \t]*(?:\r?\n|$))/,
+  );
   return match?.[1] ?? "unknown";
 }
 
@@ -41,6 +45,9 @@ let reportCount = 0;
 // Fire-and-forget: invokes `report_frontend_error` with only `component`
 // and `kind`, and swallows any rejection - a failed telemetry report must
 // never surface as a second error.
+// The count also grows while the telemetry switch is off (the frontend
+// cannot see the switch); a page reload resets it, and the host's cap is the
+// one that bounds what reaches Sentry.
 export function reportFrontendError(component: string, kind: string): void {
   if (reportCount >= SESSION_REPORT_CAP) return;
   reportCount += 1;

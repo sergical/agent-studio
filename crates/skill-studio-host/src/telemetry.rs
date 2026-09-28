@@ -923,6 +923,7 @@ mod tests {
             identifier_only("Cannot read properties of undefined"),
             "unknown"
         );
+        assert_eq!(identifier_only(&"a".repeat(64)), "a".repeat(64));
         assert_eq!(identifier_only(&"a".repeat(65)), "unknown");
         assert_eq!(identifier_only(""), "unknown");
         assert_eq!(identifier_only("SkillList"), "SkillList");
