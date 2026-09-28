@@ -7336,8 +7336,13 @@ mod tests {
                 .find(|n| n.operation == Operation::Diagnose)
                 .expect("diagnose present");
             assert!(
-                scan.offset_ms >= diagnose.offset_ms,
-                "scan starts no earlier than its parent diagnose: scan={}, diagnose={}",
+                diagnose.offset_ms > 0,
+                "diagnose is expected to start after doctor's own root_start, not at it: diagnose={}",
+                diagnose.offset_ms
+            );
+            assert!(
+                scan.offset_ms > diagnose.offset_ms,
+                "scan is expected to start later than its parent diagnose: scan={}, diagnose={}",
                 scan.offset_ms,
                 diagnose.offset_ms
             );

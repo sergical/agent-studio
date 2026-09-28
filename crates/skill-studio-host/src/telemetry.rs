@@ -1144,6 +1144,85 @@ mod tests {
         }
     }
 
+    fn zero_nested_op(operation: Operation, depth: usize) -> NestedOp {
+        NestedOp {
+            operation,
+            outcome: OpOutcome::Ok,
+            timing: OpTiming {
+                op: "op".to_string(),
+                elapsed_ms: 1,
+                steps: Vec::new(),
+            },
+            depth,
+            offset_ms: 0,
+        }
+    }
+
+    /// guards: `nested_parent_span_id` searching from the wrong end of the
+    /// remaining post-order list - `position` finds the *nearest* enclosing
+    /// call still open when an entry finished; `rposition` would instead
+    /// find the last one, which for two children under the same parent (A1
+    /// and A2, both under A) wrongly parents the first-finishing child (A1)
+    /// on a later, unrelated top-level op instead of on A.
+    #[test]
+    fn siblings_under_one_nested_op_parent_on_it_not_on_a_later_top_level_op() {
+        let root = sentry::protocol::SpanId::default();
+        let span_ids: Vec<sentry::protocol::SpanId> = (0..4)
+            .map(|_| sentry::protocol::SpanId::default())
+            .collect();
+        // Post-order for: A1, A2 (both children of A), then A, then B (a
+        // sibling of A at the top level).
+        let nested = vec![
+            zero_nested_op(Operation::Scan, 2),     // A1
+            zero_nested_op(Operation::Diagnose, 2), // A2
+            zero_nested_op(Operation::Install, 1),  // A
+            zero_nested_op(Operation::Remove, 1),   // B
+        ];
+        assert_eq!(
+            nested_parent_span_id(&nested, &span_ids, 0, root),
+            span_ids[2],
+            "A1 must parent on A (index 2), the nearest still-open call, not on B"
+        );
+        assert_eq!(
+            nested_parent_span_id(&nested, &span_ids, 1, root),
+            span_ids[2],
+            "A2 must parent on A (index 2), the nearest still-open call, not on B"
+        );
+        assert_eq!(
+            nested_parent_span_id(&nested, &span_ids, 2, root),
+            root,
+            "A is a depth-1 op, so it parents directly on the root"
+        );
+        assert_eq!(
+            nested_parent_span_id(&nested, &span_ids, 3, root),
+            root,
+            "B is a depth-1 op, so it parents directly on the root"
+        );
+
+        // Post-order for a deeper shape: A1a (under A1), A1, A (all one
+        // branch), then B1 (under B), B (a second, sibling branch).
+        let root_ids: Vec<sentry::protocol::SpanId> = (0..5)
+            .map(|_| sentry::protocol::SpanId::default())
+            .collect();
+        let deeper = vec![
+            zero_nested_op(Operation::Scan, 3),     // A1a
+            zero_nested_op(Operation::Diagnose, 2), // A1
+            zero_nested_op(Operation::Install, 1),  // A
+            zero_nested_op(Operation::Remove, 2),   // B1
+            zero_nested_op(Operation::Update, 1),   // B
+        ];
+        assert_eq!(
+            nested_parent_span_id(&deeper, &root_ids, 0, root),
+            root_ids[1],
+            "A1a must parent on A1 (index 1), not skip past it to A"
+        );
+        assert_eq!(
+            nested_parent_span_id(&deeper, &root_ids, 3, root),
+            root_ids[4],
+            "B1 must parent on B (index 4), its own branch, not on A's branch"
+        );
+    }
+
     /// guards: every nested op parented on the root instead of on the op
     /// that actually called it - `doctor` calls `diagnose` (depth 1), whose
     /// own body calls `scan` (depth 2), so `Scan`'s `skill.op` span must
@@ -1213,6 +1292,11 @@ mod tests {
             Some(root_span_id),
             "diagnose must be parented on the root, its real caller"
         );
+        assert_eq!(
+            scan_span.start_timestamp,
+            transaction.start_timestamp + Duration::from_millis(1),
+            "scan's span must start at its own offset from the transaction start, not at the transaction start itself"
+        );
     }
 
     /// guards: a nested op whose offset plus elapsed time overruns the
@@ -1222,18 +1306,34 @@ mod tests {
     fn a_span_that_would_overrun_is_clamped_to_the_transaction_end() {
         let mut record = three_step_record("doctor");
         record.operation = Operation::Doctor;
-        record.timing.elapsed_ms = 110;
-        record.nested = vec![NestedOp {
-            operation: Operation::Scan,
-            outcome: OpOutcome::Ok,
-            timing: OpTiming {
-                op: "scan".to_string(),
-                elapsed_ms: 100,
-                steps: Vec::new(),
+        record.timing.elapsed_ms = 100;
+        record.nested = vec![
+            NestedOp {
+                operation: Operation::Scan,
+                outcome: OpOutcome::Ok,
+                timing: OpTiming {
+                    op: "scan".to_string(),
+                    elapsed_ms: 100,
+                    steps: Vec::new(),
+                },
+                depth: 1,
+                offset_ms: 50,
             },
-            depth: 1,
-            offset_ms: 50,
-        }];
+            // Starts past the root's own elapsed time entirely - a clock
+            // anomaly, not just a span running long - so both its start
+            // and end must clamp to the transaction end.
+            NestedOp {
+                operation: Operation::Diagnose,
+                outcome: OpOutcome::Ok,
+                timing: OpTiming {
+                    op: "diagnose".to_string(),
+                    elapsed_ms: 10,
+                    steps: Vec::new(),
+                },
+                depth: 1,
+                offset_ms: 200,
+            },
+        ];
         let envelopes = sentry::test::with_captured_envelopes(|| {
             telemetry().record(record);
         });
@@ -1243,7 +1343,7 @@ mod tests {
         let scan_span = transaction
             .spans
             .iter()
-            .find(|s| s.op.as_deref() == Some("skill.op"))
+            .find(|s| s.description.as_deref() == Some("scan"))
             .expect("nested scan span present");
         assert_eq!(
             scan_span.timestamp,
@@ -1253,6 +1353,22 @@ mod tests {
         assert!(
             scan_span.start_timestamp <= transaction_end,
             "a clamped span's start must not be pushed past its own clamped end"
+        );
+
+        let diagnose_span = transaction
+            .spans
+            .iter()
+            .find(|s| s.description.as_deref() == Some("diagnose"))
+            .expect("nested diagnose span present");
+        assert_eq!(
+            diagnose_span.start_timestamp,
+            transaction_end,
+            "a span starting past the root's own elapsed time must have its start clamped to the transaction end, not just its end"
+        );
+        assert_eq!(
+            diagnose_span.timestamp,
+            Some(transaction_end),
+            "a span starting past the root's own elapsed time must still end at the transaction end"
         );
     }
 
