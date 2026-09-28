@@ -98,19 +98,19 @@ pub async fn get_harnesses_choice(
 /// writing it, so this read-modify-write can't lose a concurrent writer's
 /// change the way an unguarded read followed by a locked write could -
 /// matching every other registry mutation in this module family (see
-/// `skill_harness_disable.rs`). Also saves `error_reporting_enabled` from
+/// `skill_harness_disable.rs`). Also saves `telemetry_enabled` from
 /// the same screen's telemetry switch, so the first run's choice is the
 /// registry's only value for it rather than whatever the default happened
 /// to be.
 #[tauri::command]
 pub async fn save_harnesses_choice(
     choice: HarnessesChoice,
-    error_reporting_enabled: bool,
+    telemetry_enabled: bool,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let timing_app = app.clone();
     let consent = app
-        .state::<super::error_reporting::ReportingState>()
+        .state::<super::telemetry_commands::TelemetryState>()
         .consent
         .clone();
     crate::timing_log::time_command_blocking(&timing_app, "save_harnesses_choice", move || {
@@ -120,7 +120,7 @@ pub async fn save_harnesses_choice(
             &write_lease,
             &home,
             choice,
-            error_reporting_enabled,
+            telemetry_enabled,
             &consent,
             std::env::var("SKILL_STUDIO_TELEMETRY").ok(),
         )?;
@@ -145,18 +145,18 @@ fn save_harnesses_choice_at(
     write_lease: &super::write_lease::WriteLease,
     home: &std::path::Path,
     choice: HarnessesChoice,
-    error_reporting_enabled: bool,
+    telemetry_enabled: bool,
     consent: &skill_studio_host::telemetry::Consent,
     env_override: Option<String>,
 ) -> Result<(), String> {
     let guard = write_lease.try_acquire(home)?;
     let mut registry = super::skill_fork_registry::read_fork_registry(home)?;
     registry.harnesses = Some(choice);
-    registry.error_reporting_enabled = error_reporting_enabled;
+    registry.telemetry_enabled = telemetry_enabled;
     super::skill_fork_registry::write_fork_registry_locked(&guard, home, &registry)?;
     consent.set(skill_studio_host::telemetry::resolve_consent(
         env_override,
-        error_reporting_enabled,
+        telemetry_enabled,
     ));
     Ok(())
 }
@@ -295,7 +295,7 @@ mod tests {
     }
 
     /// `a_first_run_save_writes_the_telemetry_choice_or_leaves_the_registrys_default`:
-    /// `save_harnesses_choice_at` must write `error_reporting_enabled`
+    /// `save_harnesses_choice_at` must write `telemetry_enabled`
     /// alongside `harnesses` in the same locked write, not leave it at
     /// whatever `ForkRegistry::default()` picked, and must flip the live
     /// `Consent` passed in so the choice takes effect without a restart.
@@ -326,7 +326,7 @@ mod tests {
         .unwrap();
         let after_off = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
         assert!(
-            !after_off.error_reporting_enabled,
+            !after_off.telemetry_enabled,
             "a save with false must turn telemetry off in the registry"
         );
 
@@ -345,7 +345,7 @@ mod tests {
         .unwrap();
         let after_on = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
         assert!(
-            after_on.error_reporting_enabled,
+            after_on.telemetry_enabled,
             "a save with true must turn telemetry on in the registry"
         );
         assert!(
@@ -390,7 +390,7 @@ mod tests {
         );
         let after = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
         assert!(
-            after.error_reporting_enabled,
+            after.telemetry_enabled,
             "the registry must still record the user's saved choice, only Consent is overridden"
         );
     }

@@ -128,14 +128,14 @@ const EXPECTED_WRAPPER_COMMANDS = {
     registeredInLibRs: true,
   },
   dataFolderStatus: { kind: "command", command: "data_folder_status", registeredInLibRs: true },
-  getErrorReportingEnabled: {
+  getTelemetryEnabled: {
     kind: "command",
-    command: "get_error_reporting_enabled",
+    command: "get_telemetry_enabled",
     registeredInLibRs: true,
   },
-  setErrorReportingEnabled: {
+  setTelemetryEnabled: {
     kind: "command",
-    command: "set_error_reporting_enabled",
+    command: "set_telemetry_enabled",
     registeredInLibRs: true,
   },
   forkSkill: { kind: "command", command: "fork_skill", registeredInLibRs: true },

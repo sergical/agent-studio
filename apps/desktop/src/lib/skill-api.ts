@@ -254,9 +254,9 @@ export async function getHarnessesChoice(): Promise<HarnessesChoice | null> {
  */
 export async function saveHarnessesChoice(
   choice: HarnessesChoice,
-  errorReportingEnabled: boolean,
+  telemetryEnabled: boolean,
 ): Promise<void> {
-  return callCommand("save_harnesses_choice", { choice, errorReportingEnabled });
+  return callCommand("save_harnesses_choice", { choice, telemetryEnabled });
 }
 
 /**
@@ -373,14 +373,14 @@ export async function setPreferredEditor(value: string | null): Promise<void> {
   return callCommand("set_preferred_editor", { appName: value });
 }
 
-/** The saved "Error reporting" switch (Settings), off unless the user turned it on. */
-export async function getErrorReportingEnabled(): Promise<boolean> {
-  return callCommand("get_error_reporting_enabled");
+/** Reads the telemetry switch (crash reports, timings, WebView errors) from the registry. */
+export async function getTelemetryEnabled(): Promise<boolean> {
+  return callCommand("get_telemetry_enabled");
 }
 
-/** Saves the switch and takes effect immediately - see the Rust `error_reporting`. */
-export async function setErrorReportingEnabled(enabled: boolean): Promise<boolean> {
-  return callCommand("set_error_reporting_enabled", { enabled });
+/** Saves the telemetry switch; takes effect without a restart - see the Rust `telemetry_commands`. */
+export async function setTelemetryEnabled(enabled: boolean): Promise<boolean> {
+  return callCommand("set_telemetry_enabled", { enabled });
 }
 
 // ============================================================================

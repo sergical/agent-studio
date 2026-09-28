@@ -72,7 +72,7 @@ export const FIRST_RUN_TELEMETRY_DEFAULT = true;
 
 export interface FirstRunSave {
   choice: HarnessesChoice;
-  errorReportingEnabled: boolean;
+  telemetryEnabled: boolean;
 }
 
 /** Builds `saveHarnessesChoice`'s arguments from the screen's state, kept
@@ -90,7 +90,7 @@ export function buildFirstRunSave(
       search_project_folders: searchProjectFolders,
       saved_at: savedAt,
     },
-    errorReportingEnabled: telemetryEnabled,
+    telemetryEnabled,
   };
 }
 
@@ -149,13 +149,13 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
 
   function continueToApp() {
     setSaving(true);
-    const { choice, errorReportingEnabled } = buildFirstRunSave(
+    const { choice, telemetryEnabled: savedTelemetryEnabled } = buildFirstRunSave(
       kept,
       searchProjectFolders,
       telemetryEnabled,
       new Date().toISOString(),
     );
-    saveHarnessesChoice(choice, errorReportingEnabled)
+    saveHarnessesChoice(choice, savedTelemetryEnabled)
       .then(onSaved)
       .catch((cause: unknown) => {
         // eslint-disable-next-line no-console

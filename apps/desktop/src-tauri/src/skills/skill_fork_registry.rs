@@ -227,15 +227,17 @@ pub struct ForkRegistry {
     /// the desktop app, the CLI, and the MCP server honour the same choice.
     #[serde(default, skip_serializing_if = "DiscoverySources::is_empty")]
     pub discovery: DiscoverySources,
-    /// Telemetry (Settings' "Telemetry" toggle) - see `error_reporting`.
-    /// Off in the registry by default; the welcome screen offers it on
-    /// (`FIRST_RUN_TELEMETRY_DEFAULT` in `useFirstRun.ts`) and
-    /// `save_harnesses_choice` writes the user's explicit choice here.
-    /// `lib.rs` reads it on every launch; before a choice exists it reads
-    /// as off, and a registry saved by an older build without the key
-    /// reads as off too.
-    #[serde(default)]
-    pub error_reporting_enabled: bool,
+    /// The telemetry switch: whether crash reports, operation timings, and
+    /// `WebView` errors leave this Mac. Off in the registry by default; the
+    /// welcome screen offers it on (`FIRST_RUN_TELEMETRY_DEFAULT` in
+    /// `useFirstRun.ts`) and `save_harnesses_choice` writes the user's
+    /// explicit choice here. `lib.rs` reads it on every launch; before a
+    /// choice exists it reads as off, and a registry saved by an older build
+    /// without the key reads as off too. An rc build wrote this key as
+    /// `error_reporting_enabled`; that key is still read through the serde
+    /// alias below. See `telemetry_commands`.
+    #[serde(default, alias = "error_reporting_enabled")]
+    pub telemetry_enabled: bool,
     /// The first-run screen's saved choice - see `harness_first_run`.
     /// Absent means the screen has never been completed, so the app shows
     /// it again on the next launch.
@@ -293,7 +295,7 @@ impl Default for ForkRegistry {
             trusted_dotagents_sources: BTreeSet::new(),
             projects: TrackedProjects::default(),
             discovery: DiscoverySources::default(),
-            error_reporting_enabled: false,
+            telemetry_enabled: false,
             harnesses: None,
             unknown: serde_json::Map::new(),
         }
@@ -735,16 +737,16 @@ mod tests {
 
         let reg = read_fork_registry(tmp.path()).unwrap();
         assert!(
-            !reg.error_reporting_enabled,
+            !reg.telemetry_enabled,
             "an absent key must read as off - only the welcome screen or Settings may turn it on"
         );
     }
 
     #[test]
-    fn a_saved_false_for_error_reporting_survives_a_round_trip_or_names_the_dropped_key() {
+    fn a_saved_false_for_telemetry_survives_a_round_trip_or_names_the_dropped_key() {
         let tmp = tempfile::tempdir().unwrap();
         let reg = ForkRegistry {
-            error_reporting_enabled: false,
+            telemetry_enabled: false,
             ..ForkRegistry::default()
         };
         write_fork_registry(tmp.path(), &reg).unwrap();
@@ -752,14 +754,45 @@ mod tests {
         let content =
             std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
         assert!(
-            content.contains(r#""error_reporting_enabled": false"#),
+            content.contains(r#""telemetry_enabled": false"#),
             "a saved false must be written, not dropped by skip_serializing_if: {content}"
         );
 
         let reloaded = read_fork_registry(tmp.path()).unwrap();
         assert!(
-            !reloaded.error_reporting_enabled,
+            !reloaded.telemetry_enabled,
             "a saved false must still read back as false after the round trip"
+        );
+    }
+
+    /// Flow: an rc build wrote `error_reporting_enabled: true` into
+    /// `~/.agents/skill-studio.json` before this rename. Expectation: the
+    /// serde alias still reads that opt-in as `telemetry_enabled: true`, and
+    /// a subsequent write migrates the key rather than carrying the old name
+    /// forward.
+    #[test]
+    fn an_rc_registry_saved_under_error_reporting_enabled_still_reads_as_telemetry_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".agents")).unwrap();
+        std::fs::write(
+            tmp.path().join(".agents/skill-studio.json"),
+            r#"{"version":4,"write_version":0,"error_reporting_enabled":true}"#,
+        )
+        .unwrap();
+
+        let reg = read_fork_registry(tmp.path()).unwrap();
+        assert!(
+            reg.telemetry_enabled,
+            "an rc user's opt-in under the old key must not be lost by the rename"
+        );
+
+        write_fork_registry(tmp.path(), &reg).unwrap();
+        let content =
+            std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
+        assert!(
+            content.contains(r#""telemetry_enabled": true"#)
+                && !content.contains("error_reporting_enabled"),
+            "a rewrite must migrate the key, not carry the old name forward"
         );
     }
 

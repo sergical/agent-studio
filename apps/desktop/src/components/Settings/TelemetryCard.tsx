@@ -1,27 +1,27 @@
 // ============================================================================
-// ErrorReportingCard - Settings' "Telemetry" card: the switch that sends a
-// sanitized panic to Sentry. Off in the registry by default; the welcome
-// screen offers it on and writes the user's explicit choice here, and this
-// card lets the user change that choice later - see the Rust
-// `error_reporting` and `crates/skill-studio-host/src/telemetry.rs` for
-// what a report can and can't carry.
+// TelemetryCard - Settings' "Telemetry" card: the switch for crash reports,
+// operation timings, and WebView errors. Off in the registry by default; the
+// welcome screen offers it on and writes the user's explicit choice; this
+// card lets the user change it later - see the Rust `telemetry_commands` and
+// `crates/skill-studio-host/src/telemetry.rs` for what a report can and
+// can't carry.
 // ============================================================================
 
 import { useEffect, useState } from "react";
 import { Bug } from "lucide-react";
-import { getErrorReportingEnabled, setErrorReportingEnabled } from "../../lib/skill-api";
+import { getTelemetryEnabled, setTelemetryEnabled } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import { SwitchControl } from "../ui/SwitchControl";
 import { SettingsCard } from "./SettingsCard";
 
-export function ErrorReportingCard() {
+export function TelemetryCard() {
   const addToast = useAppStore((state) => state.addToast);
   const [enabled, setEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
-    getErrorReportingEnabled()
+    getTelemetryEnabled()
       .then((result) => {
         if (!cancelled) setEnabled(result);
       })
@@ -44,7 +44,7 @@ export function ErrorReportingCard() {
     const previous = enabled;
     setEnabled(next);
     try {
-      await setErrorReportingEnabled(next);
+      await setTelemetryEnabled(next);
     } catch (err) {
       setEnabled(previous);
       addToast({
