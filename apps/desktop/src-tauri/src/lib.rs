@@ -299,14 +299,9 @@ pub fn run() {
                 env!("CARGO_PKG_VERSION"),
                 consent.clone(),
             );
-            let telemetry = skill_studio_host::telemetry::port(
-                skill_studio_host::telemetry::Surface::Desktop,
-                env!("CARGO_PKG_VERSION"),
-            );
             app.manage(skills::error_reporting::ReportingState {
                 consent,
                 guard: std::sync::Mutex::new(telemetry_guard),
-                telemetry,
             });
 
             // Unit 6.3: check the data folder's schema_version before

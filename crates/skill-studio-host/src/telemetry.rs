@@ -346,6 +346,33 @@ impl SentryTelemetry {
     }
 }
 
+/// `Ok` -> `SpanStatus::Ok`, `Err` -> `SpanStatus::InternalError` - shared by
+/// a transaction's root trace context and (for `record`) nothing else: step
+/// spans always report `Ok`, since a step that ran at all completed.
+fn outcome_status(ok: bool) -> SpanStatus {
+    if ok {
+        SpanStatus::Ok
+    } else {
+        SpanStatus::InternalError
+    }
+}
+
+/// `surface`/`outcome`[/`error_code`] - the only tags [`SentryTelemetry::record`]
+/// and [`record_command`] ever attach, so a transaction can carry no more
+/// than these three typed values, never free text.
+fn outcome_tags(surface: Surface, ok: bool, error_code: Option<&str>) -> Map<String, String> {
+    let mut tags = Map::new();
+    tags.insert("surface".to_string(), surface.as_str().to_string());
+    tags.insert(
+        "outcome".to_string(),
+        (if ok { "ok" } else { "error" }).to_string(),
+    );
+    if let Some(code) = error_code {
+        tags.insert("error_code".to_string(), code.to_string());
+    }
+    tags
+}
+
 impl Telemetry for SentryTelemetry {
     fn record(&self, record: OpRecord) {
         let ok = matches!(record.outcome, OpOutcome::Ok);
@@ -375,15 +402,11 @@ impl Telemetry for SentryTelemetry {
             offset += step_elapsed;
         }
 
-        let mut tags = Map::new();
-        tags.insert("surface".to_string(), self.surface.as_str().to_string());
-        tags.insert(
-            "outcome".to_string(),
-            (if ok { "ok" } else { "error" }).to_string(),
-        );
-        if let OpOutcome::Err { code } = &record.outcome {
-            tags.insert("error_code".to_string(), code.clone());
-        }
+        let error_code = match &record.outcome {
+            OpOutcome::Err { code } => Some(code.as_str()),
+            OpOutcome::Ok => None,
+        };
+        let tags = outcome_tags(self.surface, ok, error_code);
 
         let mut contexts = Map::new();
         contexts.insert(
@@ -392,11 +415,7 @@ impl Telemetry for SentryTelemetry {
                 trace_id,
                 span_id: root_span_id,
                 op: Some(op.clone()),
-                status: Some(if ok {
-                    SpanStatus::Ok
-                } else {
-                    SpanStatus::InternalError
-                }),
+                status: Some(outcome_status(ok)),
                 ..Default::default()
             })),
         );
@@ -450,23 +469,14 @@ pub fn record_command(surface: Surface, command: &'static str, elapsed_ms: u64, 
     let timestamp = SystemTime::now();
     let start_timestamp = timestamp - elapsed;
     let name = format!("command.{command}");
-    let mut tags = Map::new();
-    tags.insert("surface".to_string(), surface.as_str().to_string());
-    tags.insert(
-        "outcome".to_string(),
-        (if ok { "ok" } else { "error" }).to_string(),
-    );
+    let tags = outcome_tags(surface, ok, None);
 
     let mut contexts = Map::new();
     contexts.insert(
         "trace".to_string(),
         Context::Trace(Box::new(TraceContext {
             op: Some("command".to_string()),
-            status: Some(if ok {
-                SpanStatus::Ok
-            } else {
-                SpanStatus::InternalError
-            }),
+            status: Some(outcome_status(ok)),
             ..Default::default()
         })),
     );
