@@ -154,10 +154,10 @@ fn client_options(
     options.sample_rate(1.0)
 }
 
-/// `before_send`'s body, factored out so a test can call it directly rather
-/// than reaching in through a closure. A safety net: the panic hook already
-/// builds a clean event, but this is the one gate every event - including
-/// PR2's transactions - passes through before it leaves the process.
+/// `before_send`'s body, factored out so a test can call it directly. A
+/// safety net behind the panic hook: every *event* passes through here.
+/// Raw envelopes (`Client::send_envelope`, the path transactions will use)
+/// skip `before_send`, so their fields are shaped by their builder instead.
 fn redact_event(mut event: Event<'static>, surface: Surface) -> Event<'static> {
     event.server_name = None;
     event.user = None;
