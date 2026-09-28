@@ -97,6 +97,25 @@ fn command_registration_matches_frontend_caller_count_or_names_the_orphan() {
     );
 }
 
+/// Guards `NON_SKILL_API_CALLERS` from becoming a general escape hatch: every
+/// name listed there must have an actual caller in the file its doc comment
+/// claims, not just an absence from `skill-api.ts`.
+#[test]
+fn every_non_skill_api_command_has_its_named_caller() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let frontend_error_report_ts =
+        fs::read_to_string(manifest_dir.join("../src/lib/frontend-error-report.ts"))
+            .expect("read frontend-error-report.ts");
+
+    for name in NON_SKILL_API_CALLERS {
+        assert!(
+            frontend_error_report_ts.contains(&format!("\"{name}\"")),
+            "{name} is listed in NON_SKILL_API_CALLERS but frontend-error-report.ts has no \
+             \"{name}\" string literal"
+        );
+    }
+}
+
 /// Unit 3.8 confirmed `set_shared_harness_skill_enabled` has no frontend
 /// caller and was removed under unit 4.1. Locks that: the name may only
 /// reappear in `lib.rs`'s handler list alongside a matching

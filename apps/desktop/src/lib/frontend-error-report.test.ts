@@ -11,8 +11,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import {
   componentNameFromStack,
-  errorKind,
   installWindowErrorReporting,
+  reportBoundaryError,
   reportFrontendError,
   resetFrontendErrorReportCountForTest,
 } from "./frontend-error-report";
@@ -42,6 +42,15 @@ describe("componentNameFromStack", () => {
     expect(componentNameFromStack(null)).toBe("unknown");
     expect(componentNameFromStack(undefined)).toBe("unknown");
   });
+
+  it("component_name_comes_from_a_webkit_frame_without_the_at_keyword", () => {
+    // The desktop app runs in WKWebView (JavaScriptCore), which copies
+    // native frames as-is: "Name@url:line:col", with no "at " keyword.
+    const componentStack =
+      "\nSkillList@tauri://localhost/assets/index-abc.js:1:2345\nApp@tauri://localhost/x.js:3:4";
+    expect(componentNameFromStack(componentStack)).toBe("SkillList");
+    expect(componentNameFromStack("\n@tauri://localhost/x.js:1:1")).toBe("unknown");
+  });
 });
 
 describe("reportFrontendError", () => {
@@ -51,14 +60,18 @@ describe("reportFrontendError", () => {
       calls.push({ cmd, args });
     });
 
-    const sensitivePath = "/Users/alice/.claude/skills/my-skill/SKILL.md";
-    const error = new Error(sensitivePath);
-    reportFrontendError("SkillList", errorKind(error));
+    // Exercises the real ErrorBoundary path (`reportBoundaryError`, which
+    // `main.tsx`'s `componentDidCatch` calls) rather than
+    // `reportFrontendError` directly, with both a sensitive error message
+    // and a sensitive component stack.
+    reportBoundaryError(new Error("/Users/alice/.claude/skills/my-skill"), {
+      componentStack: "\nSkillList@tauri://localhost/a.js:1:1",
+    });
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.cmd).toBe("report_frontend_error");
     expect(calls[0]?.args).toEqual({ component: "SkillList", kind: "Error" });
-    expect(JSON.stringify(calls[0]?.args)).not.toContain(sensitivePath);
+    expect(JSON.stringify(calls[0]?.args)).not.toContain("alice");
   });
 
   it("reports_stop_after_twenty_in_one_session", () => {

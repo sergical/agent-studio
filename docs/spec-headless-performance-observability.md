@@ -236,8 +236,8 @@ on top of the HTTP client's own 2-second timeout, so quit waits at most
 about 4 seconds total. A WebView error - a React `componentDidCatch`, an
 uncaught `window` error, or an unhandled promise rejection - reaches the
 same client through one Tauri command, `report_frontend_error`, which
-carries only a component name and an error kind, both reduced to plain
-identifiers before capture.
+carries only a component name and an error kind; anything that is not a
+bare identifier is replaced by `unknown` before capture.
 
 ## Delivery phases and exit criteria
 

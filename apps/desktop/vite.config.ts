@@ -12,6 +12,19 @@ export default defineConfig(async () => ({
   // JSX-transformed output, per @vitejs/plugin-react's documented ordering.
   plugins: [react(), babel({ presets: [reactCompilerPreset()] }), tailwindcss()],
 
+  // Sentry's `component` tag (see frontend-error-report.ts) comes from a
+  // function name in React's component stack; the default Oxc minifier
+  // mangles those to single letters (e.g. `Kc`), which would make the tag
+  // useless in the packaged app. Keep whitespace and syntax minification,
+  // turn off only identifier mangling.
+  build: {
+    rolldownOptions: {
+      output: {
+        minify: { mangle: false },
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

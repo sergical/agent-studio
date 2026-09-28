@@ -2,12 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { KitPreview } from "@skill-studio/ui";
 import App from "./App";
-import {
-  componentNameFromStack,
-  errorKind,
-  installWindowErrorReporting,
-  reportFrontendError,
-} from "./lib/frontend-error-report";
+import { installWindowErrorReporting, reportBoundaryError } from "./lib/frontend-error-report";
 import { stampInitialTheme } from "./lib/theme";
 
 // Stamped before React renders, so the app never flashes the wrong palette
@@ -37,7 +32,7 @@ class ErrorBoundary extends React.Component<
     // No toast store is reachable here: a crash this deep may mean the
     // Zustand provider itself failed to mount. The fallback UI below is
     // the only surface left to report the error on.
-    reportFrontendError(componentNameFromStack(errorInfo.componentStack), errorKind(error));
+    reportBoundaryError(error, errorInfo);
   }
 
   render() {

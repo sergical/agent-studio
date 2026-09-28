@@ -209,9 +209,10 @@ static FRONTEND_ERROR_REPORT_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Builds and captures one event for an error raised inside the `WebView` -
 /// a React `componentDidCatch`, an uncaught `window` error, or an unhandled
-/// promise rejection. `component` and `kind` are reduced to identifiers by
-/// [`identifier_only`] before use, so neither can carry a path, a URL, or an
-/// error message through to the event. No `exception`, no `extra`, and no
+/// promise rejection. `component` and `kind` pass through [`identifier_only`]
+/// before use, which replaces anything that is not a bare identifier with
+/// `"unknown"`, so neither can carry a path, a URL, or an error message
+/// through to the event. No `exception`, no `extra`, and no
 /// real stack trace: a Rust backtrace of this Tauri command would only name
 /// this function, never the `WebView` code that actually failed, so this
 /// pushes one `Thread` with an empty [`Stacktrace`] rather than relying on
@@ -250,19 +251,22 @@ fn reset_frontend_error_report_count() {
     FRONTEND_ERROR_REPORT_COUNT.store(0, Ordering::Relaxed);
 }
 
-/// Keeps only `[A-Za-z0-9_$.]`, cuts at 64 chars, returns `"unknown"` when
-/// nothing is left. A path (`/`, spaces), a URL (`:`, `/`), or a sentence
-/// (spaces, punctuation) therefore cannot survive into a tag or the message.
+/// This Tauri command is the trust boundary: any `WebView` code can call
+/// `report_frontend_error` with any string, so this rejects rather than
+/// filters. Returns `"unknown"` when `raw` is empty, longer than 64 chars, or
+/// contains any char outside `[A-Za-z0-9_$.]` - a path, a URL, or a sentence
+/// is therefore replaced wholesale, not stripped down to its surviving
+/// letters. Otherwise returns `raw` unchanged.
 fn identifier_only(raw: &str) -> String {
-    let filtered: String = raw
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.'))
-        .take(64)
-        .collect();
-    if filtered.is_empty() {
-        "unknown".to_string()
+    let is_bare_identifier = !raw.is_empty()
+        && raw.len() <= 64
+        && raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.'));
+    if is_bare_identifier {
+        raw.to_string()
     } else {
-        filtered
+        "unknown".to_string()
     }
 }
 
@@ -834,36 +838,39 @@ mod tests {
         ));
 
         let events = sentry::test::with_captured_events_options(
-            || report_frontend_error("SkillList", "TypeError"),
+            || {
+                report_frontend_error("SkillList", "TypeError");
+                report_frontend_error("/Users/alice/x y", "/Users/alice/x y");
+            },
             opts,
         );
 
-        assert_eq!(events.len(), 1, "expected exactly one captured event");
-        let event = &events[0];
+        assert_eq!(events.len(), 2, "expected two captured events");
+        let clean_event = &events[0];
         assert_eq!(
-            event.message.as_deref(),
+            clean_event.message.as_deref(),
             Some("webview error in SkillList: TypeError")
         );
-        assert_eq!(event.level, Level::Error);
+        assert_eq!(clean_event.level, Level::Error);
         assert_eq!(
-            event.tags.get("surface").map(String::as_str),
+            clean_event.tags.get("surface").map(String::as_str),
             Some("desktop")
         );
         assert_eq!(
-            event.tags.get("source").map(String::as_str),
+            clean_event.tags.get("source").map(String::as_str),
             Some("webview")
         );
         assert_eq!(
-            event.tags.get("component").map(String::as_str),
+            clean_event.tags.get("component").map(String::as_str),
             Some("SkillList")
         );
         assert_eq!(
-            event.tags.get("kind").map(String::as_str),
+            clean_event.tags.get("kind").map(String::as_str),
             Some("TypeError")
         );
-        assert!(event.exception.is_empty(), "no exception expected");
-        assert!(event.extra.is_empty(), "no extra expected");
-        for thread in &event.threads.values {
+        assert!(clean_event.exception.is_empty(), "no exception expected");
+        assert!(clean_event.extra.is_empty(), "no extra expected");
+        for thread in &clean_event.threads.values {
             if let Some(stacktrace) = &thread.stacktrace {
                 assert!(
                     stacktrace.frames.is_empty(),
@@ -871,21 +878,56 @@ mod tests {
                 );
             }
         }
+
+        let dirty_event = &events[1];
+        assert_eq!(
+            dirty_event.message.as_deref(),
+            Some("webview error in unknown: unknown")
+        );
+        assert_eq!(
+            dirty_event.tags.len(),
+            4,
+            "expected exactly surface, source, component, kind: {:?}",
+            dirty_event.tags
+        );
+        for key in ["surface", "source", "component", "kind"] {
+            assert!(
+                dirty_event.tags.contains_key(key),
+                "missing tag {key:?}: {:?}",
+                dirty_event.tags
+            );
+        }
+        assert_eq!(
+            dirty_event.tags.get("component").map(String::as_str),
+            Some("unknown")
+        );
+        assert_eq!(
+            dirty_event.tags.get("kind").map(String::as_str),
+            Some("unknown")
+        );
+        let serialized = serde_json::to_string(dirty_event).expect("serialize event");
+        assert!(
+            !serialized.contains("alice"),
+            "a path leaked into the dirty event: {serialized}"
+        );
     }
 
-    /// guards: `identifier_only` letting a path separator, a space, or an
-    /// over-long input survive into a tag.
+    /// guards: `identifier_only` filtering a non-identifier down to its
+    /// surviving letters instead of rejecting it outright - a path or a
+    /// sentence must become `"unknown"` wholesale, not
+    /// `Usersalice.claudeskillsmyskill`.
     #[test]
-    fn a_path_like_component_name_is_reduced_to_an_identifier() {
-        let reduced = identifier_only("/Users/x/skills/my skill");
-        assert!(!reduced.contains('/'), "a slash survived: {reduced:?}");
-        assert!(!reduced.contains(' '), "a space survived: {reduced:?}");
-
-        let long_input = "a".repeat(200);
-        assert_eq!(identifier_only(&long_input).len(), 64);
-
+    fn anything_but_a_bare_identifier_is_replaced_by_unknown() {
+        assert_eq!(identifier_only("/Users/alice/skills/my skill"), "unknown");
+        assert_eq!(
+            identifier_only("Cannot read properties of undefined"),
+            "unknown"
+        );
+        assert_eq!(identifier_only(&"a".repeat(65)), "unknown");
         assert_eq!(identifier_only(""), "unknown");
-        assert_eq!(identifier_only("///   "), "unknown");
+        assert_eq!(identifier_only("SkillList"), "SkillList");
+        assert_eq!(identifier_only("TypeError"), "TypeError");
+        assert_eq!(identifier_only("Foo.Bar$1"), "Foo.Bar$1");
     }
 
     /// guards: `report_frontend_error` forgetting the per-process cap - a

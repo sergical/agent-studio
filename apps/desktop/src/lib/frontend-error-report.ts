@@ -12,11 +12,14 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-// The first "at Name" or "in Name" token of React's componentStack, e.g.
-// "\n    at SkillList (http://localhost:1420/src/...)\n    at App" ->
-// "SkillList". "unknown" when the stack is absent or has no such token.
+// The function name of the first frame of React's componentStack, in either
+// shape the desktop app can see: V8's "    at Name (url)" / "    at Name",
+// and WKWebView/JavaScriptCore's "Name@url:line:col" - WKWebView copies
+// native frames as-is, with no "at " keyword, so a V8-only pattern never
+// matches there and every ErrorBoundary report would be tagged "unknown" in
+// the real app. "unknown" when the stack is absent or has no such frame.
 export function componentNameFromStack(componentStack: string | null | undefined): string {
-  const match = componentStack?.match(/\b(?:at|in)\s+([A-Za-z0-9_$.]+)/);
+  const match = componentStack?.match(/^\s*(?:at\s+)?([A-Za-z_$][\w$.]*)(?=\s*\(|@|\s*$)/m);
   return match?.[1] ?? "unknown";
 }
 
@@ -42,6 +45,16 @@ export function reportFrontendError(component: string, kind: string): void {
   if (reportCount >= SESSION_REPORT_CAP) return;
   reportCount += 1;
   void invoke("report_frontend_error", { component, kind }).catch(() => {});
+}
+
+// The body of `ErrorBoundary.componentDidCatch` (main.tsx), factored out so
+// a test can exercise the real path React calls rather than
+// `reportFrontendError` directly.
+export function reportBoundaryError(
+  cause: unknown,
+  info: { componentStack?: string | null },
+): void {
+  reportFrontendError(componentNameFromStack(info.componentStack), errorKind(cause));
 }
 
 // Test-only: resets the per-session counter to zero, so one test's cap
