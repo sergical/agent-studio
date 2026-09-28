@@ -122,6 +122,7 @@ pub async fn save_harnesses_choice(
             choice,
             error_reporting_enabled,
             &consent,
+            std::env::var("SKILL_STUDIO_TELEMETRY").ok(),
         )?;
         Ok(())
     })
@@ -137,13 +138,16 @@ pub async fn save_harnesses_choice(
 /// `set_harness_enabled_with`'s own guard parameter in
 /// `skill_harness_disable.rs`. Takes `Consent` the same way, so the
 /// first-run screen's telemetry choice takes effect without a restart the
-/// same way Settings' toggle does.
+/// same way Settings' toggle does. Takes `env_override` as a parameter,
+/// rather than reading `SKILL_STUDIO_TELEMETRY` itself, so a test can drive
+/// `resolve_consent`'s env-off case without touching the real process env.
 fn save_harnesses_choice_at(
     write_lease: &super::write_lease::WriteLease,
     home: &std::path::Path,
     choice: HarnessesChoice,
     error_reporting_enabled: bool,
     consent: &skill_studio_host::telemetry::Consent,
+    env_override: Option<String>,
 ) -> Result<(), String> {
     let guard = write_lease.try_acquire(home)?;
     let mut registry = super::skill_fork_registry::read_fork_registry(home)?;
@@ -151,7 +155,7 @@ fn save_harnesses_choice_at(
     registry.error_reporting_enabled = error_reporting_enabled;
     super::skill_fork_registry::write_fork_registry_locked(&guard, home, &registry)?;
     consent.set(skill_studio_host::telemetry::resolve_consent(
-        std::env::var("SKILL_STUDIO_TELEMETRY").ok(),
+        env_override,
         error_reporting_enabled,
     ));
     Ok(())
@@ -317,6 +321,7 @@ mod tests {
             },
             false,
             &consent,
+            None,
         )
         .unwrap();
         let after_off = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
@@ -335,6 +340,7 @@ mod tests {
             },
             true,
             &consent,
+            None,
         )
         .unwrap();
         let after_on = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();

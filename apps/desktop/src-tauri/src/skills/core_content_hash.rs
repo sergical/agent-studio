@@ -59,13 +59,10 @@ pub fn live_skill_content_hash_controlled(
 ) -> Result<String, String> {
     control.check_message()?;
     let fs = skill_studio_host::RealFs::new();
-    let ctx = OpContext {
-        correlation_id: CorrelationId("desktop-content-hash".into()),
-        cancel: Arc::new(ControlCancelToken(control.clone())),
-        timing: std::sync::Mutex::new(None),
-        depth: std::sync::atomic::AtomicUsize::new(0),
-        nested: std::sync::Mutex::new(Vec::new()),
-    };
+    let ctx = OpContext::with_cancel(
+        CorrelationId("desktop-content-hash".into()),
+        Arc::new(ControlCancelToken(control.clone())),
+    );
     skill_content_hash(&fs, &ctx, skill_dir).map_err(|err| {
         if err.code == skill_studio_core::error::ErrorCode::Cancelled {
             // Core only reports `Cancelled` because it observed `control`

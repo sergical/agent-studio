@@ -862,6 +862,15 @@ pub struct NestedOp {
     pub outcome: OpOutcome,
     /// Elapsed time and step timings this nested call filed.
     pub timing: crate::timing::OpTiming,
+    /// How many `run` calls this one is nested under: `1` for an op the
+    /// top-level op's own body called directly, `2` for one a depth-1 op's
+    /// body called, and so on.
+    pub depth: usize,
+    /// Milliseconds from the top-level run's start to this nested run's
+    /// start, from `ports.clock` - what an adapter needs to place this
+    /// [`NestedOp`]'s span at its real offset under its real parent instead
+    /// of laying every nested op end to end after the root's own steps.
+    pub offset_ms: u64,
 }
 
 /// What one operation run looked like. Built only from typed fields: no free
@@ -992,22 +1001,39 @@ pub struct OpContext {
     pub timing: std::sync::Mutex<Option<crate::timing::OpTiming>>,
     /// How many [`Runtime::run`] calls are currently nested through this
     /// context - `0` outside any call, `1` for a top-level op, `2+` for an
-    /// op called from inside another op's own body.
-    pub depth: std::sync::atomic::AtomicUsize,
+    /// op called from inside another op's own body. Not `pub`: only
+    /// [`Runtime::run`] may raise or lower it, so nothing outside this
+    /// module can desync it from `nested`.
+    pub(crate) depth: std::sync::atomic::AtomicUsize,
     /// [`NestedOp`]s a top-level [`Runtime::run`] call has collected so far
-    /// from ops its own body called through this same context.
-    pub nested: std::sync::Mutex<Vec<NestedOp>>,
+    /// from ops its own body called through this same context. Not `pub`
+    /// for the same reason as `depth`.
+    pub(crate) nested: std::sync::Mutex<Vec<NestedOp>>,
+    /// The top-level run's `ports.clock.monotonic()` start, set when
+    /// `depth` goes `0` -> `1` and cleared when it returns to `0`. A nested
+    /// run reads this to compute its own [`NestedOp::offset_ms`].
+    pub(crate) root_start: std::sync::Mutex<Option<Duration>>,
 }
 
 impl OpContext {
     /// A context that cannot be cancelled.
     pub fn uncancellable(correlation_id: CorrelationId) -> Self {
+        OpContext::with_cancel(correlation_id, Arc::new(NeverCancel))
+    }
+
+    /// A context cancelled through `cancel`, for a caller that has its own
+    /// [`CancelToken`] to bridge (e.g. the desktop's `AddOperationControl`)
+    /// rather than [`NeverCancel`]. The struct's fields besides
+    /// `correlation_id` and `cancel` are `pub(crate)`, so this - not a
+    /// struct literal - is how code outside this crate builds one.
+    pub fn with_cancel(correlation_id: CorrelationId, cancel: Arc<dyn CancelToken>) -> Self {
         OpContext {
             correlation_id,
-            cancel: Arc::new(NeverCancel),
+            cancel,
             timing: std::sync::Mutex::new(None),
             depth: std::sync::atomic::AtomicUsize::new(0),
             nested: std::sync::Mutex::new(Vec::new()),
+            root_start: std::sync::Mutex::new(None),
         }
     }
 
@@ -1106,12 +1132,28 @@ impl Runtime {
     ) -> Result<T, CoreError> {
         let clock = self.ports.clock.as_ref();
         let start = clock.monotonic();
-        // A stale timing left by an earlier op run through this same `ctx`
-        // must never be attributed to this one.
-        ctx.take_timing();
-        ctx.depth.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let depth_before = ctx.depth.load(std::sync::atomic::Ordering::SeqCst);
+        if depth_before == 0 {
+            *ctx.root_start
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(start);
+        }
+        // A timing filed through `ctx` before this call started - either a
+        // stale one left by an unrelated earlier op (`depth_before == 0`) or
+        // the enclosing body's own timing, filed before it called us
+        // (`depth_before > 0`) - must never be attributed to this call.
+        // `saved` restores the latter after we're done; the former is
+        // simply dropped.
+        let saved = ctx.take_timing();
+        let depth_guard = DepthGuard::enter(ctx);
         let result = body();
-        let depth_after = ctx.depth.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
+        // Ends `depth_guard`'s raise deterministically here (not at `run`'s
+        // natural scope end) so `depth_after` below reflects the drop that
+        // already ran - including on the panic path, where `body()` never
+        // returns and this line never executes, but the guard's `Drop` still
+        // fires while the stack unwinds through this frame.
+        drop(depth_guard);
+        let depth_after = ctx.depth.load(std::sync::atomic::Ordering::SeqCst);
 
         let filed = ctx.take_timing();
         let mut timing = filed.unwrap_or_else(|| crate::timing::OpTiming {
@@ -1141,13 +1183,60 @@ impl Runtime {
             // (every CLI/MCP surface) still finds it.
             ctx.record_timing(timing);
         } else {
+            let root_start = ctx
+                .root_start
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or(start);
             ctx.push_nested(NestedOp {
                 operation,
                 outcome,
                 timing,
+                depth: depth_before,
+                offset_ms: start.saturating_sub(root_start).as_millis() as u64,
             });
+            // Puts the enclosing body's own timing (filed before it called
+            // us) back, so it survives this nested call the way it would if
+            // the call had never happened.
+            if let Some(saved) = saved {
+                ctx.record_timing(saved);
+            }
         }
         result
+    }
+}
+
+/// Raises [`OpContext::depth`] by one for the lifetime of the guard, and
+/// lowers it again - clearing `root_start` too, once it returns to `0` -
+/// on drop, whether that drop is [`Runtime::run`] finishing normally or a
+/// panic in `body` unwinding through it. Without this, a panicking body
+/// would leave `depth` permanently raised, wrongly nesting every later call
+/// through the same `ctx`.
+struct DepthGuard<'a> {
+    ctx: &'a OpContext,
+}
+
+impl<'a> DepthGuard<'a> {
+    fn enter(ctx: &'a OpContext) -> Self {
+        ctx.depth.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        DepthGuard { ctx }
+    }
+}
+
+impl Drop for DepthGuard<'_> {
+    fn drop(&mut self) {
+        let depth_after = self
+            .ctx
+            .depth
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+            - 1;
+        if depth_after == 0 {
+            *self
+                .ctx
+                .root_start
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
     }
 }
 

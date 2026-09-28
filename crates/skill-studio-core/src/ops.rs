@@ -7101,17 +7101,23 @@ mod tests {
         use crate::ports::{OpOutcome, Ports};
         use crate::testing::{
             FakeClock, FakeIds, FakeLease, NoHistory, RecordingSink, RecordingTelemetry,
+            TickingClock,
         };
         use std::sync::Arc;
         use std::time::Duration;
 
+        // Ticks by 1ms on every `monotonic()` read, so every test below that
+        // asserts on `elapsed_ms`/`offset_ms` fails if the code under test
+        // stops calling the clock, instead of trivially passing against a
+        // clock frozen at `0` - see spec item 2, "tests that cannot fail
+        // today".
         fn runtime_with(
             fs: crate::testing::FixtureFs,
             telemetry: Arc<RecordingTelemetry>,
         ) -> Runtime {
             let ports = Ports {
                 fs: Arc::new(fs),
-                clock: Arc::new(FakeClock::at(0)),
+                clock: Arc::new(TickingClock::at(0)),
                 ids: Arc::new(FakeIds::default()),
                 leases: Arc::new(FakeLease::default()),
                 history: Arc::new(NoHistory),
@@ -7303,6 +7309,38 @@ mod tests {
                 vec![Operation::Scan, Operation::Diagnose],
                 "doctor's body calls diagnose, which itself calls scan, in that order"
             );
+            // `doctor_body` calls `diagnose` directly (depth 1); `diagnose_body`
+            // calls `scan` (depth 2). `nested` is post-order, so `Scan` (the
+            // one that finishes first) is reported before its own parent,
+            // `Diagnose`.
+            let depths: Vec<usize> = record.nested.iter().map(|n| n.depth).collect();
+            assert_eq!(
+                depths,
+                vec![2, 1],
+                "scan is nested two deep under doctor (via diagnose); diagnose is nested one deep"
+            );
+            for nested in &record.nested {
+                assert!(
+                    nested.offset_ms + nested.timing.elapsed_ms <= record.timing.elapsed_ms,
+                    "a nested op must start and finish inside the root's own elapsed time: {nested:?}"
+                );
+            }
+            let scan = record
+                .nested
+                .iter()
+                .find(|n| n.operation == Operation::Scan)
+                .expect("scan present");
+            let diagnose = record
+                .nested
+                .iter()
+                .find(|n| n.operation == Operation::Diagnose)
+                .expect("diagnose present");
+            assert!(
+                scan.offset_ms >= diagnose.offset_ms,
+                "scan starts no earlier than its parent diagnose: scan={}, diagnose={}",
+                scan.offset_ms,
+                diagnose.offset_ms
+            );
         }
 
         #[test]
@@ -7414,6 +7452,8 @@ mod tests {
             );
             let record = &records[0];
             assert_eq!(record.operation, Operation::UpdateAll);
+            // Derived from the fixture, not from a run: two installed skills
+            // means two `update` calls in `update_all`'s loop.
             let update_count = record
                 .nested
                 .iter()
@@ -7421,6 +7461,10 @@ mod tests {
                 .count();
             assert_eq!(update_count, 2, "one nested Update per skill in the batch");
             let nested_sum: u64 = record.nested.iter().map(|n| n.timing.elapsed_ms).sum();
+            assert!(
+                record.timing.elapsed_ms > 0,
+                "the ticking clock must have advanced across the whole loop"
+            );
             assert!(
                 record.timing.elapsed_ms >= nested_sum,
                 "the root's elapsed time must cover every nested call's own elapsed time"
@@ -7443,16 +7487,84 @@ mod tests {
                 }],
             });
 
-            scan(&rt, &ctx, &ScanRequest::default()).unwrap();
+            // A body that files no timing of its own: without the fix,
+            // `Runtime::run` would leave the planted `install` timing in
+            // `ctx` untouched and attribute it to this `doctor` call.
+            rt.run(Operation::Doctor, &ctx, || Ok(())).unwrap();
 
             let records = telemetry.records();
             assert_eq!(records.len(), 1);
             let record = &records[0];
-            assert_eq!(record.timing.op, "scan");
+            assert_eq!(record.timing.op, "doctor");
             assert!(
-                record.timing.steps.iter().all(|s| s.name != "planted"),
-                "the planted step from the earlier install must not leak into scan's timing"
+                record.timing.steps.is_empty(),
+                "the planted install timing must not leak into this call's timing"
             );
+        }
+
+        #[test]
+        fn a_timing_filed_before_a_nested_call_survives_it() {
+            let fs = FixtureBuilder::new().dir("/h").build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-survives".into()));
+
+            rt.run(Operation::Doctor, &ctx, || {
+                let clock = rt.ports.clock.as_ref();
+                let step_start = clock.monotonic();
+                let step = crate::timing::step(clock, "before_nested", step_start);
+                ctx.record_timing(crate::timing::OpTiming {
+                    op: "doctor".to_string(),
+                    elapsed_ms: step.elapsed_ms,
+                    steps: vec![step],
+                });
+                rt.run(Operation::Scan, &ctx, || Ok(()))?;
+                Ok(())
+            })
+            .unwrap();
+
+            let records = telemetry.records();
+            assert_eq!(records.len(), 1);
+            let record = &records[0];
+            assert_eq!(record.timing.op, "doctor");
+            assert!(
+                record
+                    .timing
+                    .steps
+                    .iter()
+                    .any(|s| s.name == "before_nested"),
+                "the step the body filed before calling the nested op must survive it"
+            );
+            let nested_ops: Vec<Operation> = record.nested.iter().map(|n| n.operation).collect();
+            assert_eq!(nested_ops, vec![Operation::Scan]);
+        }
+
+        #[test]
+        fn a_panic_inside_a_body_does_not_leave_the_context_nested() {
+            let fs = FixtureBuilder::new().dir("/h").build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-panic".into()));
+
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                rt.run(Operation::Scan, &ctx, || -> Result<(), CoreError> {
+                    panic!("boom")
+                })
+            }));
+            assert!(panicked.is_err(), "the panic must propagate out of run");
+
+            // If `depth` were left raised by the panic, this call would be
+            // (wrongly) treated as nested and record nothing of its own.
+            rt.run(Operation::Doctor, &ctx, || Ok(())).unwrap();
+
+            let records = telemetry.records();
+            assert_eq!(
+                records.len(),
+                1,
+                "the call after the panic must record once, on its own"
+            );
+            assert_eq!(records[0].operation, Operation::Doctor);
+            assert!(records[0].nested.is_empty());
         }
     }
 }

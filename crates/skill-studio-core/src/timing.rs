@@ -44,8 +44,11 @@ pub struct OpTiming {
 }
 
 /// Measures one named section: `since` is an earlier `clock.monotonic()`
-/// reading taken where the section started.
-pub fn step(clock: &dyn Clock, name: &str, since: Duration) -> StepTiming {
+/// reading taken where the section started. `name` takes only `&'static
+/// str`, not `&str`, so every call site is a literal a reader can grep for -
+/// the same guarantee `StepTiming.name` (kept as `String` for `timing.jsonl`)
+/// cannot make by itself.
+pub fn step(clock: &dyn Clock, name: &'static str, since: Duration) -> StepTiming {
     StepTiming {
         name: name.to_string(),
         elapsed_ms: clock.monotonic().saturating_sub(since).as_millis() as u64,

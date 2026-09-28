@@ -124,7 +124,7 @@ mod tests {
         super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
         let consent = Consent::new(true);
 
-        set_error_reporting_enabled_at(&home, false, &consent).unwrap();
+        set_error_reporting_enabled_at_with(&home, false, &consent, None).unwrap();
 
         assert!(
             !consent.enabled(),

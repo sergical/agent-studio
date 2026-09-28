@@ -43,13 +43,7 @@ fn skill_content_hash_fails_cancelled_instead_of_hashing() {
         telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
     };
     let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
-    let ctx = OpContext {
-        correlation_id: CorrelationId("cancelled".into()),
-        cancel: Arc::new(AlwaysCancel),
-        timing: std::sync::Mutex::new(None),
-        depth: std::sync::atomic::AtomicUsize::new(0),
-        nested: std::sync::Mutex::new(Vec::new()),
-    };
+    let ctx = OpContext::with_cancel(CorrelationId("cancelled".into()), Arc::new(AlwaysCancel));
 
     let err = ops::skill_content_hash(
         rt.ports.fs.as_ref(),

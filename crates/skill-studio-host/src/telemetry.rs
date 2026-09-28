@@ -442,6 +442,44 @@ fn step_spans(
     spans
 }
 
+/// The `skill.op` span's `parent_span_id` for `nested[i]`: `nested` is
+/// post-order (a call finishes, and is pushed, before the call that made it
+/// returns), so the parent of an entry at `depth > 1` is the *first* later
+/// entry one depth shallower - the nearest enclosing call still open when
+/// this one finished. An entry at `depth <= 1` (or one whose parent never
+/// turns up, which [`NestedOp::depth`]'s own invariant says can't happen)
+/// parents directly on the root, the same fallback [`step_spans`] uses for
+/// an unresolved `StepTiming::parent`.
+fn nested_parent_span_id(
+    nested: &[NestedOp],
+    span_ids: &[sentry::protocol::SpanId],
+    i: usize,
+    root_span_id: sentry::protocol::SpanId,
+) -> sentry::protocol::SpanId {
+    let depth = nested[i].depth;
+    if depth <= 1 {
+        return root_span_id;
+    }
+    nested[i + 1..]
+        .iter()
+        .position(|n| n.depth == depth - 1)
+        .map_or(root_span_id, |rel| span_ids[i + 1 + rel])
+}
+
+/// Clamps every span's end to `transaction_end` (a nested op reporting more
+/// elapsed time than its parent's own `elapsed_ms` covers, or a clock
+/// anomaly, must never make a span outlive the transaction that contains
+/// it), then clamps its start to that (possibly just-clamped) end, so a
+/// clamped span never reports negative duration either.
+fn clamp_spans_to_transaction(spans: &mut [Span], transaction_end: SystemTime) {
+    for span in spans {
+        let Some(end) = span.timestamp else { continue };
+        let clamped_end = end.min(transaction_end);
+        span.timestamp = Some(clamped_end);
+        span.start_timestamp = span.start_timestamp.min(clamped_end);
+    }
+}
+
 impl Telemetry for SentryTelemetry {
     fn record(&self, record: OpRecord) {
         let ok = matches!(record.outcome, OpOutcome::Ok);
@@ -458,31 +496,36 @@ impl Telemetry for SentryTelemetry {
             root_span_id,
             start_timestamp,
         );
-        // Own top-level steps run first; nested ops run end-to-end after
-        // them, each as one `skill.op` span with its own steps nested
-        // inside it, in the order `Runtime::run` pushed them.
-        let own_top_level: Duration = record
-            .timing
-            .steps
+        // Each nested op gets its own span id up front so an entry earlier
+        // in the post-order list can name a later one as its parent.
+        let nested_span_ids: Vec<sentry::protocol::SpanId> = record
+            .nested
             .iter()
-            .filter(|s| s.parent.is_none())
-            .map(|s| Duration::from_millis(s.elapsed_ms))
-            .sum();
-        let mut nested_offset = own_top_level;
-        for NestedOp {
-            operation,
-            outcome,
-            timing,
-        } in &record.nested
-        {
+            .map(|_| sentry::protocol::SpanId::default())
+            .collect();
+        for (i, nested_op) in record.nested.iter().enumerate() {
+            let NestedOp {
+                operation,
+                outcome,
+                timing,
+                depth: _,
+                offset_ms,
+            } = nested_op;
             let nested_ok = matches!(outcome, OpOutcome::Ok);
             let nested_elapsed = Duration::from_millis(timing.elapsed_ms);
-            let nested_start = start_timestamp + nested_offset;
-            let nested_span_id = sentry::protocol::SpanId::default();
+            // Placed at its real offset from the transaction's own start -
+            // not end to end after the root's own steps - so a `doctor`
+            // transaction's nested `scan` span sits where `diagnose` (its
+            // real parent) actually called it, not stacked past the
+            // transaction's own end.
+            let nested_start = start_timestamp + Duration::from_millis(*offset_ms);
+            let nested_span_id = nested_span_ids[i];
+            let parent_span_id =
+                nested_parent_span_id(&record.nested, &nested_span_ids, i, root_span_id);
             spans.push(Span {
                 span_id: nested_span_id,
                 trace_id,
-                parent_span_id: Some(root_span_id),
+                parent_span_id: Some(parent_span_id),
                 op: Some("skill.op".to_string()),
                 description: Some(operation_name(*operation)),
                 start_timestamp: nested_start,
@@ -496,8 +539,8 @@ impl Telemetry for SentryTelemetry {
                 nested_span_id,
                 nested_start,
             ));
-            nested_offset += nested_elapsed;
         }
+        clamp_spans_to_transaction(&mut spans, timestamp);
 
         let error_code = match &record.outcome {
             OpOutcome::Err { code } => Some(code.as_str()),
@@ -621,16 +664,19 @@ pub fn consent_from_registry(home: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// `SKILL_STUDIO_TELEMETRY=0|1` (also `"false"`/`"true"`) overrides the
-/// registry value; any other string, or no variable at all, leaves the
-/// registry's value untouched.
+/// `SKILL_STUDIO_TELEMETRY=0` (also `"false"`, either case, trimmed) forces
+/// telemetry off regardless of the registry. The in-app switch is the only
+/// way to turn telemetry on, so any other value, or no variable at all,
+/// leaves the registry's value untouched.
 // `env_override` takes ownership, not a borrow, to match every call site
 // (`std::env::var(..).ok()`) and the CLI/MCP/desktop's shared call shape.
 #[allow(clippy::needless_pass_by_value)]
 pub fn resolve_consent(env_override: Option<String>, registry: bool) -> bool {
-    match env_override.as_deref() {
-        Some("1" | "true") => true,
-        Some("0" | "false") => false,
+    match env_override
+        .as_deref()
+        .map(|v| v.trim().to_ascii_lowercase())
+    {
+        Some(v) if v == "0" || v == "false" => false,
         _ => registry,
     }
 }
@@ -836,6 +882,9 @@ mod tests {
                     },
                 ],
             },
+            depth: 1,
+            // Starts right after `doctor`'s own three steps (60ms).
+            offset_ms: 60,
         }];
         let envelopes = sentry::test::with_captured_envelopes(|| {
             telemetry().record(record);
@@ -936,16 +985,233 @@ mod tests {
         }
     }
 
+    /// guards: a nested op laid end to end after the root's own steps
+    /// instead of at its real `offset_ms` - `diagnose`'s own steps (`scan`,
+    /// `derive_issues`) take 110ms total, but the nested `Scan` it wraps
+    /// actually starts at the transaction's own start (`offset_ms: 0`), not
+    /// after them.
+    #[test]
+    fn a_diagnose_shaped_record_keeps_the_nested_scan_inside_the_transaction() {
+        let mut record = OpRecord {
+            operation: Operation::Diagnose,
+            correlation_id: CorrelationId("c-diagnose".into()),
+            outcome: OpOutcome::Ok,
+            timing: OpTiming {
+                op: "diagnose".to_string(),
+                elapsed_ms: 110,
+                steps: vec![
+                    StepTiming {
+                        name: "scan".into(),
+                        elapsed_ms: 100,
+                        parent: None,
+                    },
+                    StepTiming {
+                        name: "derive_issues".into(),
+                        elapsed_ms: 10,
+                        parent: None,
+                    },
+                ],
+            },
+            nested: Vec::new(),
+        };
+        record.nested = vec![NestedOp {
+            operation: Operation::Scan,
+            outcome: OpOutcome::Ok,
+            timing: OpTiming {
+                op: "scan".to_string(),
+                elapsed_ms: 99,
+                steps: vec![StepTiming {
+                    name: "roots_walk".into(),
+                    elapsed_ms: 90,
+                    parent: None,
+                }],
+            },
+            depth: 1,
+            offset_ms: 0,
+        }];
+        let envelopes = sentry::test::with_captured_envelopes(|| {
+            telemetry().record(record);
+        });
+        let transaction = transaction_from(&envelopes[0]);
+        let transaction_end = transaction.timestamp.expect("transaction timestamp");
+
+        let scan_span = transaction
+            .spans
+            .iter()
+            .find(|s| s.op.as_deref() == Some("skill.op"))
+            .expect("nested scan span present");
+        assert_eq!(
+            scan_span.start_timestamp, transaction.start_timestamp,
+            "the nested scan starts at T0, not after diagnose's own steps"
+        );
+        let scan_end = scan_span.timestamp.expect("scan span timestamp");
+        assert_eq!(
+            scan_end,
+            transaction.start_timestamp + Duration::from_millis(99),
+            "the nested scan ends at T0 + 99ms"
+        );
+
+        let roots_walk = transaction
+            .spans
+            .iter()
+            .find(|s| s.description.as_deref() == Some("roots_walk"))
+            .expect("roots_walk span present");
+        assert!(
+            roots_walk.timestamp.expect("timestamp") <= scan_end,
+            "the nested scan's own step ends at or before the nested scan itself"
+        );
+
+        for span in &transaction.spans {
+            assert!(
+                span.timestamp.expect("span timestamp") <= transaction_end,
+                "every span must end at or before the transaction end"
+            );
+        }
+    }
+
+    /// guards: every nested op parented on the root instead of on the op
+    /// that actually called it - `doctor` calls `diagnose` (depth 1), whose
+    /// own body calls `scan` (depth 2), so `Scan`'s `skill.op` span must
+    /// nest under `Diagnose`'s, not sit as a sibling of it.
+    #[test]
+    fn a_doctor_shaped_record_parents_scan_under_diagnose() {
+        let mut record = three_step_record("doctor");
+        record.operation = Operation::Doctor;
+        record.timing.elapsed_ms = 100;
+        // Post-order, matching `Runtime::run`'s push order: `Scan` (depth 2)
+        // finishes, and is pushed, before `Diagnose` (depth 1) returns.
+        record.nested = vec![
+            NestedOp {
+                operation: Operation::Scan,
+                outcome: OpOutcome::Ok,
+                timing: OpTiming {
+                    op: "scan".to_string(),
+                    elapsed_ms: 5,
+                    steps: Vec::new(),
+                },
+                depth: 2,
+                offset_ms: 1,
+            },
+            NestedOp {
+                operation: Operation::Diagnose,
+                outcome: OpOutcome::Ok,
+                timing: OpTiming {
+                    op: "diagnose".to_string(),
+                    elapsed_ms: 10,
+                    steps: Vec::new(),
+                },
+                depth: 1,
+                offset_ms: 0,
+            },
+        ];
+        let envelopes = sentry::test::with_captured_envelopes(|| {
+            telemetry().record(record);
+        });
+        let transaction = transaction_from(&envelopes[0]);
+        let root_span_id = transaction
+            .contexts
+            .get("trace")
+            .and_then(|context| match context {
+                Context::Trace(trace) => Some(trace.span_id),
+                _ => None,
+            })
+            .expect("trace context missing");
+
+        let scan_span = transaction
+            .spans
+            .iter()
+            .find(|s| s.description.as_deref() == Some("scan"))
+            .expect("scan span present");
+        let diagnose_span = transaction
+            .spans
+            .iter()
+            .find(|s| s.description.as_deref() == Some("diagnose"))
+            .expect("diagnose span present");
+
+        assert_eq!(
+            scan_span.parent_span_id,
+            Some(diagnose_span.span_id),
+            "scan must be parented on diagnose, its real caller"
+        );
+        assert_eq!(
+            diagnose_span.parent_span_id,
+            Some(root_span_id),
+            "diagnose must be parented on the root, its real caller"
+        );
+    }
+
+    /// guards: a nested op whose offset plus elapsed time overruns the
+    /// transaction ending up with a span that outlives the transaction
+    /// instead of being clamped to it.
+    #[test]
+    fn a_span_that_would_overrun_is_clamped_to_the_transaction_end() {
+        let mut record = three_step_record("doctor");
+        record.operation = Operation::Doctor;
+        record.timing.elapsed_ms = 110;
+        record.nested = vec![NestedOp {
+            operation: Operation::Scan,
+            outcome: OpOutcome::Ok,
+            timing: OpTiming {
+                op: "scan".to_string(),
+                elapsed_ms: 100,
+                steps: Vec::new(),
+            },
+            depth: 1,
+            offset_ms: 50,
+        }];
+        let envelopes = sentry::test::with_captured_envelopes(|| {
+            telemetry().record(record);
+        });
+        let transaction = transaction_from(&envelopes[0]);
+        let transaction_end = transaction.timestamp.expect("transaction timestamp");
+
+        let scan_span = transaction
+            .spans
+            .iter()
+            .find(|s| s.op.as_deref() == Some("skill.op"))
+            .expect("nested scan span present");
+        assert_eq!(
+            scan_span.timestamp,
+            Some(transaction_end),
+            "an overrunning span must end at the transaction end, not after"
+        );
+        assert!(
+            scan_span.start_timestamp <= transaction_end,
+            "a clamped span's start must not be pushed past its own clamped end"
+        );
+    }
+
     /// guards: `record`'s typed-fields-only shape - the type itself, not a
     /// redaction pass, is what keeps a path or a skill name out, since no
-    /// field on `OpRecord` sends free text into the transaction. The
-    /// sentinel lives in `correlation_id`, the one string field `OpRecord`
-    /// does carry, to prove it never leaves the SDK's own envelope either.
+    /// field on `OpRecord` sends free text into the transaction. Every
+    /// string field `OpRecord` carries can hold arbitrary text at the type
+    /// level - `correlation_id`, `timing.op`, each `nested[].timing.op`,
+    /// and each `steps[].parent` - so the sentinel goes in all of them,
+    /// including a step whose `parent` names no real sibling, to prove the
+    /// adapter treats that as "no parent found" (lays the step at the
+    /// root) rather than ever writing the string itself into a span.
     #[test]
     fn a_transaction_carries_only_op_and_step_names_outcome_and_error_code() {
         const SENTINEL: &str = "sentinel-correlation-/Users/x/.claude/skills/my-skill";
         let mut record = three_step_record("scan");
         record.correlation_id = CorrelationId(SENTINEL.to_string());
+        record.timing.op = SENTINEL.to_string();
+        record.timing.steps.push(StepTiming {
+            name: "orphan_step".into(),
+            elapsed_ms: 5,
+            parent: Some(SENTINEL.to_string()),
+        });
+        record.nested = vec![NestedOp {
+            operation: Operation::Diagnose,
+            outcome: OpOutcome::Ok,
+            timing: OpTiming {
+                op: SENTINEL.to_string(),
+                elapsed_ms: 5,
+                steps: Vec::new(),
+            },
+            depth: 1,
+            offset_ms: 0,
+        }];
         let envelopes = sentry::test::with_captured_envelopes(|| {
             telemetry().record(record);
         });
@@ -954,12 +1220,21 @@ mod tests {
         let serialized = String::from_utf8_lossy(&bytes);
 
         assert!(serialized.contains("skill.scan"), "op name must be present");
-        for step in ["read_roots", "read_skills", "build_inventory"] {
+        for step in [
+            "read_roots",
+            "read_skills",
+            "build_inventory",
+            "orphan_step",
+        ] {
             assert!(
                 serialized.contains(step),
                 "step name {step} must be present"
             );
         }
+        assert!(
+            serialized.contains("diagnose"),
+            "nested op name must be present"
+        );
         assert!(serialized.contains("outcome"));
         assert!(serialized.contains("\"ok\""));
         assert!(
@@ -1007,25 +1282,31 @@ mod tests {
         );
     }
 
-    /// guards: the env override losing to the registry, or an unrecognized
-    /// override string silently disabling telemetry instead of falling
-    /// back to the registry.
+    /// guards: an env override of `"1"`/`"true"` forcing telemetry on over
+    /// the in-app switch's "off", or `"0"`/`"false"` failing to turn it off
+    /// regardless of case or surrounding whitespace.
     #[test]
-    fn the_env_override_wins_over_the_registry_and_an_unrecognized_value_falls_back_to_it() {
+    fn the_env_override_can_only_turn_telemetry_off() {
         let cases: &[(Option<&str>, bool, bool)] = &[
             (Some("0"), true, false),
-            (Some("1"), false, true),
+            (Some("0"), false, false),
             (Some("false"), true, false),
-            (Some("true"), false, true),
-            (None, true, true),
-            (None, false, false),
-            // Not a recognized override string, so the registry decides.
+            (Some("false"), false, false),
+            (Some("FALSE"), true, false),
+            (Some("FALSE"), false, false),
+            (Some(" 0 "), true, false),
+            (Some(" 0 "), false, false),
+            // Never a way to force telemetry on; the registry still decides.
+            (Some("1"), true, true),
+            (Some("1"), false, false),
+            (Some("true"), true, true),
+            (Some("true"), false, false),
             (Some("yes"), true, true),
             (Some("yes"), false, false),
             (Some(""), true, true),
             (Some(""), false, false),
-            (Some("TRUE"), true, true),
-            (Some("TRUE"), false, false),
+            (None, true, true),
+            (None, false, false),
         ];
         for (env, registry, expected) in cases {
             let actual = resolve_consent(env.map(str::to_string), *registry);

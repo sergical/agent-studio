@@ -1298,6 +1298,37 @@ impl Clock for FakeClock {
     }
 }
 
+/// A clock whose `monotonic()` advances by one millisecond on every read -
+/// so a telemetry test's `elapsed_ms`/`offset_ms` assertions are always
+/// strictly positive and distinct without the test threading its own
+/// `advance` calls through the op body under test, the way [`FakeClock`]
+/// requires.
+#[derive(Debug)]
+pub struct TickingClock {
+    now_ms: AtomicU64,
+}
+
+impl TickingClock {
+    /// Starts at the given epoch milliseconds.
+    pub fn at(epoch_ms: u64) -> Self {
+        TickingClock {
+            now_ms: AtomicU64::new(epoch_ms),
+        }
+    }
+}
+
+impl Clock for TickingClock {
+    fn now(&self) -> DateTime<Utc> {
+        Utc.timestamp_millis_opt(self.now_ms.load(Ordering::SeqCst) as i64)
+            .single()
+            .unwrap_or_else(Utc::now)
+    }
+
+    fn monotonic(&self) -> Duration {
+        Duration::from_millis(self.now_ms.fetch_add(1, Ordering::SeqCst))
+    }
+}
+
 /// Sequential, sortable fake ids (`01FAKE...000001`).
 #[derive(Debug, Default)]
 pub struct FakeIds {
