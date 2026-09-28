@@ -325,7 +325,9 @@ pub fn fork_snapshot_dir(app_data: &Path, name: &str) -> PathBuf {
 /// forward and a file an rc build rewrote after this build (both keys
 /// present) still reads.
 fn migrate_rc_telemetry_key(document: &mut serde_json::Map<String, serde_json::Value>) {
-    let Some(old) = document.remove("error_reporting_enabled") else {
+    // `shift_remove`, not `remove`: with `preserve_order` a plain `remove`
+    // swaps the last key into the hole and reorders the user's file.
+    let Some(old) = document.shift_remove("error_reporting_enabled") else {
         return;
     };
     document.entry("telemetry_enabled").or_insert(old);
@@ -344,12 +346,18 @@ pub fn read_fork_registry(home: &Path) -> Result<ForkRegistry, String> {
     };
     let malformed =
         || "~/.agents/skill-studio.json is malformed; fix or move it, then try again".to_string();
-    let mut document: serde_json::Value =
-        serde_json::from_str(&content).map_err(|_| malformed())?;
-    if let Some(map) = document.as_object_mut() {
-        migrate_rc_telemetry_key(map);
+    let registry: ForkRegistry = serde_json::from_str(&content).map_err(|_| malformed())?;
+    if !registry.unknown.contains_key("error_reporting_enabled") {
+        return Ok(registry);
     }
-    serde_json::from_value(document).map_err(|_| malformed())
+    // Only a file that still holds the rc key takes the second pass: read as
+    // a map, where the new key's presence is visible, then migrate. The
+    // direct parse above stays the common path and keeps serde's rejection
+    // of a duplicated known key, which a `Value` parse would collapse.
+    let mut document: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&content).map_err(|_| malformed())?;
+    migrate_rc_telemetry_key(&mut document);
+    serde_json::from_value(serde_json::Value::Object(document)).map_err(|_| malformed())
 }
 
 /// `read_fork_registry`, but for read-only snapshot/candidate building: an
@@ -818,7 +826,7 @@ mod tests {
         // and it writes its own `error_reporting_enabled` alongside it.
         std::fs::write(
             tmp.path().join(".agents/skill-studio.json"),
-            r#"{"version":4,"write_version":0,"telemetry_enabled":true,"error_reporting_enabled":false}"#,
+            r#"{"version":4,"write_version":0,"telemetry_enabled":false,"error_reporting_enabled":true,"trials":{},"later_key":1}"#,
         )
         .unwrap();
 
@@ -829,8 +837,13 @@ mod tests {
         );
         let reg = reg.unwrap();
         assert!(
-            reg.telemetry_enabled,
-            "when both keys exist, the new key is the one this build wrote and it wins"
+            !reg.telemetry_enabled,
+            "when both keys exist the new key wins; an OR merge would reopen consent from the old key"
+        );
+        assert_eq!(
+            reg.unknown.keys().collect::<Vec<_>>(),
+            ["trials", "later_key"],
+            "dropping the old key must not reorder the other unknown keys"
         );
 
         write_fork_registry(tmp.path(), &reg).unwrap();
@@ -839,6 +852,19 @@ mod tests {
         assert!(
             !content.contains("error_reporting_enabled"),
             "a rewrite must drop the old key even when both were present: {content}"
+        );
+
+        // An rc opt-out under the old key alone must stay off, not be
+        // replaced by a hard-coded true.
+        std::fs::write(
+            tmp.path().join(".agents/skill-studio.json"),
+            r#"{"version":4,"write_version":0,"error_reporting_enabled":false}"#,
+        )
+        .unwrap();
+        let reg = read_fork_registry(tmp.path()).unwrap();
+        assert!(
+            !reg.telemetry_enabled,
+            "an rc user's opt-out under the old key must read as off"
         );
     }
 
