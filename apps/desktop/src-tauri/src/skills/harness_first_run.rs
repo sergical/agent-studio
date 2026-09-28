@@ -122,6 +122,7 @@ pub async fn save_harnesses_choice(
             choice,
             error_reporting_enabled,
             &consent,
+            std::env::var("SKILL_STUDIO_TELEMETRY").ok(),
         )?;
         Ok(())
     })
@@ -137,20 +138,26 @@ pub async fn save_harnesses_choice(
 /// `set_harness_enabled_with`'s own guard parameter in
 /// `skill_harness_disable.rs`. Takes `Consent` the same way, so the
 /// first-run screen's telemetry choice takes effect without a restart the
-/// same way Settings' toggle does.
+/// same way Settings' toggle does. Takes `env_override` as a parameter,
+/// rather than reading `SKILL_STUDIO_TELEMETRY` itself, so a test can drive
+/// `resolve_consent`'s env-off case without touching the real process env.
 fn save_harnesses_choice_at(
     write_lease: &super::write_lease::WriteLease,
     home: &std::path::Path,
     choice: HarnessesChoice,
     error_reporting_enabled: bool,
     consent: &skill_studio_host::telemetry::Consent,
+    env_override: Option<String>,
 ) -> Result<(), String> {
     let guard = write_lease.try_acquire(home)?;
     let mut registry = super::skill_fork_registry::read_fork_registry(home)?;
     registry.harnesses = Some(choice);
     registry.error_reporting_enabled = error_reporting_enabled;
     super::skill_fork_registry::write_fork_registry_locked(&guard, home, &registry)?;
-    consent.set(error_reporting_enabled);
+    consent.set(skill_studio_host::telemetry::resolve_consent(
+        env_override,
+        error_reporting_enabled,
+    ));
     Ok(())
 }
 
@@ -314,6 +321,7 @@ mod tests {
             },
             false,
             &consent,
+            None,
         )
         .unwrap();
         let after_off = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
@@ -332,6 +340,7 @@ mod tests {
             },
             true,
             &consent,
+            None,
         )
         .unwrap();
         let after_on = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
@@ -342,6 +351,47 @@ mod tests {
         assert!(
             consent.enabled(),
             "a save with true must flip the live Consent, not just the registry"
+        );
+    }
+
+    /// `an_env_override_of_0_keeps_consent_off_when_the_welcome_switch_is_saved_on`:
+    /// `resolve_consent`'s env-off case must win even when the first-run
+    /// screen's own telemetry switch is saved on - `SKILL_STUDIO_TELEMETRY=0`
+    /// is an operator override, not a default the user's choice can turn
+    /// back on. Fails if `save_harnesses_choice_at` ever passes the switch's
+    /// value straight to `Consent` without going through `resolve_consent`
+    /// first.
+    #[test]
+    fn an_env_override_of_0_keeps_consent_off_when_the_welcome_switch_is_saved_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        let write_lease =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
+        let consent = skill_studio_host::telemetry::Consent::new(false);
+
+        super::save_harnesses_choice_at(
+            &write_lease,
+            &home,
+            HarnessesChoice {
+                kept: vec!["claude-code".to_string()],
+                search_project_folders: false,
+                saved_at: "2026-09-28T00:02:00Z".to_string(),
+            },
+            true,
+            &consent,
+            Some("0".to_string()),
+        )
+        .unwrap();
+
+        assert!(
+            !consent.enabled(),
+            "the env override must keep Consent off even though the welcome switch was saved on"
+        );
+        let after = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert!(
+            after.error_reporting_enabled,
+            "the registry must still record the user's saved choice, only Consent is overridden"
         );
     }
 

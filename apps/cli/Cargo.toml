@@ -15,7 +15,7 @@ workspace = true
 
 [dependencies]
 skill-studio-core = { path = "../../crates/skill-studio-core" }
-skill-studio-host = { path = "../../crates/skill-studio-host" }
+skill-studio-host = { path = "../../crates/skill-studio-host", features = ["telemetry"] }
 clap = { version = "4", features = ["derive"] }
 serde = "1"
 serde_json = { workspace = true }

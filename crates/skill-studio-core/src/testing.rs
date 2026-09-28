@@ -25,8 +25,8 @@ use crate::identity::EventId;
 use crate::ports::{
     CancelToken, Clock, CoreNotice, DirEntryFacts, EventSink, ExclusiveGuard, FileFacts, FileKind,
     HistoryAccess, HistoryOpener, HistoryStore, IdSource, LeaseHandle, LeaseKey, LeaseMode,
-    LeaseProvider, ProcessOutput, ProcessSpawner, ProcessSpec, ProjectDiscovery, ScopeFs,
-    ScopedPath, ToolLookup,
+    LeaseProvider, OpRecord, ProcessOutput, ProcessSpawner, ProcessSpec, ProjectDiscovery, ScopeFs,
+    ScopedPath, Telemetry, ToolLookup,
 };
 use crate::scope::NormalizedScope;
 
@@ -1298,6 +1298,37 @@ impl Clock for FakeClock {
     }
 }
 
+/// A clock whose `monotonic()` advances by one millisecond on every read -
+/// so a telemetry test's `elapsed_ms`/`offset_ms` assertions are always
+/// strictly positive and distinct without the test threading its own
+/// `advance` calls through the op body under test, the way [`FakeClock`]
+/// requires.
+#[derive(Debug)]
+pub struct TickingClock {
+    now_ms: AtomicU64,
+}
+
+impl TickingClock {
+    /// Starts at the given epoch milliseconds.
+    pub fn at(epoch_ms: u64) -> Self {
+        TickingClock {
+            now_ms: AtomicU64::new(epoch_ms),
+        }
+    }
+}
+
+impl Clock for TickingClock {
+    fn now(&self) -> DateTime<Utc> {
+        Utc.timestamp_millis_opt(self.now_ms.load(Ordering::SeqCst) as i64)
+            .single()
+            .unwrap_or_else(Utc::now)
+    }
+
+    fn monotonic(&self) -> Duration {
+        Duration::from_millis(self.now_ms.fetch_add(1, Ordering::SeqCst))
+    }
+}
+
 /// Sequential, sortable fake ids (`01FAKE...000001`).
 #[derive(Debug, Default)]
 pub struct FakeIds {
@@ -1431,6 +1462,31 @@ impl EventSink for RecordingSink {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(notice);
+    }
+}
+
+/// Collects [`OpRecord`]s for assertions, instead of sending them anywhere.
+#[derive(Debug, Default)]
+pub struct RecordingTelemetry {
+    records: Mutex<Vec<OpRecord>>,
+}
+
+impl RecordingTelemetry {
+    /// Everything recorded so far.
+    pub fn records(&self) -> Vec<OpRecord> {
+        self.records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl Telemetry for RecordingTelemetry {
+    fn record(&self, record: OpRecord) {
+        self.records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(record);
     }
 }
 
@@ -1740,6 +1796,7 @@ pub mod golden {
             discovery: None,
             tools: None,
             catalog: Arc::new(HarnessCatalog::builtin()),
+            telemetry: Arc::new(crate::ports::NoopTelemetry),
         }
     }
 

@@ -52,6 +52,8 @@ fn runtime(fs: Arc<dyn ScopeFs>) -> Runtime {
         discovery: None,
         tools: None,
         catalog: Arc::new(HarnessCatalog::builtin()),
+
+        telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
     };
     let scope = scope_for("conflicting_home", Path::new(HOME));
     Runtime::new(&scope, ports).expect("runtime")

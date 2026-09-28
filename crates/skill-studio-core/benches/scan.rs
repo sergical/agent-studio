@@ -52,6 +52,7 @@ fn ports_with(fs: Arc<dyn ScopeFs>, leases: Arc<dyn LeaseProvider>) -> Ports {
         discovery: None,
         tools: None,
         catalog: Arc::new(HarnessCatalog::builtin()),
+        telemetry: Arc::new(skill_studio_core::ports::NoopTelemetry),
     }
 }
 

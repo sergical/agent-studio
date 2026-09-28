@@ -42,6 +42,8 @@ fn scan_records_named_steps_within_the_op_elapsed_time() {
         discovery: None,
         tools: None,
         catalog: Arc::new(HarnessCatalog::builtin()),
+
+        telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
     };
     let scope = scope_for("basic", &home);
     let rt = Runtime::new(&scope, ports).expect("runtime");

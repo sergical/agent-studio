@@ -836,6 +836,77 @@ pub trait EventSink: Send + Sync {
     fn notify(&self, notice: CoreNotice);
 }
 
+/// Outcome of one op call, as [`OpRecord`] tags it. Never carries the
+/// message text of the error - only its stable [`ErrorCode`] - so a
+/// telemetry port can send this without redacting free text itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpOutcome {
+    /// The op returned `Ok`.
+    Ok,
+    /// The op returned `Err`; `code` is `CoreError::code`.
+    Err {
+        /// The error's stable code.
+        code: ErrorCode,
+    },
+}
+
+/// One nested `Operation` a top-level op's body called through the same
+/// [`OpContext`] (e.g. `doctor` calling `diagnose`, which itself calls
+/// `scan`) - reported as a child of the top-level [`OpRecord`] rather than
+/// a record of its own, so `doctor` sends one transaction, not three.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NestedOp {
+    /// Which operation ran.
+    pub operation: crate::ops::Operation,
+    /// Whether it succeeded, and the error code if not.
+    pub outcome: OpOutcome,
+    /// Elapsed time and step timings this nested call filed.
+    pub timing: crate::timing::OpTiming,
+    /// How many `run` calls this one is nested under: `1` for an op the
+    /// top-level op's own body called directly, `2` for one a depth-1 op's
+    /// body called, and so on.
+    pub depth: usize,
+    /// Milliseconds from the top-level run's start to this nested run's
+    /// start, from `ports.clock` - what an adapter needs to place this
+    /// [`NestedOp`]'s span at its real offset under its real parent instead
+    /// of laying every nested op end to end after the root's own steps.
+    pub offset_ms: u64,
+}
+
+/// What one operation run looked like. Built only from typed fields: no free
+/// text can carry a path or a skill name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpRecord {
+    /// Which operation ran.
+    pub operation: crate::ops::Operation,
+    /// The call's correlation id.
+    pub correlation_id: CorrelationId,
+    /// Whether it succeeded, and the error code if not.
+    pub outcome: OpOutcome,
+    /// Elapsed time and step timings, as filed through [`OpContext::record_timing`].
+    /// Empty `steps` when the op failed before recording them.
+    pub timing: crate::timing::OpTiming,
+    /// Operations this one called through the same `OpContext`, in call
+    /// order.
+    pub nested: Vec<NestedOp>,
+}
+
+/// Receives one [`OpRecord`] per op call. Must not block: a telemetry port
+/// runs on the same thread as the op it is recording.
+pub trait Telemetry: Send + Sync {
+    /// Records one op call.
+    fn record(&self, record: OpRecord);
+}
+
+/// A [`Telemetry`] that does nothing - the default until a host binds a real
+/// one.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopTelemetry;
+
+impl Telemetry for NoopTelemetry {
+    fn record(&self, _record: OpRecord) {}
+}
+
 /// A child process to run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProcessSpec {
@@ -916,6 +987,8 @@ pub struct Ports {
     pub tools: Option<Arc<dyn ToolLookup>>,
     /// Harness facts.
     pub catalog: Arc<HarnessCatalog>,
+    /// Op-call telemetry sink.
+    pub telemetry: Arc<dyn Telemetry>,
 }
 
 /// Per-call context.
@@ -926,16 +999,61 @@ pub struct OpContext {
     pub cancel: Arc<dyn CancelToken>,
     /// Where the op function in progress files its [`crate::timing::OpTiming`].
     pub timing: std::sync::Mutex<Option<crate::timing::OpTiming>>,
+    /// How many [`Runtime::run`] calls are currently nested through this
+    /// context - `0` outside any call, `1` for a top-level op, `2+` for an
+    /// op called from inside another op's own body. Not `pub`: only
+    /// [`Runtime::run`] may raise or lower it, so nothing outside this
+    /// module can desync it from `nested`.
+    pub(crate) depth: std::sync::atomic::AtomicUsize,
+    /// [`NestedOp`]s a top-level [`Runtime::run`] call has collected so far
+    /// from ops its own body called through this same context. Not `pub`
+    /// for the same reason as `depth`.
+    pub(crate) nested: std::sync::Mutex<Vec<NestedOp>>,
+    /// The top-level run's `ports.clock.monotonic()` start, set when
+    /// `depth` goes `0` -> `1` and cleared when it returns to `0`. A nested
+    /// run reads this to compute its own [`NestedOp::offset_ms`].
+    pub(crate) root_start: std::sync::Mutex<Option<Duration>>,
 }
 
 impl OpContext {
     /// A context that cannot be cancelled.
     pub fn uncancellable(correlation_id: CorrelationId) -> Self {
+        OpContext::with_cancel(correlation_id, Arc::new(NeverCancel))
+    }
+
+    /// A context cancelled through `cancel`, for a caller that has its own
+    /// [`CancelToken`] to bridge (e.g. the desktop's `AddOperationControl`)
+    /// rather than [`NeverCancel`]. The struct's fields besides
+    /// `correlation_id` and `cancel` are `pub(crate)`, so this - not a
+    /// struct literal - is how code outside this crate builds one.
+    pub fn with_cancel(correlation_id: CorrelationId, cancel: Arc<dyn CancelToken>) -> Self {
         OpContext {
             correlation_id,
-            cancel: Arc::new(NeverCancel),
+            cancel,
             timing: std::sync::Mutex::new(None),
+            depth: std::sync::atomic::AtomicUsize::new(0),
+            nested: std::sync::Mutex::new(Vec::new()),
+            root_start: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Appends one [`NestedOp`] a call nested through this context just
+    /// finished.
+    fn push_nested(&self, op: NestedOp) {
+        self.nested
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(op);
+    }
+
+    /// Takes every [`NestedOp`] collected so far, leaving the list empty.
+    fn take_nested(&self) -> Vec<NestedOp> {
+        std::mem::take(
+            &mut self
+                .nested
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// Fails with [`ErrorCode::Cancelled`] once the token is set.
@@ -989,6 +1107,149 @@ impl Runtime {
             ports.discovery.as_deref(),
         )?;
         Ok(Runtime { scope, ports })
+    }
+
+    /// Runs one operation body and records it. Elapsed time comes from
+    /// `ports.clock`; the steps come from what the body filed through
+    /// `ctx.record_timing`. Every `Operation` in [`crate::ops`] and its
+    /// sibling modules runs through this, so a call cannot bypass
+    /// telemetry - `set_codex_skill_disabled_with` and `skill_content_hash`
+    /// are public helpers, not ops, and call no `Operation` variant, so
+    /// they are exempt.
+    ///
+    /// A `body` may itself call another op through the same `ctx` (`doctor`
+    /// calling `diagnose`, which calls `scan`). `ctx.depth` tracks how many
+    /// `run` calls are nested right now: the outermost one (`depth` back to
+    /// `0` once `body` returns) is the one [`Telemetry::record`] sees, with
+    /// every op nested inside it attached as a [`NestedOp`]; an inner one
+    /// only appends to `ctx.nested` and records nothing of its own, so
+    /// `doctor` sends one transaction, not three.
+    pub fn run<T>(
+        &self,
+        operation: crate::ops::Operation,
+        ctx: &OpContext,
+        body: impl FnOnce() -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        let clock = self.ports.clock.as_ref();
+        let start = clock.monotonic();
+        let depth_before = ctx.depth.load(std::sync::atomic::Ordering::SeqCst);
+        if depth_before == 0 {
+            *ctx.root_start
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(start);
+            // Nested ops an earlier top-level body collected and then lost
+            // by panicking must not be attributed to this run.
+            ctx.take_nested();
+        }
+        // A timing filed through `ctx` before this call started - either a
+        // stale one left by an unrelated earlier op (`depth_before == 0`) or
+        // the enclosing body's own timing, filed before it called us
+        // (`depth_before > 0`) - must never be attributed to this call.
+        // `saved` restores the latter after we're done; the former is
+        // simply dropped.
+        let saved = ctx.take_timing();
+        let depth_guard = DepthGuard::enter(ctx);
+        let result = body();
+        // Ends `depth_guard`'s raise deterministically here (not at `run`'s
+        // natural scope end) so `depth_after` below reflects the drop that
+        // already ran - including on the panic path, where `body()` never
+        // returns and this line never executes, but the guard's `Drop` still
+        // fires while the stack unwinds through this frame.
+        drop(depth_guard);
+        let depth_after = ctx.depth.load(std::sync::atomic::Ordering::SeqCst);
+
+        let filed = ctx.take_timing();
+        let mut timing = filed.unwrap_or_else(|| crate::timing::OpTiming {
+            op: String::new(),
+            elapsed_ms: clock.monotonic().saturating_sub(start).as_millis() as u64,
+            steps: Vec::new(),
+        });
+        // The operation this `run` call was given decides the name, never
+        // whatever string a nested call (or the body itself) filed.
+        timing.op = op_snake_case_name(operation);
+
+        let outcome = match &result {
+            Ok(_) => OpOutcome::Ok,
+            Err(e) => OpOutcome::Err { code: e.code },
+        };
+
+        if depth_after == 0 {
+            self.ports.telemetry.record(OpRecord {
+                operation,
+                correlation_id: ctx.correlation_id.clone(),
+                outcome,
+                timing: timing.clone(),
+                nested: ctx.take_nested(),
+            });
+            // Leaves the final timing in `ctx` so a caller building a
+            // `ResultEnvelope` from this same `ctx` after `run` returns
+            // (every CLI/MCP surface) still finds it.
+            ctx.record_timing(timing);
+        } else {
+            let root_start = ctx
+                .root_start
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or(start);
+            ctx.push_nested(NestedOp {
+                operation,
+                outcome,
+                timing,
+                depth: depth_before,
+                offset_ms: start.saturating_sub(root_start).as_millis() as u64,
+            });
+            // Puts the enclosing body's own timing (filed before it called
+            // us) back, so it survives this nested call the way it would if
+            // the call had never happened.
+            if let Some(saved) = saved {
+                ctx.record_timing(saved);
+            }
+        }
+        result
+    }
+}
+
+/// Raises [`OpContext::depth`] by one for the lifetime of the guard, and
+/// lowers it again - clearing `root_start` too, once it returns to `0` -
+/// on drop, whether that drop is [`Runtime::run`] finishing normally or a
+/// panic in `body` unwinding through it. Without this, a panicking body
+/// would leave `depth` permanently raised, wrongly nesting every later call
+/// through the same `ctx`.
+struct DepthGuard<'a> {
+    ctx: &'a OpContext,
+}
+
+impl<'a> DepthGuard<'a> {
+    fn enter(ctx: &'a OpContext) -> Self {
+        ctx.depth.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        DepthGuard { ctx }
+    }
+}
+
+impl Drop for DepthGuard<'_> {
+    fn drop(&mut self) {
+        let depth_after = self
+            .ctx
+            .depth
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+            - 1;
+        if depth_after == 0 {
+            *self
+                .ctx
+                .root_start
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+    }
+}
+
+/// `operation`'s serde `snake_case` wire name - used as [`crate::timing::OpTiming::op`]
+/// when a body files no timing of its own, so the fallback still matches the
+/// op it measured.
+fn op_snake_case_name(operation: crate::ops::Operation) -> String {
+    match serde_json::to_value(operation) {
+        Ok(serde_json::Value::String(name)) => name,
+        _ => unreachable!("Operation always serializes to a string"),
     }
 }
 

@@ -25,7 +25,7 @@ use crate::doctor::{
 use crate::dto::{DoctorReport, DoctorRequest, DoctorViolation, ScanRequest};
 use crate::error::CoreError;
 use crate::journal::FsJournal;
-use crate::ops::diagnose;
+use crate::ops::{diagnose, Operation};
 use crate::ops_install::journal_root;
 use crate::ports::{OpContext, Runtime};
 
@@ -37,6 +37,14 @@ use crate::ports::{OpContext, Runtime};
 /// `ops::fix_skill`, this op reads `fs` directly afterward rather than
 /// holding a second lease of its own, since nothing here writes).
 pub fn doctor(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &DoctorRequest,
+) -> Result<DoctorReport, CoreError> {
+    rt.run(Operation::Doctor, ctx, || doctor_body(rt, ctx, req))
+}
+
+fn doctor_body(
     rt: &Runtime,
     ctx: &OpContext,
     _req: &DoctorRequest,

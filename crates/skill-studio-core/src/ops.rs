@@ -383,6 +383,10 @@ impl<T: Outcome> ResultEnvelope<T> {
 /// also reads, and walking it again under this harness would double-report
 /// the same directory.
 pub fn scan(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Inventory, CoreError> {
+    rt.run(Operation::Scan, ctx, || scan_body(rt, ctx, req))
+}
+
+fn scan_body(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Inventory, CoreError> {
     ctx.checkpoint()?;
     let _guard = acquire_shared(rt.ports.leases.as_ref(), &rt.scope)?;
     scan_inner(rt, ctx, req)
@@ -493,21 +497,27 @@ pub(crate) fn scan_inner(
         scan_one_plugin_target(&sc, target, &mut accum)?;
     }
     op_steps.push(crate::timing::step(clock, "roots_walk", step_start));
+    // These four are cumulative sub-times already counted inside
+    // `roots_walk`, not additional wall-clock time - `parent` says so.
     op_steps.push(crate::timing::StepTiming {
         name: "dir_walk".to_string(),
         elapsed_ms: timings.dir_walk.get().as_millis() as u64,
+        parent: Some("roots_walk".to_string()),
     });
     op_steps.push(crate::timing::StepTiming {
         name: "skill_md_read".to_string(),
         elapsed_ms: timings.skill_md_read.get().as_millis() as u64,
+        parent: Some("roots_walk".to_string()),
     });
     op_steps.push(crate::timing::StepTiming {
         name: "frontmatter_parse".to_string(),
         elapsed_ms: timings.frontmatter_parse.get().as_millis() as u64,
+        parent: Some("roots_walk".to_string()),
     });
     op_steps.push(crate::timing::StepTiming {
         name: "plugin_cache_walk".to_string(),
         elapsed_ms: timings.plugin_cache_walk.get().as_millis() as u64,
+        parent: Some("roots_walk".to_string()),
     });
 
     let ScanAccum {
@@ -2948,6 +2958,10 @@ pub fn skill_content_hash(
 /// repairable"/"not readable" rather than surfaced as an error: `diagnose`
 /// never fails just because one deployment's extra read did.
 pub fn diagnose(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Diagnosis, CoreError> {
+    rt.run(Operation::Diagnose, ctx, || diagnose_body(rt, ctx, req))
+}
+
+fn diagnose_body(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Diagnosis, CoreError> {
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
     let step_start = clock.monotonic();
@@ -2980,12 +2994,31 @@ pub fn diagnose(rt: &Runtime, ctx: &OpContext, req: &ScanRequest) -> Result<Diag
 pub fn diagnose_conflict(
     rt: &Runtime,
     ctx: &OpContext,
+    req: &crate::dto::DiagnoseConflictRequest,
+) -> Result<crate::dto::ConflictReport, CoreError> {
+    rt.run(Operation::DiagnoseConflict, ctx, || {
+        diagnose_conflict_body(rt, ctx, req)
+    })
+}
+
+fn diagnose_conflict_body(
+    rt: &Runtime,
+    ctx: &OpContext,
     _req: &crate::dto::DiagnoseConflictRequest,
 ) -> Result<crate::dto::ConflictReport, CoreError> {
+    let clock = rt.ports.clock.as_ref();
+    let start = clock.monotonic();
     let diagnosis = diagnose(rt, ctx, &ScanRequest::default())?;
-    Ok(crate::dto::ConflictReport {
+    let report = crate::dto::ConflictReport {
         conflicts: conflicts_in(&diagnosis.inventory),
-    })
+    };
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "diagnose_conflict",
+        start,
+        Vec::new(),
+    ));
+    Ok(report)
 }
 
 /// Every pair of `Canonical`/`Independent` deployments of one skill whose
@@ -3047,6 +3080,14 @@ fn conflicts_in(inventory: &Inventory) -> Vec<crate::dto::ConflictSummary> {
 /// Preconditions: none beyond what the sub-operations this composes need;
 /// each runs its own lease.
 pub fn fix_skill(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &crate::dto::FixSkillRequest,
+) -> Result<crate::dto::FixSkillOutcome, CoreError> {
+    rt.run(Operation::FixSkill, ctx, || fix_skill_body(rt, ctx, req))
+}
+
+fn fix_skill_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &crate::dto::FixSkillRequest,
@@ -3259,20 +3300,42 @@ pub fn outdated(
     commit_lookup: &dyn crate::skill_update_check::CommitLookup,
     plugin_lookup: &dyn crate::skill_update_check::PluginManifestLookup,
 ) -> Result<BTreeMap<String, crate::skill_update_check::OutdatedRecord>, CoreError> {
+    rt.run(Operation::Outdated, ctx, || {
+        outdated_body(rt, ctx, req, tree_lookup, commit_lookup, plugin_lookup)
+    })
+}
+
+fn outdated_body(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &ScanRequest,
+    tree_lookup: &dyn crate::skill_update_check::SourceTreeLookup,
+    commit_lookup: &dyn crate::skill_update_check::CommitLookup,
+    plugin_lookup: &dyn crate::skill_update_check::PluginManifestLookup,
+) -> Result<BTreeMap<String, crate::skill_update_check::OutdatedRecord>, CoreError> {
+    let clock = rt.ports.clock.as_ref();
+    let start = clock.monotonic();
     let inventory = scan(rt, ctx, req)?;
     let targets: Vec<crate::skill_update_check::OutdatedTarget> = inventory
         .skills
         .iter()
         .filter_map(outdated_target)
         .collect();
-    Ok(crate::skill_update_check::outdated(
+    let result = crate::skill_update_check::outdated(
         rt.ports.fs.as_ref(),
         &rt.scope.home.lexical,
         &targets,
         tree_lookup,
         commit_lookup,
         plugin_lookup,
-    ))
+    );
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "outdated",
+        start,
+        Vec::new(),
+    ));
+    Ok(result)
 }
 
 /// Picks the deployment that decides `skill`'s currency rule, and builds the
@@ -3561,6 +3624,16 @@ pub fn capabilities(
     ctx: &OpContext,
     req: &CapabilitiesRequest,
 ) -> Result<Capabilities, CoreError> {
+    rt.run(Operation::Capabilities, ctx, || {
+        capabilities_body(rt, ctx, req)
+    })
+}
+
+fn capabilities_body(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &CapabilitiesRequest,
+) -> Result<Capabilities, CoreError> {
     ctx.checkpoint()?;
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
@@ -3620,6 +3693,14 @@ pub fn capabilities(
 /// as absent; without a `ProcessSpawner` port version and install method
 /// stay `Unknown` even when the binary is found.
 pub fn harnesses(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &HarnessesRequest,
+) -> Result<HarnessReport, CoreError> {
+    rt.run(Operation::Harnesses, ctx, || harnesses_body(rt, ctx, req))
+}
+
+fn harnesses_body(
     rt: &Runtime,
     ctx: &OpContext,
     _req: &HarnessesRequest,
@@ -3756,6 +3837,16 @@ pub fn preview_frontmatter_repair(
     ctx: &OpContext,
     req: &RepairPreviewRequest,
 ) -> Result<FrontmatterRepairPreview, CoreError> {
+    rt.run(Operation::PreviewFrontmatterRepair, ctx, || {
+        preview_frontmatter_repair_body(rt, ctx, req)
+    })
+}
+
+fn preview_frontmatter_repair_body(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &RepairPreviewRequest,
+) -> Result<FrontmatterRepairPreview, CoreError> {
     ctx.checkpoint()?;
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
@@ -3839,6 +3930,16 @@ pub fn preview_frontmatter_repair(
 /// ([`ErrorCode::OwnershipChanged`] otherwise); mode allowed. Records
 /// `repair_skill_frontmatter` before the write and finishes it after.
 pub fn apply_frontmatter_repair(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &RepairApplyRequest,
+) -> Result<RepairOutcome, CoreError> {
+    rt.run(Operation::ApplyFrontmatterRepair, ctx, || {
+        apply_frontmatter_repair_body(rt, ctx, req)
+    })
+}
+
+fn apply_frontmatter_repair_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &RepairApplyRequest,
@@ -4006,6 +4107,16 @@ pub fn apply_frontmatter_repair(
 /// the recorded ones and reports [`crate::dto::DriftState`]; otherwise
 /// `drift` is `Unchecked`.
 pub fn list_events(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &ListEventsRequest,
+) -> Result<Vec<EventDto>, CoreError> {
+    rt.run(Operation::ListEvents, ctx, || {
+        list_events_body(rt, ctx, req)
+    })
+}
+
+fn list_events_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &ListEventsRequest,
@@ -4359,6 +4470,16 @@ fn restore_symlink_event(
 /// restore event's own id before applying the inverse, so the restore is
 /// itself restorable and `force` never destroys the only copy of anything.
 pub fn restore_event(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &RestoreRequest,
+) -> Result<RestoreOutcome, CoreError> {
+    rt.run(Operation::RestoreEvent, ctx, || {
+        restore_event_body(rt, ctx, req)
+    })
+}
+
+fn restore_event_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &RestoreRequest,
@@ -4771,6 +4892,10 @@ pub use crate::ops_update::{update, update_all};
 /// Code link (if any) is removed first, then the directory is renamed into
 /// `.agents/skills-parked`.
 pub fn park(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOutcome, CoreError> {
+    rt.run(Operation::Park, ctx, || park_body(rt, ctx, req))
+}
+
+fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOutcome, CoreError> {
     ctx.checkpoint()?;
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
@@ -4896,6 +5021,14 @@ pub fn park(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOutc
 /// build, or the row aged out) still unparks: the Claude Code link is then
 /// simply not recreated.
 pub fn unpark(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &UnparkRequest,
+) -> Result<UnparkOutcome, CoreError> {
+    rt.run(Operation::Unpark, ctx, || unpark_body(rt, ctx, req))
+}
+
+fn unpark_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &UnparkRequest,
@@ -5044,6 +5177,16 @@ pub fn unpark(
 /// message, not a cross-path transaction; see the module doc on
 /// `harness_switch.rs` for the scope this narrows).
 pub fn set_harness_enabled(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &SetHarnessEnabledRequest,
+) -> Result<SetHarnessEnabledOutcome, CoreError> {
+    rt.run(Operation::SetHarnessEnabled, ctx, || {
+        set_harness_enabled_body(rt, ctx, req)
+    })
+}
+
+fn set_harness_enabled_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &SetHarnessEnabledRequest,
@@ -5916,6 +6059,8 @@ mod tests {
             discovery: None,
             tools: None,
             catalog: Arc::new(HarnessCatalog::builtin()),
+
+            telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
         };
         let ctx = OpContext::uncancellable(CorrelationId("c4".into()));
 
@@ -5976,6 +6121,8 @@ mod tests {
             discovery: None,
             tools: Some(Arc::new(lookup)),
             catalog: Arc::new(HarnessCatalog::builtin()),
+
+            telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
         };
         let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
         let ctx = OpContext::uncancellable(CorrelationId("c5".into()));
@@ -6044,6 +6191,8 @@ mod tests {
             discovery: None,
             tools: Some(Arc::new(lookup)),
             catalog: Arc::new(HarnessCatalog::builtin()),
+
+            telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
         };
         let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
         let ctx = OpContext::uncancellable(CorrelationId("c6".into()));
@@ -6460,6 +6609,8 @@ mod tests {
                 discovery: None,
                 tools: None,
                 catalog: Arc::new(HarnessCatalog::builtin()),
+
+                telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
             };
             Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap()
         }
@@ -6499,6 +6650,8 @@ mod tests {
                 discovery: None,
                 tools: None,
                 catalog: Arc::new(HarnessCatalog::builtin()),
+
+                telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
             };
             let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
             let inv = scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
@@ -6815,6 +6968,8 @@ mod tests {
                 discovery: None,
                 tools: None,
                 catalog: Arc::new(HarnessCatalog::builtin()),
+
+                telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
             };
 
             // Run the same fixture with no project roots at all through a
@@ -6914,6 +7069,8 @@ mod tests {
                 discovery: None,
                 tools: None,
                 catalog: Arc::new(HarnessCatalog::builtin()),
+
+                telemetry: std::sync::Arc::new(crate::ports::NoopTelemetry),
             };
             let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
             let inv = scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
@@ -6929,6 +7086,496 @@ mod tests {
                 "the readable skill must still be found"
             );
             assert_eq!(inv.skills[0].name.0, "good-skill");
+        }
+    }
+
+    /// [`Runtime::run`]'s own coverage: every op records itself, the
+    /// recorded timing matches the envelope's, a failure carries its error
+    /// code with no steps, and the `Operation` -> [`crate::timing::OpTiming::op`]
+    /// mapping every body relies on stays pinned.
+    mod telemetry_tests {
+        use super::*;
+        use crate::dto::{InstallMethod, InstallRequest};
+        use crate::harness::HarnessCatalog;
+        use crate::identity::{ProjectRef, RootScope, SkillName};
+        use crate::ports::{OpOutcome, Ports};
+        use crate::testing::{
+            FakeClock, FakeIds, FakeLease, NoHistory, RecordingSink, RecordingTelemetry,
+            TickingClock,
+        };
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        // Ticks by 1ms on every `monotonic()` read, so every test below that
+        // asserts on `elapsed_ms`/`offset_ms` fails if the code under test
+        // stops calling the clock, instead of trivially passing against a
+        // clock frozen at `0` - see spec item 2, "tests that cannot fail
+        // today".
+        fn runtime_with(
+            fs: crate::testing::FixtureFs,
+            telemetry: Arc<RecordingTelemetry>,
+        ) -> Runtime {
+            let ports = Ports {
+                fs: Arc::new(fs),
+                clock: Arc::new(TickingClock::at(0)),
+                ids: Arc::new(FakeIds::default()),
+                leases: Arc::new(FakeLease::default()),
+                history: Arc::new(NoHistory),
+                sink: Arc::new(RecordingSink::default()),
+                spawner: None,
+                discovery: None,
+                tools: None,
+                catalog: Arc::new(HarnessCatalog::builtin()),
+                telemetry,
+            };
+            Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap()
+        }
+
+        #[test]
+        fn a_successful_scan_records_one_op_record_whose_timing_equals_the_envelope_timing() {
+            let fs = FixtureBuilder::new()
+                .dir("/h/.claude/skills/good-skill")
+                .file(
+                    "/h/.claude/skills/good-skill/SKILL.md",
+                    b"---\nname: good-skill\ndescription: Fine.\n---\n",
+                )
+                .build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-scan".into()));
+
+            let result = scan(&rt, &ctx, &ScanRequest::default());
+            let env = ResultEnvelope::from_result(Operation::Scan, &rt.scope, &ctx, result);
+
+            let records = telemetry.records();
+            assert_eq!(records.len(), 1, "exactly one op record per scan call");
+            let record = &records[0];
+            assert_eq!(record.operation, Operation::Scan);
+            assert_eq!(record.outcome, OpOutcome::Ok);
+            assert_eq!(record.correlation_id, CorrelationId("c-scan".into()));
+            assert_eq!(Some(record.timing.clone()), env.timings);
+        }
+
+        #[test]
+        fn a_failed_install_records_the_error_code_and_no_steps() {
+            let fs = FixtureBuilder::new().dir("/h").build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-install".into()));
+
+            // `SkillsSh` against a project path that does not exist fails
+            // `validate_cli_project_path` before anything else runs, so no
+            // step ever gets filed.
+            let req = InstallRequest {
+                skill: SkillName("missing-project".into()),
+                method: InstallMethod::SkillsSh,
+                scope: RootScope::Project(ProjectRef(PathBuf::from("/h/no-such-project"))),
+                harnesses: Vec::new(),
+                files: Vec::new(),
+                source: Some("owner/repo".into()),
+                trust_identity: None,
+                trust_confirmed: false,
+                save_as_preference: false,
+            };
+            let err = install(&rt, &ctx, &req).unwrap_err();
+
+            let records = telemetry.records();
+            assert_eq!(records.len(), 1, "exactly one op record per install call");
+            let record = &records[0];
+            assert_eq!(record.operation, Operation::Install);
+            assert_eq!(record.outcome, OpOutcome::Err { code: err.code });
+            assert!(
+                record.timing.steps.is_empty(),
+                "a call that fails before recording a step must file no steps"
+            );
+        }
+
+        /// [`Runtime::run`] names an `OpRecord`'s timing from `Operation`'s
+        /// own serde name (see `op_snake_case_name`), so this pins every
+        /// variant's literal against accidental rename - an exhaustive
+        /// match so a new variant fails to compile here rather than
+        /// silently falling out of coverage.
+        #[test]
+        fn every_operation_serializes_to_its_documented_snake_case_name() {
+            let all = [
+                Operation::Scan,
+                Operation::Diagnose,
+                Operation::Capabilities,
+                Operation::Harnesses,
+                Operation::PreviewFrontmatterRepair,
+                Operation::ApplyFrontmatterRepair,
+                Operation::ListEvents,
+                Operation::RestoreEvent,
+                Operation::Park,
+                Operation::Unpark,
+                Operation::SetHarnessEnabled,
+                Operation::FixSkill,
+                Operation::DiagnoseConflict,
+                Operation::Remove,
+                Operation::Update,
+                Operation::UpdateAll,
+                Operation::Install,
+                Operation::InstallPreferences,
+                Operation::Doctor,
+                Operation::Outdated,
+                Operation::SweepQuarantine,
+            ];
+            for operation in all {
+                let expected = match operation {
+                    Operation::Scan => "scan",
+                    Operation::Diagnose => "diagnose",
+                    Operation::Capabilities => "capabilities",
+                    Operation::Harnesses => "harnesses",
+                    Operation::PreviewFrontmatterRepair => "preview_frontmatter_repair",
+                    Operation::ApplyFrontmatterRepair => "apply_frontmatter_repair",
+                    Operation::ListEvents => "list_events",
+                    Operation::RestoreEvent => "restore_event",
+                    Operation::Park => "park",
+                    Operation::Unpark => "unpark",
+                    Operation::SetHarnessEnabled => "set_harness_enabled",
+                    Operation::FixSkill => "fix_skill",
+                    Operation::DiagnoseConflict => "diagnose_conflict",
+                    Operation::Remove => "remove",
+                    Operation::Update => "update",
+                    Operation::UpdateAll => "update_all",
+                    Operation::Install => "install",
+                    Operation::InstallPreferences => "install_preferences",
+                    Operation::Doctor => "doctor",
+                    Operation::Outdated => "outdated",
+                    Operation::SweepQuarantine => "sweep_quarantine",
+                };
+                let value = serde_json::to_value(operation).unwrap();
+                assert_eq!(
+                    value,
+                    serde_json::Value::String(expected.to_string()),
+                    "Operation::{operation:?} must serialize to {expected:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn an_op_that_files_no_timing_still_records_with_the_clock_elapsed() {
+            let fake_clock = Arc::new(FakeClock::at(0));
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let ports = Ports {
+                fs: Arc::new(FixtureBuilder::new().dir("/h").build_fs()),
+                clock: Arc::clone(&fake_clock) as Arc<dyn crate::ports::Clock>,
+                ids: Arc::new(FakeIds::default()),
+                leases: Arc::new(FakeLease::default()),
+                history: Arc::new(NoHistory),
+                sink: Arc::new(RecordingSink::default()),
+                spawner: None,
+                discovery: None,
+                tools: None,
+                catalog: Arc::new(HarnessCatalog::builtin()),
+                telemetry: Arc::clone(&telemetry) as Arc<dyn crate::ports::Telemetry>,
+            };
+            let rt = Runtime::new(&RuntimeScope::fixture("/h"), ports).unwrap();
+            let ctx = OpContext::uncancellable(CorrelationId("c-noop".into()));
+
+            let result: Result<(), crate::error::CoreError> = rt.run(Operation::Scan, &ctx, || {
+                fake_clock.advance(Duration::from_millis(42));
+                Ok(())
+            });
+            result.unwrap();
+
+            let records = telemetry.records();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].timing.elapsed_ms, 42);
+            assert!(records[0].timing.steps.is_empty());
+        }
+
+        #[test]
+        fn doctor_records_one_transaction_with_scan_and_diagnose_as_nested_ops() {
+            let fs = FixtureBuilder::new().dir("/h").build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-doctor".into()));
+
+            crate::ops_doctor::doctor(&rt, &ctx, &crate::dto::DoctorRequest {}).unwrap();
+
+            let records = telemetry.records();
+            assert_eq!(
+                records.len(),
+                1,
+                "doctor must send one transaction, not one per nested op"
+            );
+            let record = &records[0];
+            assert_eq!(record.operation, Operation::Doctor);
+            assert_eq!(record.timing.op, "doctor");
+            let nested_ops: Vec<Operation> = record.nested.iter().map(|n| n.operation).collect();
+            assert_eq!(
+                nested_ops,
+                vec![Operation::Scan, Operation::Diagnose],
+                "doctor's body calls diagnose, which itself calls scan, in that order"
+            );
+            // `doctor_body` calls `diagnose` directly (depth 1); `diagnose_body`
+            // calls `scan` (depth 2). `nested` is post-order, so `Scan` (the
+            // one that finishes first) is reported before its own parent,
+            // `Diagnose`.
+            let depths: Vec<usize> = record.nested.iter().map(|n| n.depth).collect();
+            assert_eq!(
+                depths,
+                vec![2, 1],
+                "scan is nested two deep under doctor (via diagnose); diagnose is nested one deep"
+            );
+            for nested in &record.nested {
+                assert!(
+                    nested.offset_ms + nested.timing.elapsed_ms <= record.timing.elapsed_ms,
+                    "a nested op must start and finish inside the root's own elapsed time: {nested:?}"
+                );
+            }
+            let scan = record
+                .nested
+                .iter()
+                .find(|n| n.operation == Operation::Scan)
+                .expect("scan present");
+            let diagnose = record
+                .nested
+                .iter()
+                .find(|n| n.operation == Operation::Diagnose)
+                .expect("diagnose present");
+            assert!(
+                diagnose.offset_ms > 0,
+                "diagnose is expected to start after doctor's own root_start, not at it: diagnose={}",
+                diagnose.offset_ms
+            );
+            assert!(
+                scan.offset_ms > diagnose.offset_ms,
+                "scan is expected to start later than its parent diagnose: scan={}, diagnose={}",
+                scan.offset_ms,
+                diagnose.offset_ms
+            );
+        }
+
+        #[test]
+        fn outdated_is_named_after_itself_and_carries_the_nested_scan() {
+            let fs = FixtureBuilder::new().dir("/h").build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-outdated".into()));
+
+            struct NoTrees;
+            impl crate::skill_update_check::SourceTreeLookup for NoTrees {
+                fn tree_shas_at_head(
+                    &self,
+                    _repo: &str,
+                ) -> Result<std::collections::HashMap<String, String>, CoreError> {
+                    unreachable!("no skills in the fixture, so no repo is ever looked up")
+                }
+            }
+            struct NoCommits;
+            impl crate::skill_update_check::CommitLookup for NoCommits {
+                fn latest_commit(
+                    &self,
+                    _repo: &str,
+                    _path: &str,
+                ) -> Result<Option<crate::skill_update_check::CommitInfo>, CoreError>
+                {
+                    unreachable!("no skills in the fixture, so no repo is ever looked up")
+                }
+            }
+            struct NoPlugins;
+            impl crate::skill_update_check::PluginManifestLookup for NoPlugins {
+                fn marketplace_version(
+                    &self,
+                    _marketplace: &str,
+                    _plugin: &str,
+                ) -> Result<Option<String>, CoreError> {
+                    unreachable!("no skills in the fixture, so no marketplace is ever looked up")
+                }
+            }
+
+            outdated(
+                &rt,
+                &ctx,
+                &ScanRequest::default(),
+                &NoTrees,
+                &NoCommits,
+                &NoPlugins,
+            )
+            .unwrap();
+
+            let records = telemetry.records();
+            assert_eq!(
+                records.len(),
+                1,
+                "outdated's own nested scan must not send a second transaction"
+            );
+            let record = &records[0];
+            assert_eq!(record.operation, Operation::Outdated);
+            assert_eq!(record.timing.op, "outdated");
+            assert!(
+                record.nested.iter().any(|n| n.operation == Operation::Scan),
+                "outdated's body scans before checking currency"
+            );
+        }
+
+        #[test]
+        fn update_all_records_one_transaction_spanning_the_whole_loop() {
+            let fs = FixtureBuilder::new()
+                .dir("/h/.claude/skills/skill-a")
+                .file(
+                    "/h/.claude/skills/skill-a/SKILL.md",
+                    b"---\nname: skill-a\ndescription: One.\n---\n",
+                )
+                .dir("/h/.claude/skills/skill-b")
+                .file(
+                    "/h/.claude/skills/skill-b/SKILL.md",
+                    b"---\nname: skill-b\ndescription: Two.\n---\n",
+                )
+                .build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-update-all".into()));
+
+            let requests = vec![
+                crate::dto::UpdateRequest {
+                    skill: SkillName("skill-a".into()),
+                    method: InstallMethod::Copy,
+                    scope: RootScope::Global,
+                    files: Vec::new(),
+                    source: None,
+                    ref_pin: None,
+                },
+                crate::dto::UpdateRequest {
+                    skill: SkillName("skill-b".into()),
+                    method: InstallMethod::Copy,
+                    scope: RootScope::Global,
+                    files: Vec::new(),
+                    source: None,
+                    ref_pin: None,
+                },
+            ];
+            crate::ops_update::update_all(&rt, &ctx, &requests, |_, _| {});
+
+            let records = telemetry.records();
+            assert_eq!(
+                records.len(),
+                1,
+                "update_all must send one transaction spanning the whole loop"
+            );
+            let record = &records[0];
+            assert_eq!(record.operation, Operation::UpdateAll);
+            // Derived from the fixture, not from a run: two installed skills
+            // means two `update` calls in `update_all`'s loop.
+            let update_count = record
+                .nested
+                .iter()
+                .filter(|n| n.operation == Operation::Update)
+                .count();
+            assert_eq!(update_count, 2, "one nested Update per skill in the batch");
+            let nested_sum: u64 = record.nested.iter().map(|n| n.timing.elapsed_ms).sum();
+            assert!(
+                record.timing.elapsed_ms > 0,
+                "the ticking clock must have advanced across the whole loop"
+            );
+            assert!(
+                record.timing.elapsed_ms >= nested_sum,
+                "the root's elapsed time must cover every nested call's own elapsed time"
+            );
+        }
+
+        #[test]
+        fn a_stale_timing_left_in_the_context_is_not_attributed_to_the_next_op() {
+            let fs = FixtureBuilder::new().dir("/h").build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-stale".into()));
+            ctx.record_timing(crate::timing::OpTiming {
+                op: "install".to_string(),
+                elapsed_ms: 999,
+                steps: vec![crate::timing::StepTiming {
+                    name: "planted".to_string(),
+                    elapsed_ms: 999,
+                    parent: None,
+                }],
+            });
+
+            // A body that files no timing of its own: without the fix,
+            // `Runtime::run` would leave the planted `install` timing in
+            // `ctx` untouched and attribute it to this `doctor` call.
+            rt.run(Operation::Doctor, &ctx, || Ok(())).unwrap();
+
+            let records = telemetry.records();
+            assert_eq!(records.len(), 1);
+            let record = &records[0];
+            assert_eq!(record.timing.op, "doctor");
+            assert!(
+                record.timing.steps.is_empty(),
+                "the planted install timing must not leak into this call's timing"
+            );
+        }
+
+        #[test]
+        fn a_timing_filed_before_a_nested_call_survives_it() {
+            let fs = FixtureBuilder::new().dir("/h").build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-survives".into()));
+
+            rt.run(Operation::Doctor, &ctx, || {
+                let clock = rt.ports.clock.as_ref();
+                let step_start = clock.monotonic();
+                let step = crate::timing::step(clock, "before_nested", step_start);
+                ctx.record_timing(crate::timing::OpTiming {
+                    op: "doctor".to_string(),
+                    elapsed_ms: step.elapsed_ms,
+                    steps: vec![step],
+                });
+                rt.run(Operation::Scan, &ctx, || Ok(()))?;
+                Ok(())
+            })
+            .unwrap();
+
+            let records = telemetry.records();
+            assert_eq!(records.len(), 1);
+            let record = &records[0];
+            assert_eq!(record.timing.op, "doctor");
+            assert!(
+                record
+                    .timing
+                    .steps
+                    .iter()
+                    .any(|s| s.name == "before_nested"),
+                "the step the body filed before calling the nested op must survive it"
+            );
+            let nested_ops: Vec<Operation> = record.nested.iter().map(|n| n.operation).collect();
+            assert_eq!(nested_ops, vec![Operation::Scan]);
+        }
+
+        #[test]
+        fn a_panic_inside_a_body_does_not_leave_the_context_nested() {
+            let fs = FixtureBuilder::new().dir("/h").build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-panic".into()));
+
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                rt.run(Operation::Scan, &ctx, || -> Result<(), CoreError> {
+                    // A nested op that finished before the panic is already
+                    // in the context's `nested` list when the panic unwinds.
+                    rt.run(Operation::Diagnose, &ctx, || Ok(()))?;
+                    panic!("boom")
+                })
+            }));
+            assert!(panicked.is_err(), "the panic must propagate out of run");
+
+            // If `depth` were left raised by the panic, this call would be
+            // (wrongly) treated as nested and record nothing of its own.
+            rt.run(Operation::Doctor, &ctx, || Ok(())).unwrap();
+
+            let records = telemetry.records();
+            assert_eq!(
+                records.len(),
+                1,
+                "the call after the panic must record once, on its own"
+            );
+            assert_eq!(records[0].operation, Operation::Doctor);
+            assert!(
+                records[0].nested.is_empty(),
+                "the panicked run's nested op must not be attributed to the next run"
+            );
         }
     }
 }

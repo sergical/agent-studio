@@ -201,4 +201,47 @@ mod tests {
         let json = serde_json::to_string(&ErrorCode::DriftConflict).unwrap();
         assert_eq!(json, format!("\"{}\"", ErrorCode::DriftConflict.as_str()));
     }
+
+    /// Guards against `as_str()` and the `Serialize` impl drifting apart:
+    /// telemetry tags carry `as_str()`, Sentry groups on it, and the CLI
+    /// prints the serde name. An exhaustive match over every variant, so a
+    /// new one fails to compile here until this test is updated too.
+    #[test]
+    fn as_str_equals_the_serde_json_string_for_every_variant() {
+        let all = [
+            ErrorCode::InvalidRequest,
+            ErrorCode::InvalidScope,
+            ErrorCode::AmbiguousTarget,
+            ErrorCode::Unsupported,
+            ErrorCode::ExecutionFailed,
+            ErrorCode::Io,
+            ErrorCode::ScopeBusy,
+            ErrorCode::StaleProposal,
+            ErrorCode::DriftConflict,
+            ErrorCode::OwnershipChanged,
+            ErrorCode::AlreadyReverted,
+            ErrorCode::Incomplete,
+            ErrorCode::Cancelled,
+        ];
+        for code in all {
+            let exhaustive_name = match code {
+                ErrorCode::InvalidRequest => "invalid_request",
+                ErrorCode::InvalidScope => "invalid_scope",
+                ErrorCode::AmbiguousTarget => "ambiguous_target",
+                ErrorCode::Unsupported => "unsupported",
+                ErrorCode::ExecutionFailed => "execution_failed",
+                ErrorCode::Io => "io",
+                ErrorCode::ScopeBusy => "scope_busy",
+                ErrorCode::StaleProposal => "stale_proposal",
+                ErrorCode::DriftConflict => "drift_conflict",
+                ErrorCode::OwnershipChanged => "ownership_changed",
+                ErrorCode::AlreadyReverted => "already_reverted",
+                ErrorCode::Incomplete => "incomplete",
+                ErrorCode::Cancelled => "cancelled",
+            };
+            assert_eq!(code.as_str(), exhaustive_name);
+            let json = serde_json::to_value(code).unwrap();
+            assert_eq!(json, exhaustive_name);
+        }
+    }
 }

@@ -101,7 +101,11 @@ fn first_line_capped(text: &str) -> String {
 /// Times a synchronous `#[tauri::command]` body and appends one record for
 /// it, whether `f` returns `Ok` or `Err` - a slow error path is exactly the
 /// kind of thing this log exists to surface.
-pub fn time_command<T: CommandOutcome>(app: &AppHandle, command: &str, f: impl FnOnce() -> T) -> T {
+pub fn time_command<T: CommandOutcome>(
+    app: &AppHandle,
+    command: &'static str,
+    f: impl FnOnce() -> T,
+) -> T {
     let start = std::time::Instant::now();
     let result = f();
     let (outcome, error) = result.outcome();
@@ -121,7 +125,7 @@ pub fn time_command<T: CommandOutcome>(app: &AppHandle, command: &str, f: impl F
 /// Tauri's async runtime, off the main thread, so this records `"worker"`.
 pub async fn time_command_async<T: CommandOutcome>(
     app: &AppHandle,
-    command: &str,
+    command: &'static str,
     fut: impl std::future::Future<Output = T>,
 ) -> T {
     let start = std::time::Instant::now();
@@ -149,7 +153,7 @@ pub async fn time_command_async<T: CommandOutcome>(
 /// boundary.
 pub async fn time_command_blocking<T: Send + 'static>(
     app: &AppHandle,
-    command: &str,
+    command: &'static str,
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     let start = std::time::Instant::now();
@@ -173,7 +177,7 @@ pub async fn time_command_blocking<T: Send + 'static>(
 /// carrying the panic message instead of a `spawn_blocking(..).await.unwrap()`
 /// that would itself panic on the calling thread.
 pub(crate) fn join_result_to_err<T>(
-    command: &str,
+    command: &'static str,
     joined: Result<Result<T, String>, tauri::Error>,
 ) -> Result<T, String> {
     joined.unwrap_or_else(|join_error| Err(format!("{command} panicked: {join_error}")))
@@ -190,13 +194,22 @@ pub(crate) fn join_result_to_err<T>(
 /// painted.
 pub fn record_command(
     app: &AppHandle,
-    command: &str,
+    command: &'static str,
     elapsed_ms: u64,
     steps: &[StepTiming],
     thread: &str,
     outcome: &str,
     error: Option<String>,
 ) {
+    // Every command reports to Sentry regardless of the local `timing.jsonl`
+    // write below - a data folder the desktop can't write to must not also
+    // black out its own perf picture.
+    skill_studio_host::telemetry::record_command(
+        skill_studio_host::telemetry::Surface::Desktop,
+        command,
+        elapsed_ms,
+        outcome == "ok",
+    );
     if !crate::skills::data_folder_status::data_folder_writable(app) {
         return;
     }
@@ -430,6 +443,7 @@ mod tests {
             &[StepTiming {
                 name: "write".into(),
                 elapsed_ms: 20,
+                parent: None,
             }],
             "worker",
             "error",

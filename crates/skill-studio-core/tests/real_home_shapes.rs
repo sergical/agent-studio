@@ -62,6 +62,8 @@ fn in_memory_runtime(
         discovery: None,
         tools: Some(Arc::new(tools)),
         catalog: Arc::new(HarnessCatalog::builtin()),
+
+        telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
     };
     let mut scope = RuntimeScope::fixture(Path::new(HOME));
     scope.read_timeout_ms = 10_000;
@@ -531,6 +533,8 @@ fn harness_toggle_preserves_unknown_settings_keys_or_names_the_lost_key() {
         discovery: None,
         tools: None,
         catalog: Arc::new(HarnessCatalog::builtin()),
+
+        telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
     };
     let rt = Runtime::new(&scope, ports).expect("runtime");
 

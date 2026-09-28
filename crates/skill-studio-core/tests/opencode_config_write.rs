@@ -233,6 +233,8 @@ fn opencode_disable_under_a_held_home_lease_writes_or_names_the_lease_it_deadloc
         discovery: None,
         tools: None,
         catalog: Arc::new(skill_studio_core::harness::HarnessCatalog::builtin()),
+
+        telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
     };
     let rt = Runtime::new(&RuntimeScope::fixture(home), ports).unwrap();
     let fs = rt.ports.fs.as_ref();

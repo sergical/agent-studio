@@ -77,10 +77,31 @@ pub(crate) fn set_error_reporting_enabled_at(
     enabled: bool,
     consent: &Consent,
 ) -> Result<(), String> {
+    set_error_reporting_enabled_at_with(
+        home,
+        enabled,
+        consent,
+        std::env::var("SKILL_STUDIO_TELEMETRY").ok(),
+    )
+}
+
+/// As [`set_error_reporting_enabled_at`], but with the env override passed
+/// in rather than read from the process - so a test can prove
+/// `SKILL_STUDIO_TELEMETRY` still wins over the switch just saved, without
+/// mutating process-wide env.
+fn set_error_reporting_enabled_at_with(
+    home: &Path,
+    enabled: bool,
+    consent: &Consent,
+    env_override: Option<String>,
+) -> Result<(), String> {
     let mut registry = super::skill_fork_registry::read_fork_registry(home)?;
     registry.error_reporting_enabled = enabled;
     super::skill_fork_registry::write_fork_registry(home, &registry)?;
-    consent.set(enabled);
+    consent.set(skill_studio_host::telemetry::resolve_consent(
+        env_override,
+        enabled,
+    ));
     Ok(())
 }
 
@@ -132,7 +153,7 @@ mod tests {
         super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
         let consent = Consent::new(true);
 
-        set_error_reporting_enabled_at(&home, false, &consent).unwrap();
+        set_error_reporting_enabled_at_with(&home, false, &consent, None).unwrap();
 
         assert!(
             !consent.enabled(),
@@ -142,6 +163,29 @@ mod tests {
         assert!(
             !after.error_reporting_enabled,
             "turning the switch off must persist false to the registry"
+        );
+    }
+
+    /// `SKILL_STUDIO_TELEMETRY=0` must keep the live `Consent` off even
+    /// though the switch itself is being turned on - the env override, not
+    /// the just-saved switch, decides the live value.
+    #[test]
+    fn an_env_override_of_0_keeps_consent_false_after_enabling_the_switch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        let consent = Consent::new(false);
+
+        set_error_reporting_enabled_at_with(&home, true, &consent, Some("0".to_string())).unwrap();
+
+        assert!(
+            !consent.enabled(),
+            "the env override must win over the switch this call just turned on"
+        );
+        let after = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert!(
+            after.error_reporting_enabled,
+            "the registry still records the user's choice, independent of the env override"
         );
     }
 

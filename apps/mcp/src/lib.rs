@@ -62,6 +62,10 @@ fn build_runtime(with_history: bool) -> Result<Runtime, CoreError> {
     } else {
         skill_studio_host::default_ports_with_discovery(lease_root, catalog)
     };
+    ports.telemetry = skill_studio_host::telemetry::port(
+        skill_studio_host::telemetry::Surface::Mcp,
+        env!("CARGO_PKG_VERSION"),
+    );
     if with_history {
         if runtime_scope.kind == skill_studio_core::scope::ScopeKind::Fixture {
             ports.discovery = None;
