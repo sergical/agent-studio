@@ -137,6 +137,11 @@ jobs:
           # `default_server_url` in api.rs) - an unset repo variable keeps
           # the `http://127.0.0.1:8787` local-dev default.
           SKILL_STUDIO_SERVER_URL: ${{ vars.SKILL_STUDIO_SERVER_URL }}
+          # Compiled into the release binary via `option_env!` (see
+          # `skill_studio_host::telemetry::resolve_dsn`) - an unset repo
+          # variable expands to an empty string, which `resolve_dsn` treats
+          # as absent, so telemetry stays off until this is set.
+          SKILL_STUDIO_SENTRY_DSN: ${{ vars.SKILL_STUDIO_SENTRY_DSN }}
           # Apple's APPLE_CERTIFICATE/APPLE_SIGNING_IDENTITY/etc. are
           # deliberately NOT set here - see "Configure Apple code signing"
           # above, which appends them to $GITHUB_ENV (so they still reach

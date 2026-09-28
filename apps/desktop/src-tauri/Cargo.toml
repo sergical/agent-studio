@@ -90,7 +90,7 @@ libc = "0.2"
 rusqlite = { version = "0.40", features = ["bundled"] }
 ulid = "1"
 skill-studio-core = { path = "../../../crates/skill-studio-core" }
-skill-studio-host = { path = "../../../crates/skill-studio-host", features = ["error-reporting"] }
+skill-studio-host = { path = "../../../crates/skill-studio-host", features = ["telemetry"] }
 schemars = { version = "1", features = ["chrono04"] }
 tempfile = "3"
 

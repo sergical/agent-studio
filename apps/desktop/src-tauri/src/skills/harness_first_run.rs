@@ -30,6 +30,7 @@ use skill_studio_core::harness::HarnessReport;
 use skill_studio_core::identity::CorrelationId;
 use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::OpContext;
+use tauri::Manager;
 
 /// The first-run screen's saved choice, round-tripped through the registry.
 /// Kept small and documented per unit 3.2's issue: unit 4.4 reads `kept` to
@@ -108,11 +109,20 @@ pub async fn save_harnesses_choice(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let timing_app = app.clone();
+    let consent = app
+        .state::<super::error_reporting::ReportingState>()
+        .consent
+        .clone();
     crate::timing_log::time_command_blocking(&timing_app, "save_harnesses_choice", move || {
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
         let write_lease = super::write_lease::WriteLease::default();
-        save_harnesses_choice_at(&write_lease, &home, choice, error_reporting_enabled)?;
-        super::error_reporting::set_live_reporting_enabled(&app, error_reporting_enabled);
+        save_harnesses_choice_at(
+            &write_lease,
+            &home,
+            choice,
+            error_reporting_enabled,
+            &consent,
+        )?;
         Ok(())
     })
     .await
@@ -125,18 +135,23 @@ pub async fn save_harnesses_choice(
 /// `home`, so a test can root it under a tempdir with
 /// `WriteLease::with_lease_root` instead of the real data root - matching
 /// `set_harness_enabled_with`'s own guard parameter in
-/// `skill_harness_disable.rs`.
+/// `skill_harness_disable.rs`. Takes `Consent` the same way, so the
+/// first-run screen's telemetry choice takes effect without a restart the
+/// same way Settings' toggle does.
 fn save_harnesses_choice_at(
     write_lease: &super::write_lease::WriteLease,
     home: &std::path::Path,
     choice: HarnessesChoice,
     error_reporting_enabled: bool,
+    consent: &skill_studio_host::telemetry::Consent,
 ) -> Result<(), String> {
     let guard = write_lease.try_acquire(home)?;
     let mut registry = super::skill_fork_registry::read_fork_registry(home)?;
     registry.harnesses = Some(choice);
     registry.error_reporting_enabled = error_reporting_enabled;
-    super::skill_fork_registry::write_fork_registry_locked(&guard, home, &registry)
+    super::skill_fork_registry::write_fork_registry_locked(&guard, home, &registry)?;
+    consent.set(error_reporting_enabled);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -275,10 +290,11 @@ mod tests {
     /// `a_first_run_save_writes_the_telemetry_choice_or_leaves_the_registrys_default`:
     /// `save_harnesses_choice_at` must write `error_reporting_enabled`
     /// alongside `harnesses` in the same locked write, not leave it at
-    /// whatever `ForkRegistry::default()` picked. Fails if the telemetry
-    /// switch's value never reaches the registry. Uses
-    /// `WriteLease::with_lease_root` rooted inside the tempdir so this test
-    /// never touches the real data root's lock files.
+    /// whatever `ForkRegistry::default()` picked, and must flip the live
+    /// `Consent` passed in so the choice takes effect without a restart.
+    /// Fails if the telemetry switch's value never reaches the registry or
+    /// the `Consent`. Uses `WriteLease::with_lease_root` rooted inside the
+    /// tempdir so this test never touches the real data root's lock files.
     #[test]
     fn a_first_run_save_writes_the_telemetry_choice_or_leaves_the_registrys_default() {
         let tmp = tempfile::tempdir().unwrap();
@@ -286,6 +302,7 @@ mod tests {
         std::fs::create_dir_all(home.join(".agents")).unwrap();
         let write_lease =
             super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
+        let consent = skill_studio_host::telemetry::Consent::new(false);
 
         super::save_harnesses_choice_at(
             &write_lease,
@@ -296,6 +313,7 @@ mod tests {
                 saved_at: "2026-09-28T00:00:00Z".to_string(),
             },
             false,
+            &consent,
         )
         .unwrap();
         let after_off = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
@@ -313,12 +331,55 @@ mod tests {
                 saved_at: "2026-09-28T00:01:00Z".to_string(),
             },
             true,
+            &consent,
         )
         .unwrap();
         let after_on = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
         assert!(
             after_on.error_reporting_enabled,
             "a save with true must turn telemetry on in the registry"
+        );
+        assert!(
+            consent.enabled(),
+            "a save with true must flip the live Consent, not just the registry"
+        );
+    }
+
+    /// `turning_the_settings_switch_off_stops_reports_before_restart`: the
+    /// same persist-and-flip function called with `false` must leave both
+    /// the registry and the live `Consent` off - the property that makes a
+    /// telemetry opt-out take effect immediately rather than at next
+    /// launch.
+    #[test]
+    fn turning_the_settings_switch_off_stops_reports_before_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        let write_lease =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
+        let consent = skill_studio_host::telemetry::Consent::new(true);
+
+        super::save_harnesses_choice_at(
+            &write_lease,
+            &home,
+            HarnessesChoice {
+                kept: vec!["claude-code".to_string()],
+                search_project_folders: false,
+                saved_at: "2026-09-28T00:00:00Z".to_string(),
+            },
+            false,
+            &consent,
+        )
+        .unwrap();
+
+        assert!(
+            !consent.enabled(),
+            "turning the switch off must flip the live Consent before restart"
+        );
+        let registry = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert!(
+            !registry.error_reporting_enabled,
+            "turning the switch off must persist false to the registry"
         );
     }
 

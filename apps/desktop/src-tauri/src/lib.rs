@@ -277,10 +277,6 @@ fn apply_fixture_home_override() {
 #[allow(clippy::expect_used)]
 pub fn run() {
     apply_fixture_home_override();
-    // Before Tauri's own setup, so a panic during setup itself is still
-    // caught once `set_global_state` below registers the state to report
-    // through.
-    skills::error_reporting::install_panic_hook();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -319,11 +315,18 @@ pub fn run() {
             let error_reporting_enabled = dirs::home_dir()
                 .and_then(|home| skills::skill_fork_registry::read_fork_registry(&home).ok())
                 .is_some_and(|registry| registry.error_reporting_enabled);
-            let reporting_state = std::sync::Arc::new(
-                skills::error_reporting::ReportingState::new(error_reporting_enabled),
+            let consent = skill_studio_host::telemetry::Consent::new(error_reporting_enabled);
+            // Before any other setup, so a panic anywhere else in setup is
+            // still caught by the hook `telemetry::init` installs.
+            let telemetry_guard = skill_studio_host::telemetry::init(
+                skill_studio_host::telemetry::Surface::Desktop,
+                env!("CARGO_PKG_VERSION"),
+                consent.clone(),
             );
-            skills::error_reporting::set_global_state(reporting_state.clone());
-            app.manage(reporting_state);
+            app.manage(skills::error_reporting::ReportingState {
+                consent,
+                guard: std::sync::Mutex::new(telemetry_guard),
+            });
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
             // Unit 6.2: in-app update through tauri-plugin-updater. The
             // engine is managed state so the launch check below, the
@@ -442,6 +445,23 @@ pub fn run() {
             // skill_run_target, skill_run_history, skill_pack, and skill_process still
             // compile and test, but none of their commands are registered here.
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(move |app, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(guard) = app
+                    .state::<skills::error_reporting::ReportingState>()
+                    .guard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    let flushed = skill_studio_host::telemetry::shutdown(guard);
+                    #[cfg(debug_assertions)]
+                    eprintln!("[telemetry] shutdown flush complete: {flushed}");
+                    #[cfg(not(debug_assertions))]
+                    let _ = flushed;
+                }
+            }
+        });
 }
