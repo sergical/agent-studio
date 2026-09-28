@@ -1,8 +1,6 @@
 //! Sentry crash-report client (PR1, unit 6.4): one event per Rust panic,
-//! carrying only the code location, the app version, OS/CPU context, and a
-//! `surface` tag - gated end-to-end by a live [`Consent`] flag so nothing
-//! leaves the machine while the user's switch is off. See
-//! `docs/spec-headless-performance-observability.md`.
+//! carrying the code location, a redacted stack trace, and OS/CPU/`surface`
+//! context - gated end-to-end by a live [`Consent`] flag. See `docs/spec-headless-performance-observability.md`.
 
 use std::panic::PanicHookInfo;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -74,9 +72,14 @@ pub struct TelemetryGuard(ClientInitGuard);
 
 /// Starts Sentry when a DSN is available (compile-time wins, then
 /// [`DSN_ENV_VAR`] at run time), installs the panic hook, and returns the
-/// guard. Returns `None` - and installs nothing - when no DSN is available,
-/// which is every build until `SKILL_STUDIO_SENTRY_DSN` is set. Never
-/// panics: `resolve_dsn` and the DSN parse both fail closed.
+/// guard. Returns `None` - and installs nothing - when no DSN is available
+/// or the available one doesn't parse, which is every build until
+/// `SKILL_STUDIO_SENTRY_DSN` is set to a valid DSN. Never panics:
+/// `resolve_dsn` fails closed rather than falling back or panicking.
+/// `sentry::init` runs before [`install_panic_hook`]: the process hub is
+/// owned by whichever thread first touches a hub, so a panic on another
+/// thread between the two calls would otherwise bind the client to the
+/// wrong hub.
 pub fn init(
     surface: Surface,
     app_version: &'static str,
@@ -86,8 +89,8 @@ pub fn init(
         option_env!("SKILL_STUDIO_SENTRY_DSN"),
         std::env::var(DSN_ENV_VAR).ok(),
     )?;
+    let guard = sentry::init(client_options(dsn, surface, app_version, consent));
     install_panic_hook(surface);
-    let guard = sentry::init(client_options(&dsn, surface, app_version, consent));
     Some(TelemetryGuard(guard))
 }
 
@@ -103,8 +106,12 @@ pub fn shutdown(guard: TelemetryGuard) -> bool {
 /// The compile-time value wins; the run-time variable is the fallback so a
 /// developer can point a local build at a test project without a rebuild.
 /// An empty string counts as absent either way - an unset repo variable in
-/// CI expands to `""`, not an omitted `env:` entry.
-fn resolve_dsn(build: Option<&str>, process_env: Option<String>) -> Option<String> {
+/// CI expands to `""`, not an omitted `env:` entry. A value that doesn't
+/// parse as a DSN - from either source - returns `None` rather than falling
+/// back to the other source: a malformed compile-time DSN must disable
+/// telemetry, not silently let a run-time value (or `sentry::apply_defaults`
+/// reading `SENTRY_DSN` from the environment) take over.
+fn resolve_dsn(build: Option<&str>, process_env: Option<String>) -> Option<sentry::types::Dsn> {
     fn non_empty(value: String) -> Option<String> {
         if value.is_empty() {
             None
@@ -112,16 +119,17 @@ fn resolve_dsn(build: Option<&str>, process_env: Option<String>) -> Option<Strin
             Some(value)
         }
     }
-    build
+    let raw = build
         .map(str::to_string)
         .and_then(non_empty)
-        .or_else(|| process_env.and_then(non_empty))
+        .or_else(|| process_env.and_then(non_empty))?;
+    raw.parse().ok()
 }
 
 /// Builds the options `init` hands to `sentry::init`. Kept apart from `init`
 /// so a test can inspect the values without starting a real client.
 fn client_options(
-    dsn: &str,
+    dsn: sentry::types::Dsn,
     surface: Surface,
     app_version: &'static str,
     consent: Consent,
@@ -131,10 +139,7 @@ fn client_options(
     // crate - build the default and mutate the fields this module cares
     // about instead.
     let mut options = ClientOptions::default();
-    // A malformed DSN (only reachable through the run-time fallback - the
-    // compile-time one is set once, by the release workflow) fails closed
-    // to a disabled client rather than panicking `init`.
-    options.dsn = dsn.parse().ok();
+    options.dsn = Some(dsn);
     options.release = Some(format!("skill-studio@{app_version}").into());
     options.environment = Some(
         if cfg!(debug_assertions) {
@@ -167,6 +172,25 @@ fn redact_event(mut event: Event<'static>, surface: Surface) -> Event<'static> {
     event
         .contexts
         .retain(|key, _| matches!(key.as_str(), "os" | "device" | "rust" | "runtime"));
+    // `sentry-backtrace` fills `abs_path` with the full build-machine path
+    // (e.g. `/Users/someone/.cargo/registry/...`); `filename` already holds
+    // just the basename. Strip `abs_path` from every frame - function
+    // names, line numbers, and basenames stay, so the trace is still useful
+    // without naming the machine it was built on.
+    for thread in &mut event.threads.values {
+        if let Some(stacktrace) = thread.stacktrace.as_mut() {
+            for frame in &mut stacktrace.frames {
+                frame.abs_path = None;
+            }
+        }
+    }
+    for exception in &mut event.exception.values {
+        if let Some(stacktrace) = exception.stacktrace.as_mut() {
+            for frame in &mut stacktrace.frames {
+                frame.abs_path = None;
+            }
+        }
+    }
     event
         .tags
         .insert("surface".to_string(), surface.as_str().to_string());
@@ -204,12 +228,22 @@ struct ConsentTransportFactory {
 }
 
 impl TransportFactory for ConsentTransportFactory {
+    /// Bounds the HTTP client to [`SHUTDOWN_FLUSH`]: `sentry`'s own reqwest
+    /// client has no timeout, and `TransportThread::drop` joins the worker,
+    /// which waits for any in-flight request - so an unbounded client could
+    /// hang quit on a stalled network. A client that fails to build (a
+    /// misconfigured TLS backend) falls back to the unbounded default
+    /// rather than losing the transport entirely.
     fn create_transport_with_options(
         &self,
         options: sentry::TransportOptions,
     ) -> Arc<dyn Transport> {
-        let inner: Arc<dyn Transport> =
-            Arc::new(ReqwestHttpTransportOptions::from(options).build());
+        let client = reqwest::Client::builder().timeout(SHUTDOWN_FLUSH).build();
+        let opts = ReqwestHttpTransportOptions::from(options);
+        let inner: Arc<dyn Transport> = match client {
+            Ok(client) => Arc::new(opts.with_client(client).build()),
+            Err(_) => Arc::new(opts.build()),
+        };
         Arc::new(ConsentTransport {
             inner,
             consent: self.consent.clone(),
@@ -249,21 +283,43 @@ fn panic_event(info: &PanicHookInfo<'_>, surface: Surface) -> Event<'static> {
     }
 }
 
+/// The hook body `install_panic_hook` installs: reports `panic_event`
+/// through `sentry::capture_event` (a no-op with no client bound), then
+/// flushes the bound client for at most [`SHUTDOWN_FLUSH`] before running
+/// `next`, so a panic still prints to stderr exactly as it did without this
+/// unit when `next` is the hook that was previously installed. The flush
+/// matters because `capture_event` only queues the envelope on the
+/// transport thread - a main-thread panic on macOS never reaches
+/// `RunEvent::Exit` (`tao` resumes the unwind before `LoopDestroyed`), so
+/// without it the crash report is lost. Mirrors `sentry_panic::panic_handler`.
+/// Factored out from `install_panic_hook` so a test can build and install a
+/// fresh hook directly: `install_panic_hook`'s `Once` guards its one
+/// production caller (`init`) and only ever fires once, so a second test
+/// wanting its own hook swapped in and out around its own panic can't go
+/// through `install_panic_hook` - the `Once` would already be spent by
+/// whichever hook test ran first.
+fn panic_hook(
+    surface: Surface,
+    next: Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync>,
+) -> Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> {
+    Box::new(move |info| {
+        sentry::capture_event(panic_event(info, surface));
+        if let Some(client) = sentry::Hub::current().client() {
+            client.flush(Some(SHUTDOWN_FLUSH));
+        }
+        next(info);
+    })
+}
+
 static PANIC_HOOK_INSTALLED: Once = Once::new();
 
-/// Installs a panic hook that reports `panic_event` through
-/// `sentry::capture_event` (a no-op with no client bound) before running the
-/// previous hook, so a panic still prints to stderr exactly as it did
-/// without this unit. Installs at most once per process - a second call
-/// (there is only one caller, `init`) is a no-op rather than double-wrapping
-/// the hook.
+/// Installs [`panic_hook`] wrapping whatever hook was previously in place.
+/// Installs at most once per process - a second call (there is only one
+/// caller, `init`) is a no-op rather than double-wrapping the hook.
 fn install_panic_hook(surface: Surface) {
     PANIC_HOOK_INSTALLED.call_once(|| {
         let default_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            sentry::capture_event(panic_event(info, surface));
-            default_hook(info);
-        }));
+        std::panic::set_hook(panic_hook(surface, default_hook));
     });
 }
 
@@ -277,9 +333,13 @@ mod tests {
     // is mid-swap.
     static HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    /// guards: a real panic reaching the installed hook must produce
-    /// exactly one Sentry event carrying only the code location - never the
-    /// panic payload text, which here quotes a skill name and a home path.
+    /// guards: a real panic reaching the installed hook, through the real
+    /// `ContextIntegration`/`AttachStacktraceIntegration`/`redact_event`
+    /// pipeline (not the bare-default client `with_captured_events` builds),
+    /// must produce exactly one Sentry event carrying only the code
+    /// location, OS context, and a redacted stack trace - never the panic
+    /// payload text, which here quotes a skill name and a home path, and
+    /// never the build-machine's absolute paths.
     #[test]
     fn a_real_panic_produces_one_event_with_the_location_only() {
         let _guard = HOOK_TEST_LOCK
@@ -298,9 +358,23 @@ mod tests {
         }
         let panic_line = line!() - 2;
 
-        let events = sentry::test::with_captured_events(|| {
-            let _ = std::panic::catch_unwind(panic_with_a_sensitive_message);
-        });
+        let dsn: sentry::types::Dsn = "https://examplePublicKey@o0.ingest.sentry.io/0"
+            .parse()
+            .expect("placeholder dsn parses");
+        let mut opts = client_options(dsn, Surface::Desktop, "0.0.0", Consent::new(true));
+        opts.integrations.push(Arc::new(
+            sentry::integrations::contexts::ContextIntegration::default(),
+        ));
+        opts.integrations.push(Arc::new(
+            sentry::integrations::backtrace::AttachStacktraceIntegration,
+        ));
+
+        let events = sentry::test::with_captured_events_options(
+            || {
+                let _ = std::panic::catch_unwind(panic_with_a_sensitive_message);
+            },
+            opts,
+        );
         std::panic::set_hook(previous_hook);
 
         assert_eq!(
@@ -316,20 +390,156 @@ mod tests {
             message.starts_with(&expected_prefix),
             "message {message:?} did not start with {expected_prefix:?}"
         );
+
+        assert!(event.server_name.is_none(), "server_name must be redacted");
+        assert!(event.user.is_none(), "user must be redacted");
+        assert!(event.request.is_none(), "request must be redacted");
+        assert!(event.breadcrumbs.is_empty(), "breadcrumbs must be redacted");
+        assert!(event.extra.is_empty(), "extra must be redacted");
+
+        let context_keys: std::collections::BTreeSet<&str> =
+            event.contexts.keys().map(String::as_str).collect();
+        let allowed: std::collections::BTreeSet<&str> =
+            ["os", "device", "rust"].into_iter().collect();
+        assert!(
+            context_keys.is_subset(&allowed),
+            "unexpected context keys {context_keys:?}"
+        );
+        assert!(context_keys.contains("os"), "expected an os context");
+
+        let mut saw_function = false;
+        let mut saw_stacktrace = false;
+        for thread in &event.threads.values {
+            if let Some(stacktrace) = &thread.stacktrace {
+                saw_stacktrace = true;
+                for frame in &stacktrace.frames {
+                    assert!(
+                        frame.abs_path.is_none(),
+                        "a frame kept its absolute path: {frame:?}"
+                    );
+                    if frame.function.is_some() {
+                        saw_function = true;
+                    }
+                }
+            }
+        }
+        assert!(saw_stacktrace, "expected at least one thread stacktrace");
+        assert!(
+            saw_function,
+            "expected at least one frame with a function name"
+        );
+
         let serialized = serde_json::to_string(event).expect("serialize event");
         assert!(
             !serialized.contains("my-skill"),
             "a skill name leaked into the event: {serialized}"
         );
-        assert!(
-            !serialized.contains("/Users/"),
-            "a home path leaked into the event: {serialized}"
+        if let Ok(home) = std::env::var("HOME") {
+            assert!(
+                !serialized.contains(&home),
+                "the home path leaked into the event: {serialized}"
+            );
+        }
+    }
+
+    /// guards: `install_panic_hook` forgetting to flush - `capture_event`
+    /// only queues the envelope, so a main-thread panic that never reaches
+    /// `RunEvent::Exit` (tao resumes the unwind before `LoopDestroyed`)
+    /// would otherwise lose the crash report. Binds a client whose
+    /// transport is a fake recording each `send_envelope` and `flush` call
+    /// in order directly on a hub for this test thread with `Hub::run` -
+    /// `with_captured_events(_options)` replaces the transport with its own
+    /// `TestTransport`, which is exactly the substitution this test needs to
+    /// see through.
+    #[test]
+    fn a_panic_flushes_the_transport_before_the_hook_returns() {
+        #[derive(Debug, PartialEq)]
+        enum RecordedCall {
+            Envelope,
+            Flush(Duration),
+        }
+
+        #[derive(Default)]
+        struct RecordingTransport {
+            calls: Mutex<Vec<RecordedCall>>,
+        }
+        impl Transport for RecordingTransport {
+            fn send_envelope(&self, _envelope: Envelope) {
+                self.calls
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(RecordedCall::Envelope);
+            }
+            fn flush(&self, timeout: Duration) -> bool {
+                self.calls
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(RecordedCall::Flush(timeout));
+                true
+            }
+        }
+
+        struct FixedTransportFactory(Arc<dyn Transport>);
+        impl TransportFactory for FixedTransportFactory {
+            fn create_transport_with_options(
+                &self,
+                _options: sentry::TransportOptions,
+            ) -> Arc<dyn Transport> {
+                self.0.clone()
+            }
+        }
+
+        let _guard = HOOK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let dsn: sentry::types::Dsn = "https://examplePublicKey@o0.ingest.sentry.io/0"
+            .parse()
+            .expect("placeholder dsn parses");
+        let recording = Arc::new(RecordingTransport::default());
+        let mut options = client_options(dsn, Surface::Desktop, "0.0.0", Consent::new(true));
+        options.transport = Some(Arc::new(FixedTransportFactory(recording.clone())));
+        let hub = Arc::new(sentry::Hub::new(
+            Some(Arc::new(sentry::Client::with_options(options))),
+            Arc::new(sentry::Scope::default()),
+        ));
+
+        // Builds via `panic_hook` directly rather than `install_panic_hook`:
+        // that function's `Once` guards its one production caller (`init`)
+        // and is process-global, so it would only ever fire for whichever
+        // of this test and `a_real_panic_produces_one_event_with_the_location_only`
+        // runs first, leaving the second test's hook uninstalled.
+        let next_hook = std::panic::take_hook();
+        std::panic::set_hook(panic_hook(Surface::Desktop, next_hook));
+
+        #[allow(clippy::panic)]
+        fn panic_fixture() {
+            panic!("a panic the hook must flush before returning");
+        }
+
+        sentry::Hub::run(hub, || {
+            let _ = std::panic::catch_unwind(panic_fixture);
+        });
+        // Discard our hook rather than an explicitly saved "previous" one:
+        // `next_hook` was moved into `panic_hook` above, and dropping
+        // whatever `take_hook` returns here resets to the same default
+        // hook `next_hook` was under this lock.
+        let _ = std::panic::take_hook();
+
+        let calls = recording
+            .calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            *calls,
+            vec![RecordedCall::Envelope, RecordedCall::Flush(SHUTDOWN_FLUSH)],
+            "expected exactly one envelope then one flush with SHUTDOWN_FLUSH, got {calls:?}"
         );
     }
 
-    /// guards: `redact_event` failing to strip a hostname, user, request, or
-    /// breadcrumbs an integration attached upstream of it - the safety net
-    /// this function exists to be.
+    /// guards: `redact_event` failing to strip a hostname, user, request,
+    /// breadcrumbs, or a frame's absolute path - the safety net this
+    /// function exists to be.
     #[test]
     fn before_send_strips_hostname_user_request_and_breadcrumbs() {
         let mut event = Event {
@@ -349,6 +559,18 @@ mod tests {
             "note".to_string(),
             serde_json::Value::String("secret".to_string()),
         );
+        event.threads.values.push(sentry::protocol::Thread {
+            stacktrace: Some(sentry::protocol::Stacktrace {
+                frames: vec![sentry::protocol::Frame {
+                    abs_path: Some("/Users/someone/.cargo/registry/x/lib.rs".into()),
+                    filename: Some("lib.rs".into()),
+                    function: Some("skill_studio_core::ops::install".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
 
         let redacted = redact_event(event, Surface::Desktop);
 
@@ -360,6 +582,17 @@ mod tests {
         assert_eq!(
             redacted.tags.get("surface").map(String::as_str),
             Some("desktop")
+        );
+        let frame = &redacted.threads.values[0]
+            .stacktrace
+            .as_ref()
+            .expect("stacktrace")
+            .frames[0];
+        assert!(frame.abs_path.is_none(), "abs_path must be stripped");
+        assert_eq!(frame.filename.as_deref(), Some("lib.rs"));
+        assert_eq!(
+            frame.function.as_deref(),
+            Some("skill_studio_core::ops::install")
         );
     }
 
@@ -406,21 +639,32 @@ mod tests {
 
     /// guards: `shutdown` failing to pass `SHUTDOWN_FLUSH` down to the
     /// transport, or swallowing the transport's own report of whether the
-    /// queue drained.
+    /// queue drained. `options.shutdown_timeout` is set far above
+    /// `SHUTDOWN_FLUSH` so this test cannot pass by accident: were `shutdown`
+    /// to pass `None` (falling back to `ClientInitGuard::drop`'s own
+    /// `close(None)`, which reads `shutdown_timeout`) the recorded timeout
+    /// would be 30s, not `SHUTDOWN_FLUSH`. Only the *first* `flush`/`shutdown`
+    /// call is recorded, because `close` always calls `flush` once itself and
+    /// then `ClientInitGuard`'s `Drop` calls `close(None)` again on top of
+    /// that - recording the last call would see the drop's `None`, not
+    /// `shutdown`'s own request.
     #[test]
     fn shutdown_asks_the_transport_to_flush_within_two_seconds() {
         #[derive(Default)]
         struct RecordingTransport {
-            seen_timeout: Mutex<Option<Duration>>,
+            first_timeout: Mutex<Option<Duration>>,
         }
         impl Transport for RecordingTransport {
             fn send_envelope(&self, _envelope: Envelope) {}
             fn flush(&self, timeout: Duration) -> bool {
-                *self
-                    .seen_timeout
+                let mut seen = self
+                    .first_timeout
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(timeout);
-                false
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if seen.is_none() {
+                    *seen = Some(timeout);
+                }
+                true
             }
             fn shutdown(&self, timeout: Duration) -> bool {
                 self.flush(timeout)
@@ -442,38 +686,42 @@ mod tests {
         options.dsn = "https://examplePublicKey@o0.ingest.sentry.io/0"
             .parse()
             .ok();
-        options.shutdown_timeout = SHUTDOWN_FLUSH;
+        options.shutdown_timeout = Duration::from_secs(30);
         options.transport = Some(Arc::new(FixedTransportFactory(recording.clone())));
         let guard = TelemetryGuard(sentry::init(options));
 
         let result = shutdown(guard);
 
-        assert!(!result, "the fake transport reports an incomplete flush");
+        assert!(result, "the fake transport reports a completed flush");
         assert_eq!(
-            *recording.seen_timeout.lock().expect("recorder"),
+            *recording.first_timeout.lock().expect("recorder"),
             Some(SHUTDOWN_FLUSH),
             "shutdown did not ask the transport to flush within SHUTDOWN_FLUSH"
         );
     }
 
-    /// guards: the compile-time DSN losing to the run-time one, or an empty
+    /// guards: the compile-time DSN losing to the run-time one, an empty
     /// string (an unset repo variable's `env:` expansion) counting as
-    /// present.
+    /// present, or a malformed DSN falling back to the other source instead
+    /// of disabling telemetry.
     #[test]
     fn resolve_dsn_prefers_the_build_value_and_treats_empty_as_absent() {
-        let cases: &[(Option<&str>, Option<&str>, Option<&str>)] = &[
-            (Some("build-dsn"), Some("env-dsn"), Some("build-dsn")),
-            (None, Some("env-dsn"), Some("env-dsn")),
-            (Some(""), Some("env-dsn"), Some("env-dsn")),
-            (None, Some(""), None),
-            (None, None, None),
+        const VALID: &str = "https://examplePublicKey@o0.ingest.sentry.io/0";
+        let cases: &[(Option<&str>, Option<&str>, bool)] = &[
+            (Some(VALID), Some("not-a-dsn"), true),
+            (None, Some(VALID), true),
+            (Some(""), Some(VALID), true),
+            (None, Some(""), false),
+            (None, None, false),
+            (Some("not-a-dsn"), None, false),
+            (Some("not-a-dsn"), Some(VALID), false),
         ];
-        for (build, env, expected) in cases {
+        for (build, env, expect_some) in cases {
             let actual = resolve_dsn(*build, env.map(str::to_string));
             assert_eq!(
-                actual.as_deref(),
-                *expected,
-                "resolve_dsn({build:?}, {env:?}) should be {expected:?}"
+                actual.is_some(),
+                *expect_some,
+                "resolve_dsn({build:?}, {env:?}) should resolve to a dsn: {expect_some}"
             );
         }
     }
@@ -483,12 +731,10 @@ mod tests {
     /// string the version passed in.
     #[test]
     fn client_options_never_carry_pii_defaults() {
-        let options = client_options(
-            "https://examplePublicKey@o0.ingest.sentry.io/0",
-            Surface::Desktop,
-            "9.9.9",
-            Consent::new(false),
-        );
+        let dsn: sentry::types::Dsn = "https://examplePublicKey@o0.ingest.sentry.io/0"
+            .parse()
+            .expect("placeholder dsn parses");
+        let options = client_options(dsn, Surface::Desktop, "9.9.9", Consent::new(false));
 
         assert!(!options.send_default_pii);
         assert_eq!(options.server_name.as_deref(), Some("skill-studio"));

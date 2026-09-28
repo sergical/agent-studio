@@ -281,6 +281,25 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // Reads `~/.agents/skill-studio.json`, not `app_data_dir` -
+            // independent of the data-folder migration below - so this runs
+            // first: a panic anywhere else in setup, including that
+            // migration and `skill_refresh::init`, is still caught by the
+            // hook `telemetry::init` installs.
+            let error_reporting_enabled = dirs::home_dir()
+                .and_then(|home| skills::skill_fork_registry::read_fork_registry(&home).ok())
+                .is_some_and(|registry| registry.error_reporting_enabled);
+            let consent = skill_studio_host::telemetry::Consent::new(error_reporting_enabled);
+            let telemetry_guard = skill_studio_host::telemetry::init(
+                skill_studio_host::telemetry::Surface::Desktop,
+                env!("CARGO_PKG_VERSION"),
+                consent.clone(),
+            );
+            app.manage(skills::error_reporting::ReportingState {
+                consent,
+                guard: std::sync::Mutex::new(telemetry_guard),
+            });
+
             // Unit 6.3: check the data folder's schema_version before
             // anything else in setup - every branch below either spawns a
             // background thread or manages state a Tauri command can read,
@@ -312,21 +331,6 @@ pub fn run() {
             }
             app.manage(skills::skill_agent_runner::SkillAgentRunnerState::default());
             app.manage(skills::skill_run_target::SkillRunTargetState::default());
-            let error_reporting_enabled = dirs::home_dir()
-                .and_then(|home| skills::skill_fork_registry::read_fork_registry(&home).ok())
-                .is_some_and(|registry| registry.error_reporting_enabled);
-            let consent = skill_studio_host::telemetry::Consent::new(error_reporting_enabled);
-            // Before any other setup, so a panic anywhere else in setup is
-            // still caught by the hook `telemetry::init` installs.
-            let telemetry_guard = skill_studio_host::telemetry::init(
-                skill_studio_host::telemetry::Surface::Desktop,
-                env!("CARGO_PKG_VERSION"),
-                consent.clone(),
-            );
-            app.manage(skills::error_reporting::ReportingState {
-                consent,
-                guard: std::sync::Mutex::new(telemetry_guard),
-            });
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
             // Unit 6.2: in-app update through tauri-plugin-updater. The
             // engine is managed state so the launch check below, the
@@ -449,13 +453,15 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(move |app, event| {
             if let tauri::RunEvent::Exit = event {
-                if let Some(guard) = app
-                    .state::<skills::error_reporting::ReportingState>()
+                let Some(state) = app.try_state::<skills::error_reporting::ReportingState>() else {
+                    return;
+                };
+                let taken_guard = state
                     .guard
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take()
-                {
+                    .take();
+                if let Some(guard) = taken_guard {
                     let flushed = skill_studio_host::telemetry::shutdown(guard);
                     #[cfg(debug_assertions)]
                     eprintln!("[telemetry] shutdown flush complete: {flushed}");

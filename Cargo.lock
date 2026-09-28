@@ -4506,6 +4506,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "percent-encoding",
+ "reqwest 0.13.4",
  "rusqlite",
  "sentry",
  "serde",

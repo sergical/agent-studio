@@ -11,6 +11,7 @@
 // `Consent` handle they flip alongside it.
 // ============================================================================
 
+use std::path::Path;
 use std::sync::Mutex;
 
 use skill_studio_host::telemetry::{Consent, TelemetryGuard};
@@ -57,20 +58,61 @@ pub async fn set_error_reporting_enabled(
         "set_error_reporting_enabled",
         move || {
             let home = dirs::home_dir().ok_or("Could not find home directory")?;
-            let mut registry = super::skill_fork_registry::read_fork_registry(&home)?;
-            registry.error_reporting_enabled = enabled;
-            super::skill_fork_registry::write_fork_registry(&home, &registry)?;
-            set_live_reporting_enabled(&app, enabled);
+            let consent = app.state::<ReportingState>().consent.clone();
+            set_error_reporting_enabled_at(&home, enabled, &consent)?;
             Ok(enabled)
         },
     )
     .await
 }
 
-/// Flips the managed `ReportingState`'s live `Consent` - shared by
-/// `set_error_reporting_enabled` and `harness_first_run::save_harnesses_choice`
-/// so the first-run screen's telemetry choice takes effect without a
-/// restart the same way Settings' toggle does.
-pub(crate) fn set_live_reporting_enabled(app: &tauri::AppHandle, enabled: bool) {
-    app.state::<ReportingState>().consent.set(enabled);
+/// The persist-and-flip body of `set_error_reporting_enabled`, kept apart so
+/// a test can drive it with a plain `home` path and `Consent` - a
+/// `tauri::AppHandle` can't be constructed outside a running app (see
+/// `harness_first_run::save_harnesses_choice_at`'s own split for the same
+/// reason). Saves the switch and flips the live `Consent` so it takes
+/// effect without a restart.
+pub(crate) fn set_error_reporting_enabled_at(
+    home: &Path,
+    enabled: bool,
+    consent: &Consent,
+) -> Result<(), String> {
+    let mut registry = super::skill_fork_registry::read_fork_registry(home)?;
+    registry.error_reporting_enabled = enabled;
+    super::skill_fork_registry::write_fork_registry(home, &registry)?;
+    consent.set(enabled);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `turning_the_settings_switch_off_stops_reports_before_restart`: the
+    /// same persist-and-flip function called with `false` must leave both
+    /// the registry and the live `Consent` off - the property that makes a
+    /// telemetry opt-out take effect immediately rather than at next
+    /// launch.
+    #[test]
+    fn turning_the_settings_switch_off_stops_reports_before_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        let mut registry = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        registry.error_reporting_enabled = true;
+        super::super::skill_fork_registry::write_fork_registry(&home, &registry).unwrap();
+        let consent = Consent::new(true);
+
+        set_error_reporting_enabled_at(&home, false, &consent).unwrap();
+
+        assert!(
+            !consent.enabled(),
+            "turning the switch off must flip the live Consent before restart"
+        );
+        let after = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert!(
+            !after.error_reporting_enabled,
+            "turning the switch off must persist false to the registry"
+        );
+    }
 }

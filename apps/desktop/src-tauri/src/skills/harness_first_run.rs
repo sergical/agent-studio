@@ -345,44 +345,6 @@ mod tests {
         );
     }
 
-    /// `turning_the_settings_switch_off_stops_reports_before_restart`: the
-    /// same persist-and-flip function called with `false` must leave both
-    /// the registry and the live `Consent` off - the property that makes a
-    /// telemetry opt-out take effect immediately rather than at next
-    /// launch.
-    #[test]
-    fn turning_the_settings_switch_off_stops_reports_before_restart() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        std::fs::create_dir_all(home.join(".agents")).unwrap();
-        let write_lease =
-            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
-        let consent = skill_studio_host::telemetry::Consent::new(true);
-
-        super::save_harnesses_choice_at(
-            &write_lease,
-            &home,
-            HarnessesChoice {
-                kept: vec!["claude-code".to_string()],
-                search_project_folders: false,
-                saved_at: "2026-09-28T00:00:00Z".to_string(),
-            },
-            false,
-            &consent,
-        )
-        .unwrap();
-
-        assert!(
-            !consent.enabled(),
-            "turning the switch off must flip the live Consent before restart"
-        );
-        let registry = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
-        assert!(
-            !registry.error_reporting_enabled,
-            "turning the switch off must persist false to the registry"
-        );
-    }
-
     /// `unknown_prints_as_unknown_never_guessed_from_a_folder_name`: a
     /// harness whose `--version` prints nothing usable (here, no spawner
     /// port at all, the same "no primary source" case) must report `version`
