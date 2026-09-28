@@ -1,14 +1,27 @@
 name: Deploy Server
 
-# Manual only for now - no push trigger until the hosted URL has been
-# rehearsed. The skills.sh key itself is never in this workflow: it's set
-# once by hand with `wrangler secret put SKILLS_SH_API_KEY` (see
-# apps/server/README.md).
+# CI owns the hosted skills.sh proxy's deploy: the Worker is live, so every
+# merge that touches apps/server lands by itself and this run records the
+# commit that is serving production (re-run it to roll back). The skills.sh
+# key itself is never in this workflow: it's set once by hand with
+# `wrangler secret put SKILLS_SH_API_KEY` (see apps/server/README.md).
 on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/server/**"
+      - ".github/workflows/deploy-server.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# One deploy at a time: a new run waits for the one in flight instead of
+# racing it, and only the newest pending commit survives, so an earlier merge
+# can't finish last and leave an older commit serving production.
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -25,7 +38,9 @@ jobs:
       - run: npm test -w @skill-studio/server
       - name: Deploy to Cloudflare Workers
         working-directory: apps/server
-        run: npx wrangler deploy
+        # The deployed commit is injected as a Worker variable so the live
+        # version is readable from `GET /version`, not just this run's history.
+        run: npx wrangler deploy --var SKILL_STUDIO_SERVER_VERSION:${{ github.sha }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

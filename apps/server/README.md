@@ -16,6 +16,7 @@ The server refuses to start without it. `PORT` defaults to `8787`, bound to
 ## Routes
 
 - `GET /health` -> `{ ok: true }`, no upstream call
+- `GET /version` -> `{ version }`, the commit CI deployed, no upstream call
 - `GET /api/v1/skills`, `GET /api/v1/skills/search`, `GET /api/v1/skills/:owner/:repo/:slug`
   -> proxied to `https://skills.sh/api/v1`, query string passed through verbatim
 
@@ -26,17 +27,23 @@ release builds of the desktop app that don't have a local server to talk to
 (see `SKILL_STUDIO_SERVER_URL` in the root `apps/desktop` release build). It's
 hosted at `https://api.useskillstudio.com`.
 
-The shortest path, from `apps/server`:
+First-time setup, from `apps/server`:
 
 ```bash
 npx wrangler login
 npx wrangler secret put SKILLS_SH_API_KEY   # paste the real skills.sh key when prompted
-npm run deploy -w @skill-studio/server
 ```
 
-The optional second path is `.github/workflows/deploy-server.yml`, which
-redeploys on demand (`workflow_dispatch`) using `CLOUDFLARE_API_TOKEN` and
-`CLOUDFLARE_ACCOUNT_ID` repo secrets - it never sees the skills.sh key.
+After that, CI owns the deploy: `.github/workflows/deploy-server.yml` runs on
+every push to `main` that touches `apps/server`, using the
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets (it never sees
+the skills.sh key). Each run records the commit it deployed and can be re-run
+to roll back; it can also be started on demand (`workflow_dispatch`).
+`npm run deploy -w @skill-studio/server` still deploys by hand for local
+experiments.
+
+`GET /version` reports the commit the workflow deployed, so the live version is
+readable without the Cloudflare dashboard.
 
 The repo variable `SKILL_STUDIO_SERVER_URL` must be `https://api.useskillstudio.com`
 for release builds. Set it only after the first deploy answers on `/health`.
