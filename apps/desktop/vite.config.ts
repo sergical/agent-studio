@@ -15,12 +15,13 @@ export default defineConfig(async () => ({
   // Sentry's `component` tag (see frontend-error-report.ts) comes from a
   // function name in React's component stack; the default Oxc minifier
   // mangles those to single letters (e.g. `Kc`), which would make the tag
-  // useless in the packaged app. Keep whitespace and syntax minification,
-  // turn off only identifier mangling.
+  // useless in the packaged app. `mangle.keepNames` preserves only function
+  // and class declaration names - everything else (locals, params) is still
+  // mangled - so this costs far less bundle size than turning mangling off.
   build: {
     rolldownOptions: {
       output: {
-        minify: { mangle: false },
+        minify: { mangle: { keepNames: { function: true, class: true } } },
       },
     },
   },
