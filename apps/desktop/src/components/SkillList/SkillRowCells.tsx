@@ -53,6 +53,12 @@ function glyphFor(state: RowState, size = 14): ReactNode {
       return <CircleArrowDown size={size} aria-hidden />;
     case "parked":
       return <CirclePause size={size} aria-hidden />;
+    case "issue":
+      return state.level === "error" ? (
+        <CircleAlert size={size} aria-hidden />
+      ) : (
+        <TriangleAlert size={size} aria-hidden />
+      );
   }
 }
 

@@ -7,17 +7,36 @@
 import {
   AGENT_MATRIX_LABELS,
   driftingCopies,
+  HEALTH_ISSUE_SEVERITY,
   isBlockingSpecViolation,
   locationSummary,
   parentDirectory,
 } from "@skill-studio/lib";
-import type { AgentId, Deployment, InstalledSkill } from "@skill-studio/lib";
+import type {
+  AgentId,
+  Deployment,
+  HealthIssue,
+  HealthIssueKind,
+  InstalledSkill,
+} from "@skill-studio/lib";
 import { buildScopeGroups, skillRollup } from "../SkillDetail/skill-location-status";
 import { harnessIdFromLabel } from "../ui/HarnessIcon";
 
 export type RowLevel = "error" | "warning" | "info" | "muted";
-/** Which ladder rung produced the state; picks the glyph in SkillRowCells. */
-type RowKind = "violation" | "rollup" | "update" | "parked";
+/** Which ladder rung produced the state; picks the glyph in SkillRowCells. `"issue"` is a Home
+ * dashboard issue standing in for a group's severity - the shared Skills list never produces it. */
+type RowKind = "violation" | "rollup" | "update" | "parked" | "issue";
+
+/** Short row-glyph label per `HealthIssueKind` - `HEALTH_ISSUE_KIND_LABEL`'s phrases read as
+ * "N skills that fail to load", too long for a row's tooltip title. */
+const ISSUE_ROW_LABEL = {
+  "spec-violation": "Spec violation",
+  "broken-symlink": "Broken link",
+  "parked-but-reinstalled": "Parked and installed",
+  duplicate: "Copies differ",
+  "linked-root": "Linked root",
+  "lock-only": "Lock entry only",
+} as const satisfies Record<HealthIssueKind, string>;
 
 export interface RowState {
   kind: RowKind;
@@ -72,15 +91,8 @@ export function rowState(skill: InstalledSkill): RowState | null {
     };
   }
 
-  if (skill.update_owner_ids.length > 0) {
-    return {
-      kind: "update",
-      level: "info",
-      label: "Update available",
-      detail: null,
-      action: "Update",
-    };
-  }
+  const update = updateRowState(skill);
+  if (update) return update;
   if (skill.parked) {
     return {
       kind: "parked",
@@ -91,6 +103,31 @@ export function rowState(skill: InstalledSkill): RowState | null {
     };
   }
   return null;
+}
+
+/** The "Update available" rung on its own, so the Updates group can show it without running the
+ * rest of `rowState`'s ladder (a spec violation or rollup issue would otherwise outrank it). */
+export function updateRowState(skill: InstalledSkill): RowState | null {
+  if (skill.update_owner_ids.length === 0) return null;
+  return {
+    kind: "update",
+    level: "info",
+    label: "Update available",
+    detail: null,
+    action: "Update",
+  };
+}
+
+/** One Home dashboard issue's row state, so a Broken/Warnings row's glyph matches the group it
+ * sits in instead of whatever `rowState` would rank the skill's own worst condition as. */
+export function issueRowState(issue: HealthIssue): RowState {
+  return {
+    kind: "issue",
+    level: HEALTH_ISSUE_SEVERITY[issue.kind] === "error" ? "error" : "warning",
+    label: ISSUE_ROW_LABEL[issue.kind],
+    detail: issue.detail ?? null,
+    action: null,
+  };
 }
 
 type DiskLocationKind = "global" | "project";
@@ -311,6 +348,8 @@ export function fixesFor(state: RowState): string[] {
       return ["Pull latest"];
     case "parked":
       return ["Unpark"];
+    case "issue":
+      return [];
   }
 }
 
