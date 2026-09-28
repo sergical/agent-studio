@@ -406,6 +406,7 @@ pub fn run() {
             skills::commands::set_preferred_editor,
             skills::error_reporting::get_error_reporting_enabled,
             skills::error_reporting::set_error_reporting_enabled,
+            skills::error_reporting::report_frontend_error,
             // Fork / Pull upstream / Un-fork
             skills::skill_fork::fork_skill,
             skills::skill_fork::pull_fork_upstream,
