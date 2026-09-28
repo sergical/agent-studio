@@ -11,6 +11,7 @@ import {
   proxyGet,
   upstreamUrl,
   type RateLimiter,
+  type RequestLogEvent,
   type ResponseCache,
 } from "./skills-proxy-app";
 
@@ -41,7 +42,7 @@ describe("proxyGet", () => {
     expect(fetchMock).toHaveBeenCalledWith("https://skills.sh/api/v1/skills?page=0", {
       headers: { Authorization: "Bearer sk-test" },
     });
-    expect(result).toEqual({ status: 200, body: { data: [] } });
+    expect(result).toEqual({ status: 200, body: { data: [] }, failure: null });
   });
 
   it("relays a non-2xx upstream response as-is", async () => {
@@ -51,7 +52,7 @@ describe("proxyGet", () => {
 
     const result = await proxyGet("sk-bad", "/skills", "", fetchMock);
 
-    expect(result).toEqual({ status: 401, body: { error: "unauthorized" } });
+    expect(result).toEqual({ status: 401, body: { error: "unauthorized" }, failure: null });
   });
 
   it("maps a failed fetch to a synthetic error body instead of throwing", async () => {
@@ -61,6 +62,19 @@ describe("proxyGet", () => {
 
     expect(result.status).toBe(502);
     expect(result.body).toEqual({ error: "getaddrinfo ENOTFOUND skills.sh" });
+    expect(result.failure).toBe("upstream_unreachable");
+  });
+
+  it("flags a non-JSON upstream body as upstream_non_json while relaying its status", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response("<html>not json</html>", { status: 503 }));
+
+    const result = await proxyGet("sk-test", "/skills", "", fetchMock);
+
+    expect(result.status).toBe(503);
+    expect(result.body).toEqual({ error: "skills.sh returned a non-JSON response" });
+    expect(result.failure).toBe("upstream_non_json");
   });
 });
 
@@ -289,5 +303,128 @@ describe("non-GET requests to /api/v1/*", () => {
 
     expect(response.status).toBe(405);
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+/** Runs `run` while capturing the app's stdout, then parses each line as the
+ * one structured event `emitRequestLog` writes per request. This is the same
+ * surface an operator's Workers Logs / `wrangler tail` pipeline reads, so a
+ * regression in the event's fields fails here rather than silently. */
+async function captureRequestLogs(
+  run: () => Response | Promise<Response>,
+): Promise<RequestLogEvent[]> {
+  const events: RequestLogEvent[] = [];
+  const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+    events.push(JSON.parse(String(chunk)));
+    return true;
+  });
+  try {
+    await run();
+  } finally {
+    spy.mockRestore();
+  }
+  return events;
+}
+
+describe("request log", () => {
+  it("emits one structured event per request carrying the upstream status", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", fetch: fetchMock });
+
+    const events = await captureRequestLogs(() =>
+      app.request("http://localhost/api/v1/skills?page=0"),
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      event: "http_request",
+      method: "GET",
+      path: "/api/v1/skills",
+      status: 200,
+      cache: "bypass",
+      rate_limited: false,
+      upstream_status: 200,
+      upstream_failure: null,
+      error: null,
+    });
+    expect(events[0].request_id).toEqual(expect.any(String));
+    expect(events[0].duration_ms).toEqual(expect.any(Number));
+  });
+
+  it("distinguishes an unreachable skills.sh from an upstream 5xx", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("getaddrinfo ENOTFOUND skills.sh"));
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", fetch: fetchMock });
+
+    const events = await captureRequestLogs(() => app.request("http://localhost/api/v1/skills"));
+
+    expect(events[0]).toMatchObject({
+      status: 502,
+      upstream_status: null,
+      upstream_failure: "upstream_unreachable",
+    });
+  });
+
+  it("records a non-JSON upstream response with the upstream status it came with", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("nope", { status: 503 }));
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", fetch: fetchMock });
+
+    const events = await captureRequestLogs(() => app.request("http://localhost/api/v1/skills"));
+
+    expect(events[0]).toMatchObject({
+      upstream_status: 503,
+      upstream_failure: "upstream_non_json",
+    });
+  });
+
+  it("flags a rate-limited refusal so shed traffic is visible", async () => {
+    const app = createSkillsProxyApp({
+      apiKey: "sk-secret",
+      fetch: vi.fn(),
+      limiter: fakeLimiter(0),
+    });
+
+    const events = await captureRequestLogs(() => app.request("http://localhost/api/v1/skills"));
+
+    expect(events[0]).toMatchObject({ status: 429, rate_limited: true, upstream_status: null });
+  });
+
+  it("reports the cache outcome so hit rate is queryable", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", fetch: fetchMock, cache: fakeCache() });
+
+    const events = await captureRequestLogs(async () => {
+      await app.request("http://localhost/api/v1/skills?page=0");
+      return app.request("http://localhost/api/v1/skills?page=0");
+    });
+
+    expect(events.map((event) => event.cache)).toEqual(["miss", "hit"]);
+  });
+
+  it("still emits an event when a downstream middleware throws, with the error message", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    const failingCache: ResponseCache = {
+      async match() {
+        return undefined;
+      },
+      async put() {
+        throw new Error("cache write failed");
+      },
+    };
+    const app = createSkillsProxyApp({
+      apiKey: "sk-secret",
+      fetch: fetchMock,
+      cache: failingCache,
+    });
+
+    const events = await captureRequestLogs(() => app.request("http://localhost/api/v1/skills"));
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ status: 500, error: "cache write failed" });
   });
 });
