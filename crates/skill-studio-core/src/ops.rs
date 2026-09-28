@@ -497,21 +497,27 @@ pub(crate) fn scan_inner(
         scan_one_plugin_target(&sc, target, &mut accum)?;
     }
     op_steps.push(crate::timing::step(clock, "roots_walk", step_start));
+    // These four are cumulative sub-times already counted inside
+    // `roots_walk`, not additional wall-clock time - `parent` says so.
     op_steps.push(crate::timing::StepTiming {
         name: "dir_walk".to_string(),
         elapsed_ms: timings.dir_walk.get().as_millis() as u64,
+        parent: Some("roots_walk".to_string()),
     });
     op_steps.push(crate::timing::StepTiming {
         name: "skill_md_read".to_string(),
         elapsed_ms: timings.skill_md_read.get().as_millis() as u64,
+        parent: Some("roots_walk".to_string()),
     });
     op_steps.push(crate::timing::StepTiming {
         name: "frontmatter_parse".to_string(),
         elapsed_ms: timings.frontmatter_parse.get().as_millis() as u64,
+        parent: Some("roots_walk".to_string()),
     });
     op_steps.push(crate::timing::StepTiming {
         name: "plugin_cache_walk".to_string(),
         elapsed_ms: timings.plugin_cache_walk.get().as_millis() as u64,
+        parent: Some("roots_walk".to_string()),
     });
 
     let ScanAccum {
@@ -3000,10 +3006,19 @@ fn diagnose_conflict_body(
     ctx: &OpContext,
     _req: &crate::dto::DiagnoseConflictRequest,
 ) -> Result<crate::dto::ConflictReport, CoreError> {
+    let clock = rt.ports.clock.as_ref();
+    let start = clock.monotonic();
     let diagnosis = diagnose(rt, ctx, &ScanRequest::default())?;
-    Ok(crate::dto::ConflictReport {
+    let report = crate::dto::ConflictReport {
         conflicts: conflicts_in(&diagnosis.inventory),
-    })
+    };
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "diagnose_conflict",
+        start,
+        Vec::new(),
+    ));
+    Ok(report)
 }
 
 /// Every pair of `Canonical`/`Independent` deployments of one skill whose
@@ -3298,20 +3313,29 @@ fn outdated_body(
     commit_lookup: &dyn crate::skill_update_check::CommitLookup,
     plugin_lookup: &dyn crate::skill_update_check::PluginManifestLookup,
 ) -> Result<BTreeMap<String, crate::skill_update_check::OutdatedRecord>, CoreError> {
+    let clock = rt.ports.clock.as_ref();
+    let start = clock.monotonic();
     let inventory = scan(rt, ctx, req)?;
     let targets: Vec<crate::skill_update_check::OutdatedTarget> = inventory
         .skills
         .iter()
         .filter_map(outdated_target)
         .collect();
-    Ok(crate::skill_update_check::outdated(
+    let result = crate::skill_update_check::outdated(
         rt.ports.fs.as_ref(),
         &rt.scope.home.lexical,
         &targets,
         tree_lookup,
         commit_lookup,
         plugin_lookup,
-    ))
+    );
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "outdated",
+        start,
+        Vec::new(),
+    ));
+    Ok(result)
 }
 
 /// Picks the deployment that decides `skill`'s currency rule, and builds the
@@ -7153,54 +7177,71 @@ mod tests {
             assert_eq!(records.len(), 1, "exactly one op record per install call");
             let record = &records[0];
             assert_eq!(record.operation, Operation::Install);
-            assert_eq!(
-                record.outcome,
-                OpOutcome::Err {
-                    code: err.code.as_str().to_string()
-                }
-            );
+            assert_eq!(record.outcome, OpOutcome::Err { code: err.code });
             assert!(
                 record.timing.steps.is_empty(),
                 "a call that fails before recording a step must file no steps"
             );
         }
 
+        /// [`Runtime::run`] names an `OpRecord`'s timing from `Operation`'s
+        /// own serde name (see `op_snake_case_name`), so this pins every
+        /// variant's literal against accidental rename - an exhaustive
+        /// match so a new variant fails to compile here rather than
+        /// silently falling out of coverage.
         #[test]
-        fn every_operation_name_matches_its_timing_op_string() {
-            let cases: &[(Operation, &str)] = &[
-                (Operation::Scan, "scan"),
-                (Operation::Diagnose, "diagnose"),
-                (Operation::Capabilities, "capabilities"),
-                (Operation::Harnesses, "harnesses"),
-                (
-                    Operation::PreviewFrontmatterRepair,
-                    "preview_frontmatter_repair",
-                ),
-                (
-                    Operation::ApplyFrontmatterRepair,
-                    "apply_frontmatter_repair",
-                ),
-                (Operation::ListEvents, "list_events"),
-                (Operation::RestoreEvent, "restore_event"),
-                (Operation::Park, "park"),
-                (Operation::Unpark, "unpark"),
-                (Operation::SetHarnessEnabled, "set_harness_enabled"),
-                (Operation::FixSkill, "fix_skill"),
-                (Operation::DiagnoseConflict, "diagnose_conflict"),
-                (Operation::Remove, "remove"),
-                (Operation::Update, "update"),
-                (Operation::UpdateAll, "update_all"),
-                (Operation::Install, "install"),
-                (Operation::InstallPreferences, "install_preferences"),
-                (Operation::Doctor, "doctor"),
-                (Operation::Outdated, "outdated"),
-                (Operation::SweepQuarantine, "sweep_quarantine"),
+        fn every_operation_serializes_to_its_documented_snake_case_name() {
+            let all = [
+                Operation::Scan,
+                Operation::Diagnose,
+                Operation::Capabilities,
+                Operation::Harnesses,
+                Operation::PreviewFrontmatterRepair,
+                Operation::ApplyFrontmatterRepair,
+                Operation::ListEvents,
+                Operation::RestoreEvent,
+                Operation::Park,
+                Operation::Unpark,
+                Operation::SetHarnessEnabled,
+                Operation::FixSkill,
+                Operation::DiagnoseConflict,
+                Operation::Remove,
+                Operation::Update,
+                Operation::UpdateAll,
+                Operation::Install,
+                Operation::InstallPreferences,
+                Operation::Doctor,
+                Operation::Outdated,
+                Operation::SweepQuarantine,
             ];
-            for (operation, expected) in cases {
+            for operation in all {
+                let expected = match operation {
+                    Operation::Scan => "scan",
+                    Operation::Diagnose => "diagnose",
+                    Operation::Capabilities => "capabilities",
+                    Operation::Harnesses => "harnesses",
+                    Operation::PreviewFrontmatterRepair => "preview_frontmatter_repair",
+                    Operation::ApplyFrontmatterRepair => "apply_frontmatter_repair",
+                    Operation::ListEvents => "list_events",
+                    Operation::RestoreEvent => "restore_event",
+                    Operation::Park => "park",
+                    Operation::Unpark => "unpark",
+                    Operation::SetHarnessEnabled => "set_harness_enabled",
+                    Operation::FixSkill => "fix_skill",
+                    Operation::DiagnoseConflict => "diagnose_conflict",
+                    Operation::Remove => "remove",
+                    Operation::Update => "update",
+                    Operation::UpdateAll => "update_all",
+                    Operation::Install => "install",
+                    Operation::InstallPreferences => "install_preferences",
+                    Operation::Doctor => "doctor",
+                    Operation::Outdated => "outdated",
+                    Operation::SweepQuarantine => "sweep_quarantine",
+                };
                 let value = serde_json::to_value(operation).unwrap();
                 assert_eq!(
                     value,
-                    serde_json::Value::String((*expected).to_string()),
+                    serde_json::Value::String(expected.to_string()),
                     "Operation::{operation:?} must serialize to {expected:?}"
                 );
             }
@@ -7236,6 +7277,182 @@ mod tests {
             assert_eq!(records.len(), 1);
             assert_eq!(records[0].timing.elapsed_ms, 42);
             assert!(records[0].timing.steps.is_empty());
+        }
+
+        #[test]
+        fn doctor_records_one_transaction_with_scan_and_diagnose_as_nested_ops() {
+            let fs = FixtureBuilder::new().dir("/h").build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-doctor".into()));
+
+            crate::ops_doctor::doctor(&rt, &ctx, &crate::dto::DoctorRequest {}).unwrap();
+
+            let records = telemetry.records();
+            assert_eq!(
+                records.len(),
+                1,
+                "doctor must send one transaction, not one per nested op"
+            );
+            let record = &records[0];
+            assert_eq!(record.operation, Operation::Doctor);
+            assert_eq!(record.timing.op, "doctor");
+            let nested_ops: Vec<Operation> = record.nested.iter().map(|n| n.operation).collect();
+            assert_eq!(
+                nested_ops,
+                vec![Operation::Scan, Operation::Diagnose],
+                "doctor's body calls diagnose, which itself calls scan, in that order"
+            );
+        }
+
+        #[test]
+        fn outdated_is_named_after_itself_and_carries_the_nested_scan() {
+            let fs = FixtureBuilder::new().dir("/h").build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-outdated".into()));
+
+            struct NoTrees;
+            impl crate::skill_update_check::SourceTreeLookup for NoTrees {
+                fn tree_shas_at_head(
+                    &self,
+                    _repo: &str,
+                ) -> Result<std::collections::HashMap<String, String>, CoreError> {
+                    unreachable!("no skills in the fixture, so no repo is ever looked up")
+                }
+            }
+            struct NoCommits;
+            impl crate::skill_update_check::CommitLookup for NoCommits {
+                fn latest_commit(
+                    &self,
+                    _repo: &str,
+                    _path: &str,
+                ) -> Result<Option<crate::skill_update_check::CommitInfo>, CoreError>
+                {
+                    unreachable!("no skills in the fixture, so no repo is ever looked up")
+                }
+            }
+            struct NoPlugins;
+            impl crate::skill_update_check::PluginManifestLookup for NoPlugins {
+                fn marketplace_version(
+                    &self,
+                    _marketplace: &str,
+                    _plugin: &str,
+                ) -> Result<Option<String>, CoreError> {
+                    unreachable!("no skills in the fixture, so no marketplace is ever looked up")
+                }
+            }
+
+            outdated(
+                &rt,
+                &ctx,
+                &ScanRequest::default(),
+                &NoTrees,
+                &NoCommits,
+                &NoPlugins,
+            )
+            .unwrap();
+
+            let records = telemetry.records();
+            assert_eq!(
+                records.len(),
+                1,
+                "outdated's own nested scan must not send a second transaction"
+            );
+            let record = &records[0];
+            assert_eq!(record.operation, Operation::Outdated);
+            assert_eq!(record.timing.op, "outdated");
+            assert!(
+                record.nested.iter().any(|n| n.operation == Operation::Scan),
+                "outdated's body scans before checking currency"
+            );
+        }
+
+        #[test]
+        fn update_all_records_one_transaction_spanning_the_whole_loop() {
+            let fs = FixtureBuilder::new()
+                .dir("/h/.claude/skills/skill-a")
+                .file(
+                    "/h/.claude/skills/skill-a/SKILL.md",
+                    b"---\nname: skill-a\ndescription: One.\n---\n",
+                )
+                .dir("/h/.claude/skills/skill-b")
+                .file(
+                    "/h/.claude/skills/skill-b/SKILL.md",
+                    b"---\nname: skill-b\ndescription: Two.\n---\n",
+                )
+                .build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-update-all".into()));
+
+            let requests = vec![
+                crate::dto::UpdateRequest {
+                    skill: SkillName("skill-a".into()),
+                    method: InstallMethod::Copy,
+                    scope: RootScope::Global,
+                    files: Vec::new(),
+                    source: None,
+                    ref_pin: None,
+                },
+                crate::dto::UpdateRequest {
+                    skill: SkillName("skill-b".into()),
+                    method: InstallMethod::Copy,
+                    scope: RootScope::Global,
+                    files: Vec::new(),
+                    source: None,
+                    ref_pin: None,
+                },
+            ];
+            crate::ops_update::update_all(&rt, &ctx, &requests, |_, _| {});
+
+            let records = telemetry.records();
+            assert_eq!(
+                records.len(),
+                1,
+                "update_all must send one transaction spanning the whole loop"
+            );
+            let record = &records[0];
+            assert_eq!(record.operation, Operation::UpdateAll);
+            let update_count = record
+                .nested
+                .iter()
+                .filter(|n| n.operation == Operation::Update)
+                .count();
+            assert_eq!(update_count, 2, "one nested Update per skill in the batch");
+            let nested_sum: u64 = record.nested.iter().map(|n| n.timing.elapsed_ms).sum();
+            assert!(
+                record.timing.elapsed_ms >= nested_sum,
+                "the root's elapsed time must cover every nested call's own elapsed time"
+            );
+        }
+
+        #[test]
+        fn a_stale_timing_left_in_the_context_is_not_attributed_to_the_next_op() {
+            let fs = FixtureBuilder::new().dir("/h").build_fs();
+            let telemetry = Arc::new(RecordingTelemetry::default());
+            let rt = runtime_with(fs, Arc::clone(&telemetry));
+            let ctx = OpContext::uncancellable(CorrelationId("c-stale".into()));
+            ctx.record_timing(crate::timing::OpTiming {
+                op: "install".to_string(),
+                elapsed_ms: 999,
+                steps: vec![crate::timing::StepTiming {
+                    name: "planted".to_string(),
+                    elapsed_ms: 999,
+                    parent: None,
+                }],
+            });
+
+            scan(&rt, &ctx, &ScanRequest::default()).unwrap();
+
+            let records = telemetry.records();
+            assert_eq!(records.len(), 1);
+            let record = &records[0];
+            assert_eq!(record.timing.op, "scan");
+            assert!(
+                record.timing.steps.iter().all(|s| s.name != "planted"),
+                "the planted step from the earlier install must not leak into scan's timing"
+            );
         }
     }
 }

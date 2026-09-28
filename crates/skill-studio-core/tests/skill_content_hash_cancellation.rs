@@ -47,6 +47,8 @@ fn skill_content_hash_fails_cancelled_instead_of_hashing() {
         correlation_id: CorrelationId("cancelled".into()),
         cancel: Arc::new(AlwaysCancel),
         timing: std::sync::Mutex::new(None),
+        depth: std::sync::atomic::AtomicUsize::new(0),
+        nested: std::sync::Mutex::new(Vec::new()),
     };
 
     let err = ops::skill_content_hash(

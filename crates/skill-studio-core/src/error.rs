@@ -88,6 +88,14 @@ impl ErrorCode {
             ErrorCode::Cancelled => "cancelled",
         }
     }
+
+    /// Returns the serde `snake_case` name, for adapters that tag telemetry
+    /// with it. Same literals as [`ErrorCode::as_str`]; kept as its own
+    /// method so a caller reads "the serde name" rather than "the display
+    /// string" at the call site.
+    pub const fn name(self) -> &'static str {
+        self.as_str()
+    }
 }
 
 /// Who holds a lease a [`ErrorCode::ScopeBusy`] error bounced off.
@@ -200,5 +208,47 @@ mod tests {
     fn serde_name_equals_as_str() {
         let json = serde_json::to_string(&ErrorCode::DriftConflict).unwrap();
         assert_eq!(json, format!("\"{}\"", ErrorCode::DriftConflict.as_str()));
+    }
+
+    /// Guards against `name()` and the `Serialize` impl drifting apart: an
+    /// exhaustive match over every variant, so a new one fails to compile
+    /// here until this test is updated too.
+    #[test]
+    fn name_equals_the_serde_json_string_for_every_variant() {
+        let all = [
+            ErrorCode::InvalidRequest,
+            ErrorCode::InvalidScope,
+            ErrorCode::AmbiguousTarget,
+            ErrorCode::Unsupported,
+            ErrorCode::ExecutionFailed,
+            ErrorCode::Io,
+            ErrorCode::ScopeBusy,
+            ErrorCode::StaleProposal,
+            ErrorCode::DriftConflict,
+            ErrorCode::OwnershipChanged,
+            ErrorCode::AlreadyReverted,
+            ErrorCode::Incomplete,
+            ErrorCode::Cancelled,
+        ];
+        for code in all {
+            let exhaustive_name = match code {
+                ErrorCode::InvalidRequest => "invalid_request",
+                ErrorCode::InvalidScope => "invalid_scope",
+                ErrorCode::AmbiguousTarget => "ambiguous_target",
+                ErrorCode::Unsupported => "unsupported",
+                ErrorCode::ExecutionFailed => "execution_failed",
+                ErrorCode::Io => "io",
+                ErrorCode::ScopeBusy => "scope_busy",
+                ErrorCode::StaleProposal => "stale_proposal",
+                ErrorCode::DriftConflict => "drift_conflict",
+                ErrorCode::OwnershipChanged => "ownership_changed",
+                ErrorCode::AlreadyReverted => "already_reverted",
+                ErrorCode::Incomplete => "incomplete",
+                ErrorCode::Cancelled => "cancelled",
+            };
+            assert_eq!(code.name(), exhaustive_name);
+            let json = serde_json::to_value(code).unwrap();
+            assert_eq!(json, exhaustive_name);
+        }
     }
 }

@@ -460,8 +460,9 @@ pub fn update_all(
     mut on_outcome: impl FnMut(&SkillName, &Result<UpdateOutcome, CoreError>),
 ) -> UpdateAllOutcome {
     // Infallible: each `update` call already files its own `Operation::Update`
-    // record (`Ok` or `Err`), so this batch's own record only needs to exist
-    // - it always reports `Ok`, with the clock spanning the whole loop.
+    // record (`Ok` or `Err`) as a nested op under this one, so this batch's
+    // own record only needs to exist - it always reports `Ok`, with its
+    // timing filed by `update_all_body` itself, spanning the whole loop.
     match rt.run(Operation::UpdateAll, ctx, || {
         Ok(update_all_body(rt, ctx, requests, &mut on_outcome))
     }) {
@@ -476,6 +477,8 @@ fn update_all_body(
     requests: &[UpdateRequest],
     on_outcome: &mut impl FnMut(&SkillName, &Result<UpdateOutcome, CoreError>),
 ) -> UpdateAllOutcome {
+    let clock = rt.ports.clock.as_ref();
+    let start = clock.monotonic();
     let mut items = Vec::with_capacity(requests.len());
     let mut errors = std::collections::BTreeMap::new();
     for req in requests {
@@ -495,6 +498,12 @@ fn update_all_body(
             }
         }
     }
+    ctx.record_timing(crate::timing::op_timing(
+        clock,
+        "update_all",
+        start,
+        Vec::new(),
+    ));
     UpdateAllOutcome { items, errors }
 }
 

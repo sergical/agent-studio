@@ -443,6 +443,7 @@ mod tests {
             &[StepTiming {
                 name: "write".into(),
                 elapsed_ms: 20,
+                parent: None,
             }],
             "worker",
             "error",

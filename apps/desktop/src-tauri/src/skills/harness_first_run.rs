@@ -150,7 +150,10 @@ fn save_harnesses_choice_at(
     registry.harnesses = Some(choice);
     registry.error_reporting_enabled = error_reporting_enabled;
     super::skill_fork_registry::write_fork_registry_locked(&guard, home, &registry)?;
-    consent.set(error_reporting_enabled);
+    consent.set(skill_studio_host::telemetry::resolve_consent(
+        std::env::var("SKILL_STUDIO_TELEMETRY").ok(),
+        error_reporting_enabled,
+    ));
     Ok(())
 }
 

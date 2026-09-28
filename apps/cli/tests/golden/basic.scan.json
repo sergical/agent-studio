@@ -327,19 +327,23 @@
       },
       {
         "name": "dir_walk",
-        "elapsed_ms": "-"
+        "elapsed_ms": "-",
+        "parent": "roots_walk"
       },
       {
         "name": "skill_md_read",
-        "elapsed_ms": "-"
+        "elapsed_ms": "-",
+        "parent": "roots_walk"
       },
       {
         "name": "frontmatter_parse",
-        "elapsed_ms": "-"
+        "elapsed_ms": "-",
+        "parent": "roots_walk"
       },
       {
         "name": "plugin_cache_walk",
-        "elapsed_ms": "-"
+        "elapsed_ms": "-",
+        "parent": "roots_walk"
       },
       {
         "name": "link_owner_propagation",
