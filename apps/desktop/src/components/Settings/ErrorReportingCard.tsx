@@ -3,8 +3,8 @@
 // sanitized panic to Sentry. Off in the registry by default; the welcome
 // screen offers it on and writes the user's explicit choice here, and this
 // card lets the user change that choice later - see the Rust
-// `error_reporting` and `skill_studio_core::report_sanitizer` for what a
-// report can and can't carry.
+// `error_reporting` and `crates/skill-studio-host/src/telemetry.rs` for
+// what a report can and can't carry.
 // ============================================================================
 
 import { useEffect, useState } from "react";

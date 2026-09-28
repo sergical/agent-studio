@@ -217,6 +217,24 @@ Sentry acceptance requires a symbolicated error, a correlated trace, a structure
 
 Production configuration requires Sentry project mappings, DSNs, release-upload credentials, deployment environment names, alert destinations, sampling rates, and retention settings. These are deployment inputs, not secrets committed to the specification. Their absence blocks production telemetry verification, not local core implementation.
 
+### Desktop crash path (PR 1)
+
+The desktop's Rust panic path is `skill_studio_host::telemetry`, wrapping the
+`sentry` crate directly - no hand-rolled sanitizer or queue. A DSN compiled
+in via `SKILL_STUDIO_SENTRY_DSN` wins over the same-named run-time variable;
+a missing or malformed value on either side leaves `init` installing
+nothing. One `Consent` flag, flipped by Settings and the welcome screen,
+gates a `ConsentTransport` that drops every envelope while off. Each event
+carries the panic's source location, a stack trace with function names,
+file basenames and line numbers (full build-machine paths removed in
+`before_send`), the app version/environment, OS/device/CPU context, and a
+`surface` tag; `before_send` also strips hostname, user, request, and
+breadcrumbs - the panic payload text itself is never read. The panic hook
+flushes for at most 2 seconds so a main-thread panic is still reported when
+`RunEvent::Exit` never runs; the exit handler flushes for another 2 seconds
+on top of the HTTP client's own 2-second timeout, so quit waits at most
+about 4 seconds total.
+
 ## Delivery phases and exit criteria
 
 | Phase | Deliverable                                               | Exit criteria                                                                                       |
