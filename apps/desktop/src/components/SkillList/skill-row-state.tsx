@@ -119,13 +119,15 @@ export function updateRowState(skill: InstalledSkill): RowState | null {
 }
 
 /** One Home dashboard issue's row state, so a Broken/Warnings row's glyph matches the group it
- * sits in instead of whatever `rowState` would rank the skill's own worst condition as. */
+ * sits in instead of whatever `rowState` would rank the skill's own worst condition as. `detail`
+ * is null - Home's row already shows `issue.detail` in its own detail cell, so the glyph tooltip
+ * doesn't repeat it. */
 export function issueRowState(issue: HealthIssue): RowState {
   return {
     kind: "issue",
-    level: HEALTH_ISSUE_SEVERITY[issue.kind] === "error" ? "error" : "warning",
+    level: HEALTH_ISSUE_SEVERITY[issue.kind],
     label: ISSUE_ROW_LABEL[issue.kind],
-    detail: issue.detail ?? null,
+    detail: null,
     action: null,
   };
 }

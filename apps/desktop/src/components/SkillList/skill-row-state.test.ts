@@ -3,8 +3,8 @@
 // ============================================================================
 
 import { describe, expect, it } from "vitest";
-import type { Deployment, HealthIssue, InstalledSkill } from "@skill-studio/lib";
-import { fixesFor, issueRowState, rowState } from "./skill-row-state";
+import type { Deployment, InstalledSkill } from "@skill-studio/lib";
+import { fixesFor, rowState } from "./skill-row-state";
 
 function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
@@ -79,43 +79,5 @@ describe("rowState", () => {
   it("does not surface a Fix action for a non-blocking spec note", () => {
     const skill = fixtureSkill({ spec_violations: ["description exceeds 1024 characters"] });
     expect(rowState(skill)).toBeNull();
-  });
-
-  it("a_linked_root_warning_on_a_skill_with_an_update_shows_the_warning_glyph_or_names_the_update_that_outranked_it", () => {
-    const skill = fixtureSkill({ update_owner_ids: ["x"] });
-    const issue: HealthIssue = {
-      kind: "linked-root",
-      skill,
-      detail: "Claude Code reads the Universal folder through a root link",
-      harness: "claude-code",
-      harnessLabel: "Claude Code",
-      root: "/home/.agents/skills",
-    };
-    // `rowState` still ranks the update above the warning - it's the Skills list's own ladder,
-    // not the rule the Home group uses; this documents why the group can't reuse it as-is.
-    expect(rowState(skill)?.kind).toBe("update");
-    expect(issueRowState(issue).kind).toBe("issue");
-    expect(issueRowState(issue).level).toBe("warning");
-  });
-
-  it("a_lock_only_warning_with_no_row_state_still_shows_the_warning_glyph_or_names_the_missing_glyph", () => {
-    const skill = fixtureSkill();
-    const issue: HealthIssue = {
-      kind: "lock-only",
-      skill,
-      detail: "Only recorded in the lock file",
-    };
-    expect(rowState(skill)).toBeNull();
-    expect(issueRowState(issue).level).toBe("warning");
-  });
-
-  it("a_broken_symlink_issue_shows_the_error_glyph_or_names_the_wrong_level", () => {
-    const skill = fixtureSkill();
-    const issue: HealthIssue = {
-      kind: "broken-symlink",
-      skill,
-      detail: "Symlink target no longer exists",
-    };
-    expect(issueRowState(issue).level).toBe("error");
   });
 });

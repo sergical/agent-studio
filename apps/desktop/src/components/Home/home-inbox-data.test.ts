@@ -5,8 +5,110 @@
 // ============================================================================
 
 import { describe, expect, it } from "vitest";
-import type { Deployment, UpdateAllItem, UpdateAllOutcome, UpdateOutcome } from "@skill-studio/lib";
-import { updateAllOutdatedSkills } from "./home-inbox-data";
+import type {
+  Deployment,
+  HealthIssue,
+  InstalledSkill,
+  UpdateAllItem,
+  UpdateAllOutcome,
+  UpdateOutcome,
+} from "@skill-studio/lib";
+import { homeRowState, updateAllOutdatedSkills } from "./home-inbox-data";
+
+function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
+  return {
+    id: "dep:v1/global/universal/find-bugs",
+    destination: "universal",
+    owner_kind: "manual",
+    mutability: "read-only",
+    backing: { kind: "canonical" },
+    agent: "shared",
+    scope: "global",
+    path: "/home/.agents/skills/find-bugs",
+    is_symlink: false,
+    symlink_is_broken: false,
+    content_hash: "abc",
+    disabled: false,
+    codex_implicit_invocation: null,
+    disabled_by: null,
+    invocation: "both",
+    spec_violations: [],
+    shared_via_whole_dir_link: false,
+    ...overrides,
+  };
+}
+
+function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
+  return {
+    name: "find-bugs",
+    source: "getsentry/find-bugs",
+    source_type: "github",
+    installed_at: "2026-01-01T00:00:00Z",
+    has_update: false,
+    source_kind: "dotagents",
+    deployments: [fixtureDeployment()],
+    has_spec: true,
+    spec_violations: [],
+    skill_md_tokens: 0,
+    description_tokens: 0,
+    folder_bytes: 0,
+    file_count: 0,
+    content_hash: "",
+    content_hashes: [],
+    frontmatter_fields: {},
+    folder_truncated: false,
+    parked: false,
+    invocation: "both",
+    update_owners: [],
+    update_owner_ids: [],
+    description: null,
+    fork: null,
+    parked_at: null,
+    skill_path: null,
+    source_url: null,
+    update_commit: null,
+    update_commit_at: null,
+    updated_at: null,
+    ...overrides,
+  };
+}
+
+describe("homeRowState", () => {
+  it("a_warnings_group_row_for_a_skill_with_an_update_shows_the_warning_glyph_or_names_the_update_that_outranked_it", () => {
+    const skill = fixtureSkill({ update_owner_ids: ["x"] });
+    const issue: HealthIssue = {
+      kind: "linked-root",
+      skill,
+      detail: "Claude Code reads the Universal folder through a root link",
+      harness: "claude-code",
+      harnessLabel: "Claude Code",
+      root: "/home/.agents/skills",
+    };
+    const state = homeRowState("warn", skill, issue);
+    expect(state?.kind).toBe("issue");
+    expect(state?.level).toBe("warning");
+  });
+
+  it("an_updates_group_row_for_a_skill_with_an_update_and_a_blocking_violation_shows_the_update_glyph_or_names_the_violation_that_would_outrank_it", () => {
+    // `rowState`'s ladder puts a blocking spec violation ahead of "update available"; the
+    // Updates group still shows "update" for this skill, since `updateRowState` only reads
+    // `update_owner_ids` - unlike `rowState`, it never runs the violation rung.
+    const skill = fixtureSkill({
+      update_owner_ids: ["x"],
+      spec_violations: ["invalid YAML frontmatter at line 3, column 1: mapping values not allowed"],
+    });
+    const state = homeRowState("upd", skill, null);
+    expect(state?.kind).toBe("update");
+  });
+
+  it("an_unused_group_row_for_a_skill_with_a_spec_violation_shows_the_ladder_glyph_or_names_the_missing_state", () => {
+    const skill = fixtureSkill({
+      spec_violations: ["invalid YAML frontmatter at line 3, column 1: mapping values not allowed"],
+    });
+    const state = homeRowState("unused", skill, null);
+    expect(state?.kind).toBe("violation");
+  });
+});
 
 const noDeployments: Deployment[] = [];
 

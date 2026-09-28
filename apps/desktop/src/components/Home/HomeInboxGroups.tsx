@@ -13,19 +13,14 @@ import { parkSkill, pullForkUpstream, updateAllSkills, updateSkill } from "../..
 import { lifecycleTargetForPark, updateSkillOwners } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import { GroupHead } from "../SkillList/GroupHead";
-import {
-  DEFAULT_HARNESS_LIST,
-  issueRowState,
-  rowState,
-  updateRowState,
-  whereFacts,
-} from "../SkillList/skill-row-state";
+import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
 import type { RowState } from "../SkillList/skill-row-state";
 import { HarnessStack } from "../SkillList/HarnessStack";
 import { ROW_CLASS, RowGlyph, SkillNameCell } from "../SkillList/SkillRowCells";
 import { SkillLocationCell } from "../SkillList/SkillLocationCell";
 import { RichTooltipScope } from "../ui/RichTooltip";
 import {
+  homeRowState,
   issueActionLabel,
   issueKey,
   MAX_ROWS_PER_GROUP,
@@ -293,7 +288,7 @@ function BrokenGroup({
               <HomeRow
                 key={key}
                 skill={issue.skill}
-                state={issueRowState(issue)}
+                state={homeRowState("broken", issue.skill, issue)}
                 rowIndex={rowAt(start, i)}
                 rowRef={rowRef(key)}
                 tabIndex={tabIndexFor(key)}
@@ -362,7 +357,7 @@ function WarningsGroup({
               <HomeRow
                 key={key}
                 skill={issue.skill}
-                state={issueRowState(issue)}
+                state={homeRowState("warn", issue.skill, issue)}
                 rowIndex={rowAt(start, i)}
                 rowRef={rowRef(key)}
                 tabIndex={tabIndexFor(key)}
@@ -428,7 +423,7 @@ function UnusedGroup({
               <HomeRow
                 key={key}
                 skill={skill}
-                state={rowState(skill)}
+                state={homeRowState("unused", skill, null)}
                 rowIndex={rowAt(start, i)}
                 rowRef={rowRef(key)}
                 tabIndex={tabIndexFor(key)}
@@ -501,7 +496,7 @@ function RecentGroup({
               <HomeRow
                 key={key}
                 skill={skill}
-                state={rowState(skill)}
+                state={homeRowState("rec", skill, null)}
                 rowIndex={rowAt(start, i)}
                 rowRef={rowRef(key)}
                 tabIndex={tabIndexFor(key)}
@@ -600,7 +595,7 @@ function UpdatesGroup({
               <HomeRow
                 key={key}
                 skill={skill}
-                state={updateRowState(skill)}
+                state={homeRowState("upd", skill, null)}
                 rowIndex={rowAt(start, i)}
                 rowRef={rowRef(key)}
                 tabIndex={tabIndexFor(key)}
