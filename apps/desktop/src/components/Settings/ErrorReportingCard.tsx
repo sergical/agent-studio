@@ -1,8 +1,10 @@
 // ============================================================================
-// ErrorReportingCard - Settings' "Error reporting" card: the opt-in switch
-// that sends a sanitized panic or command failure to Sentry. Off by default -
-// see the Rust `error_reporting` and `skill_studio_core::report_sanitizer`
-// for what a report can and can't carry.
+// ErrorReportingCard - Settings' "Telemetry" card: the switch that sends a
+// sanitized panic to Sentry. Off in the registry by default; the welcome
+// screen offers it on and writes the user's explicit choice here, and this
+// card lets the user change that choice later - see the Rust
+// `error_reporting` and `skill_studio_core::report_sanitizer` for what a
+// report can and can't carry.
 // ============================================================================
 
 import { useEffect, useState } from "react";
@@ -26,7 +28,7 @@ export function ErrorReportingCard() {
       .catch((err) => {
         addToast({
           type: "error",
-          title: "Couldn't read your error reporting setting",
+          title: "Couldn't read your Telemetry setting",
           message: err instanceof Error ? err.message : "Unknown error",
         });
       })
@@ -47,7 +49,7 @@ export function ErrorReportingCard() {
       setEnabled(previous);
       addToast({
         type: "error",
-        title: "Couldn't save your error reporting setting",
+        title: "Couldn't save your Telemetry setting",
         message: err instanceof Error ? err.message : "Unknown error",
       });
     }
@@ -56,15 +58,15 @@ export function ErrorReportingCard() {
   return (
     <SettingsCard
       icon={<Bug size={15} className="text-text-tertiary" />}
-      title="Error reporting"
-      description="Send a sanitized crash or a failed action to us. Off by default; never your skill names, file contents, or paths."
+      title="Telemetry"
+      description="Crash reports only. When Skill Studio crashes, it sends the place in its own code where the crash happened. It never sends your skill names, file contents, or paths."
     >
       <label className="flex h-9 items-center gap-2 px-2 text-body text-text-secondary">
         <SwitchControl
           checked={enabled}
           onCheckedChange={toggle}
           disabled={isLoading}
-          ariaLabel="Error reporting"
+          ariaLabel="Telemetry"
         />
         {enabled ? "On" : "Off"}
       </label>

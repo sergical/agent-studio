@@ -57,6 +57,8 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
     toggleRow,
     searchProjectFolders,
     setSearchProjectFolders,
+    telemetryEnabled,
+    setTelemetryEnabled,
     error,
     saving,
     continue: onContinue,
@@ -109,6 +111,22 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
           <span className="text-sm">Find my projects from agent history</span>
           <Switch checked={searchProjectFolders} onCheckedChange={setSearchProjectFolders} />
         </label>
+
+        <div className="space-y-1">
+          <label className="flex items-center justify-between gap-3">
+            <span className="text-sm">Send crash reports to Skill Studio</span>
+            <Switch
+              checked={telemetryEnabled}
+              onCheckedChange={setTelemetryEnabled}
+              aria-describedby="telemetry-help"
+            />
+          </label>
+          <p id="telemetry-help" className="text-sm text-muted-foreground">
+            Today this is crash reports only. When Skill Studio crashes, it sends the place in its
+            own code where the crash happened. It never sends your skill names, file contents, or
+            paths. The report is built on this Mac, and you can change this at any time in Settings.
+          </p>
+        </div>
 
         <Button
           onClick={onContinue}

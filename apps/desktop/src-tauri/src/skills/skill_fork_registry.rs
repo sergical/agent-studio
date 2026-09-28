@@ -227,10 +227,14 @@ pub struct ForkRegistry {
     /// the desktop app, the CLI, and the MCP server honour the same choice.
     #[serde(default, skip_serializing_if = "DiscoverySources::is_empty")]
     pub discovery: DiscoverySources,
-    /// Opt-in error reporting (Settings' "Error reporting" toggle) - see
-    /// `error_reporting`. Off by default: a panic or a command failure is
-    /// sanitized and sent to Sentry only once this is `true`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// Telemetry (Settings' "Telemetry" toggle) - see `error_reporting`.
+    /// Off in the registry by default; the welcome screen offers it on
+    /// (`FIRST_RUN_TELEMETRY_DEFAULT` in `useFirstRun.ts`) and
+    /// `save_harnesses_choice` writes the user's explicit choice here.
+    /// `lib.rs` reads it on every launch; before a choice exists it reads
+    /// as off, and a registry saved by an older build without the key
+    /// reads as off too.
+    #[serde(default)]
     pub error_reporting_enabled: bool,
     /// The first-run screen's saved choice - see `harness_first_run`.
     /// Absent means the screen has never been completed, so the app shows
@@ -715,6 +719,46 @@ mod tests {
         let content =
             std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
         assert!(!content.contains("\"discovery\""));
+    }
+
+    #[test]
+    fn a_registry_with_a_saved_first_run_and_no_telemetry_key_reads_as_off_or_opts_the_user_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".agents")).unwrap();
+        std::fs::write(
+            tmp.path().join(".agents/skill-studio.json"),
+            r#"{"version":4,"write_version":0,"harnesses":{"kept":["claude-code"],"search_project_folders":false,"saved_at":"2026-09-28T00:00:00Z"}}"#,
+        )
+        .unwrap();
+
+        let reg = read_fork_registry(tmp.path()).unwrap();
+        assert!(
+            !reg.error_reporting_enabled,
+            "an absent key must read as off - only the welcome screen or Settings may turn it on"
+        );
+    }
+
+    #[test]
+    fn a_saved_false_for_error_reporting_survives_a_round_trip_or_names_the_dropped_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = ForkRegistry {
+            error_reporting_enabled: false,
+            ..ForkRegistry::default()
+        };
+        write_fork_registry(tmp.path(), &reg).unwrap();
+
+        let content =
+            std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
+        assert!(
+            content.contains(r#""error_reporting_enabled": false"#),
+            "a saved false must be written, not dropped by skip_serializing_if: {content}"
+        );
+
+        let reloaded = read_fork_registry(tmp.path()).unwrap();
+        assert!(
+            !reloaded.error_reporting_enabled,
+            "a saved false must still read back as false after the round trip"
+        );
     }
 
     #[test]

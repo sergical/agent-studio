@@ -249,10 +249,14 @@ export async function getHarnessesChoice(): Promise<HarnessesChoice | null> {
 }
 
 /**
- * Saves the first-run screen's choice so the next launch skips it.
+ * Saves the first-run screen's choice so the next launch skips it, along
+ * with the same screen's telemetry switch.
  */
-export async function saveHarnessesChoice(choice: HarnessesChoice): Promise<void> {
-  return callCommand("save_harnesses_choice", { choice });
+export async function saveHarnessesChoice(
+  choice: HarnessesChoice,
+  errorReportingEnabled: boolean,
+): Promise<void> {
+  return callCommand("save_harnesses_choice", { choice, errorReportingEnabled });
 }
 
 /**

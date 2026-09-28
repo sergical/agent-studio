@@ -1,13 +1,16 @@
 // ============================================================================
 // Skills Module - error_reporting
-// Opt-in error reporting (unit 6.4): off by default, one switch in Settings
-// (`error_reporting_enabled` in `~/.agents/skill-studio.json`, alongside the
-// other settings in `skill_fork_registry`). When on, a panic is sanitized -
-// see `skill_studio_core::report_sanitizer` - and queued on a
-// `skill_studio_host::QueuedReportSink`; when off, the sink is never built,
-// so a panic or a failed command makes no network call. `ReportingState` is
-// the piece of Tauri-managed state the toggle command flips at runtime, so
-// switching Settings takes effect without a restart.
+// Telemetry (unit 6.4): a crash-report switch, off in the registry by
+// default (`error_reporting_enabled` in `~/.agents/skill-studio.json`,
+// alongside the other settings in `skill_fork_registry`) - the welcome
+// screen offers it on and `save_harnesses_choice` writes the user's
+// explicit choice; Settings' "Telemetry" card keeps it in sync afterward.
+// When on, a panic is sanitized - see `skill_studio_core::report_sanitizer`
+// - and queued on a `skill_studio_host::QueuedReportSink`; when off,
+// `maybe_report` drops the panic before it reaches the sink, so nothing is
+// queued and no network call is made. `ReportingState` is the piece of
+// Tauri-managed state the toggle command flips at runtime, so switching
+// Settings takes effect without a restart.
 // ============================================================================
 
 use std::panic::PanicHookInfo;
@@ -104,6 +107,25 @@ pub fn set_global_state(state: Arc<ReportingState>) {
     let _ = REPORTING_STATE.set(state);
 }
 
+/// Builds the exception message from the panic's `Location` only. The
+/// signature takes no `PanicHookInfo`, so `info.to_string()` and
+/// `info.payload()` - whatever the panicking code passed to `panic!()`,
+/// which can quote a path, a skill name, or a file body - cannot reach
+/// `RawException::message` by construction. This module's privacy promise
+/// ("only the place in the code where it crashed") rests on that, with
+/// `sanitize`'s redaction as a second line of defense.
+fn message_from_location(location: Option<&std::panic::Location<'_>>) -> String {
+    match location {
+        Some(location) => format!(
+            "panicked at {}:{}:{}",
+            location.file(),
+            location.line(),
+            location.column()
+        ),
+        None => "panicked at an unknown location".to_string(),
+    }
+}
+
 /// One frame's `Display` text is all `std::panic::Location` gives without a
 /// backtrace crate; still enough for `sanitize` to reduce it to a file name.
 fn frame_from_panic(
@@ -130,7 +152,7 @@ pub fn install_panic_hook() {
                 operation: None,
                 dimensions: vec![],
                 exceptions: vec![RawException {
-                    message: info.to_string(),
+                    message: message_from_location(info.location()),
                     frames: frame_from_panic(info),
                 }],
             };
@@ -177,11 +199,19 @@ pub async fn set_error_reporting_enabled(
             let mut registry = super::skill_fork_registry::read_fork_registry(&home)?;
             registry.error_reporting_enabled = enabled;
             super::skill_fork_registry::write_fork_registry(&home, &registry)?;
-            app.state::<Arc<ReportingState>>().set_enabled(enabled);
+            set_live_reporting_enabled(&app, enabled);
             Ok(enabled)
         },
     )
     .await
+}
+
+/// Flips the managed `ReportingState`'s live switch - shared by
+/// `set_error_reporting_enabled` and `harness_first_run::save_harnesses_choice`
+/// so the first-run screen's telemetry choice takes effect without a
+/// restart the same way Settings' toggle does.
+pub(crate) fn set_live_reporting_enabled(app: &tauri::AppHandle, enabled: bool) {
+    app.state::<Arc<ReportingState>>().set_enabled(enabled);
 }
 
 #[cfg(test)]
@@ -224,8 +254,9 @@ mod tests {
 
     /// guards: the switch being off failing to stop `maybe_report` from
     /// queuing (and, on the next flush, sending) a report - the whole point
-    /// of "off by default" is that nothing leaves the machine. Exercises
-    /// the production `ReportingState` gate directly, not a copy of it.
+    /// of the switch is that turning it off means nothing leaves the
+    /// machine. Exercises the production `ReportingState` gate directly,
+    /// not a copy of it.
     #[test]
     fn reporting_off_makes_no_network_call() {
         let recorder = Arc::new(RecordingTransport::default());
@@ -276,6 +307,32 @@ mod tests {
         assert!(
             !body.contains("/Users/"),
             "a home path leaked into the bytes handed to the transport: {body}"
+        );
+    }
+
+    /// `a_crash_report_message_carries_only_the_code_location_or_names_the_extra_text`:
+    /// the message the panic hook stores is `panicked at <file>:<line>:<column>`
+    /// for a known location and a fixed sentence for none. Fails if the
+    /// format grows any text beyond the location, which is the only thing
+    /// the welcome screen says a crash report carries.
+    #[test]
+    fn a_crash_report_message_carries_only_the_code_location_or_names_the_extra_text() {
+        let location = std::panic::Location::caller();
+        let message = message_from_location(Some(location));
+        assert_eq!(
+            message,
+            format!(
+                "panicked at {}:{}:{}",
+                location.file(),
+                location.line(),
+                location.column()
+            ),
+            "the message carries more than the code location"
+        );
+        assert_eq!(
+            message_from_location(None),
+            "panicked at an unknown location",
+            "a panic with no location must still produce a fixed message"
         );
     }
 }
