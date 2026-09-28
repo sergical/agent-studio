@@ -18,5 +18,19 @@
         "period": 60,
       },
     },
+    {
+      // Caps everything this Worker sends to skills.sh, whoever is calling.
+      // skills.sh allows 600 requests/minute for the shared key, so a caller
+      // that rotates egress IPs could otherwise spend the whole allowance and
+      // take the Skill Store away from app users; 500 leaves room for the
+      // local dev server, which spends the same key. Only cache misses count
+      // against it.
+      "name": "UPSTREAM_BUDGET",
+      "namespace_id": "2",
+      "simple": {
+        "limit": 500,
+        "period": 60,
+      },
+    },
   ],
 }

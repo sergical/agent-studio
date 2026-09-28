@@ -172,6 +172,80 @@ describe("rate limit middleware", () => {
   });
 });
 
+describe("aggregate upstream budget middleware", () => {
+  it("returns 429 with Retry-After when the shared budget is spent, without calling upstream", async () => {
+    const fetchMock = vi.fn();
+    const budget = fakeLimiter(0);
+
+    const response = await createSkillsProxyApp({
+      apiKey: "sk-secret",
+      fetch: fetchMock,
+      budget,
+    }).request("http://localhost/api/v1/skills");
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("60");
+    expect(await response.json()).toEqual({ error: "Too many requests" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("spends the budget only on a cache miss, leaving cached reads free", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ data: ["one"] }), { status: 200 }));
+    const budget = fakeLimiter(1);
+    const cache = fakeCache();
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", fetch: fetchMock, budget, cache });
+
+    await app.request("http://localhost/api/v1/skills?page=0");
+    const second = await app.request("http://localhost/api/v1/skills?page=0");
+
+    expect(await second.json()).toEqual({ data: ["one"] });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(budget.calls).toBe(1);
+  });
+
+  it("does not cache a 429 from the budget either", async () => {
+    const fetchMock = vi.fn();
+    const budget = fakeLimiter(0);
+    const cache = fakeCache();
+
+    const response = await createSkillsProxyApp({
+      apiKey: "sk-secret",
+      fetch: fetchMock,
+      budget,
+      cache,
+    }).request("http://localhost/api/v1/skills");
+
+    expect(response.status).toBe(429);
+    expect(cache.size).toBe(0);
+  });
+
+  it("does not consult the budget for /health, answering even when it would refuse", async () => {
+    const budget = fakeLimiter(0);
+
+    const response = await createSkillsProxyApp({ apiKey: "sk-secret", budget }).request(
+      "http://localhost/health",
+    );
+
+    expect(response.status).toBe(200);
+    expect(budget.calls).toBe(0);
+  });
+
+  it("leaves the Node dev server unbudgeted when no budget is injected", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", fetch: fetchMock });
+
+    for (let i = 0; i < 3; i += 1) {
+      const response = await app.request(`http://localhost/api/v1/skills?page=${i}`);
+      expect(response.status).toBe(200);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe("edge cache middleware", () => {
   it("serves a second identical request from the cache with no second upstream call", async () => {
     const fetchMock = vi
