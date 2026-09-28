@@ -88,14 +88,6 @@ impl ErrorCode {
             ErrorCode::Cancelled => "cancelled",
         }
     }
-
-    /// Returns the serde `snake_case` name, for adapters that tag telemetry
-    /// with it. Same literals as [`ErrorCode::as_str`]; kept as its own
-    /// method so a caller reads "the serde name" rather than "the display
-    /// string" at the call site.
-    pub const fn name(self) -> &'static str {
-        self.as_str()
-    }
 }
 
 /// Who holds a lease a [`ErrorCode::ScopeBusy`] error bounced off.
@@ -210,11 +202,12 @@ mod tests {
         assert_eq!(json, format!("\"{}\"", ErrorCode::DriftConflict.as_str()));
     }
 
-    /// Guards against `name()` and the `Serialize` impl drifting apart: an
-    /// exhaustive match over every variant, so a new one fails to compile
-    /// here until this test is updated too.
+    /// Guards against `as_str()` and the `Serialize` impl drifting apart:
+    /// telemetry tags carry `as_str()`, Sentry groups on it, and the CLI
+    /// prints the serde name. An exhaustive match over every variant, so a
+    /// new one fails to compile here until this test is updated too.
     #[test]
-    fn name_equals_the_serde_json_string_for_every_variant() {
+    fn as_str_equals_the_serde_json_string_for_every_variant() {
         let all = [
             ErrorCode::InvalidRequest,
             ErrorCode::InvalidScope,
@@ -246,7 +239,7 @@ mod tests {
                 ErrorCode::Incomplete => "incomplete",
                 ErrorCode::Cancelled => "cancelled",
             };
-            assert_eq!(code.name(), exhaustive_name);
+            assert_eq!(code.as_str(), exhaustive_name);
             let json = serde_json::to_value(code).unwrap();
             assert_eq!(json, exhaustive_name);
         }

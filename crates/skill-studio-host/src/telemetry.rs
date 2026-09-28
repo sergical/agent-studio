@@ -500,7 +500,7 @@ impl Telemetry for SentryTelemetry {
         }
 
         let error_code = match &record.outcome {
-            OpOutcome::Err { code } => Some(code.name()),
+            OpOutcome::Err { code } => Some(code.as_str()),
             OpOutcome::Ok => None,
         };
         let tags = outcome_tags(self.surface, ok, error_code);
