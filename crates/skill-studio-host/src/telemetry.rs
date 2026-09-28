@@ -13,8 +13,7 @@ use sentry::protocol::{Event, Map};
 use sentry::transports::ReqwestHttpTransportOptions;
 use sentry::{ClientInitGuard, ClientOptions, Envelope, Level, Transport, TransportFactory};
 
-/// Compile-time DSN wins; this run-time variable is the developer fallback
-/// so a local build can be pointed at a test project without a rebuild.
+/// Run-time fallback for the compile-time DSN; see [`resolve_dsn`].
 const DSN_ENV_VAR: &str = "SKILL_STUDIO_SENTRY_DSN";
 
 /// Flush budget for [`shutdown`] - also `ClientOptions::shutdown_timeout`,
@@ -200,8 +199,6 @@ impl Transport for ConsentTransport {
     }
 }
 
-/// Builds the default `reqwest` transport, then wraps it in a
-/// [`ConsentTransport`] sharing this factory's `consent`.
 struct ConsentTransportFactory {
     consent: Consent,
 }
