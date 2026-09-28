@@ -84,6 +84,35 @@ pub(crate) fn set_error_reporting_enabled_at(
     Ok(())
 }
 
+/// Forwards one `WebView` error (a React `componentDidCatch`, an uncaught
+/// `window` error, or an unhandled promise rejection) to
+/// `skill_studio_host::telemetry::report_frontend_error`, unless consent is
+/// off - so `FRONTEND_ERROR_REPORT_COUNT`'s per-process cap isn't spent by
+/// reports that `ConsentTransport` would have dropped anyway. `ConsentTransport`
+/// stays the authoritative consent check: this is only a courtesy that skips
+/// the count, not a second copy of the gate.
+#[allow(clippy::needless_pass_by_value)] // Tauri's command extractor requires owned arguments.
+#[tauri::command]
+pub fn report_frontend_error(
+    component: String,
+    kind: String,
+    state: tauri::State<'_, ReportingState>,
+) {
+    forward_frontend_error(&state.consent, &component, &kind);
+}
+
+/// The body of `report_frontend_error`, kept apart so a test can drive it
+/// with a plain `Consent` - a `tauri::State` can't be constructed outside a
+/// running app. Returns whether the report was forwarded, so a test can
+/// assert on it without a fake host client.
+pub(crate) fn forward_frontend_error(consent: &Consent, component: &str, kind: &str) -> bool {
+    if !consent.enabled() {
+        return false;
+    }
+    skill_studio_host::telemetry::report_frontend_error(component, kind);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +142,27 @@ mod tests {
         assert!(
             !after.error_reporting_enabled,
             "turning the switch off must persist false to the registry"
+        );
+    }
+
+    /// guards: `forward_frontend_error` counting a report against
+    /// `FRONTEND_ERROR_REPORT_COUNT` while consent is off - `ConsentTransport`
+    /// stays the authoritative gate, but this command shouldn't call the host
+    /// at all when it already knows the envelope would be dropped. No Sentry
+    /// client is bound in tests, so the host call itself is a no-op either
+    /// way; this only asserts the return value that signals whether it ran.
+    #[test]
+    fn a_webview_error_is_not_forwarded_while_the_switch_is_off() {
+        let off = Consent::new(false);
+        assert!(
+            !forward_frontend_error(&off, "SkillList", "TypeError"),
+            "a report must not be forwarded while consent is off"
+        );
+
+        let on = Consent::new(true);
+        assert!(
+            forward_frontend_error(&on, "SkillList", "TypeError"),
+            "a report must be forwarded once consent is on"
         );
     }
 }
