@@ -22,11 +22,7 @@ export function componentNameFromStack(componentStack: string | null | undefined
 
 // `cause.name` for `Error` instances (e.g. "TypeError"), "string" for a
 // thrown string, "unknown" for anything else - never `cause.message`, which
-// can quote a path or a skill name. Named `cause` (not `error`), the one
-// name `anti-slop/no-unknown-parameters` exempts from its "decode `unknown`
-// at the I/O boundary" rule - this function *is* that boundary. Checks the
-// string case with `Object.prototype.toString` rather than `typeof`:
-// `anti-slop/no-runtime-typeof` bans the operator outright, decoded or not.
+// can quote a path or a skill name.
 export function errorKind(cause: unknown): string {
   if (cause instanceof Error) return cause.name;
   if (Object.prototype.toString.call(cause) === "[object String]") return "string";
@@ -45,9 +41,7 @@ let reportCount = 0;
 export function reportFrontendError(component: string, kind: string): void {
   if (reportCount >= SESSION_REPORT_CAP) return;
   reportCount += 1;
-  void invoke("report_frontend_error", { component, kind }).catch(() => {
-    // Telemetry is best-effort; a failed report must not throw.
-  });
+  void invoke("report_frontend_error", { component, kind }).catch(() => {});
 }
 
 // Test-only: resets the per-session counter to zero, so one test's cap
