@@ -84,6 +84,17 @@ pub(crate) fn set_error_reporting_enabled_at(
     Ok(())
 }
 
+/// Forwards one `WebView` error (a React `componentDidCatch`, an uncaught
+/// `window` error, or an unhandled promise rejection) to
+/// `skill_studio_host::telemetry::report_frontend_error`. Consent is
+/// enforced downstream by `ConsentTransport`, the single gate every envelope
+/// the client could send passes through - nothing to check here.
+#[allow(clippy::needless_pass_by_value)] // Tauri's command extractor requires owned arguments.
+#[tauri::command]
+pub fn report_frontend_error(component: String, kind: String) {
+    skill_studio_host::telemetry::report_frontend_error(&component, &kind);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

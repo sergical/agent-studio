@@ -1,0 +1,107 @@
+// ============================================================================
+// Skill Studio - frontend-error-report
+// Reports a WebView error (a React `componentDidCatch`, an uncaught `window`
+// error, or an unhandled promise rejection) to the desktop's telemetry
+// pipeline through one Tauri command. Never the error message, the stack, or
+// a URL - `report_frontend_error` on the Rust side reduces both arguments to
+// identifiers before capturing anything.
+// Uses `invoke` directly rather than `callCommand` (see skill-api.ts):
+// `callCommand` records timing and throws on failure, neither of which this
+// fire-and-forget report needs or wants.
+// ============================================================================
+
+import { invoke } from "@tauri-apps/api/core";
+
+// The first "at Name" or "in Name" token of React's componentStack, e.g.
+// "\n    at SkillList (http://localhost:1420/src/...)\n    at App" ->
+// "SkillList". "unknown" when the stack is absent or has no such token.
+export function componentNameFromStack(componentStack: string | null | undefined): string {
+  const match = componentStack?.match(/\b(?:at|in)\s+([A-Za-z0-9_$.]+)/);
+  return match?.[1] ?? "unknown";
+}
+
+// `cause.name` for `Error` instances (e.g. "TypeError"), "string" for a
+// thrown string, "unknown" for anything else - never `cause.message`, which
+// can quote a path or a skill name. Named `cause` (not `error`), the one
+// name `anti-slop/no-unknown-parameters` exempts from its "decode `unknown`
+// at the I/O boundary" rule - this function *is* that boundary. Checks the
+// string case with `Object.prototype.toString` rather than `typeof`:
+// `anti-slop/no-runtime-typeof` bans the operator outright, decoded or not.
+export function errorKind(cause: unknown): string {
+  if (cause instanceof Error) return cause.name;
+  if (Object.prototype.toString.call(cause) === "[object String]") return "string";
+  return "unknown";
+}
+
+// Per-session cap: a render loop throwing on every frame must not turn into
+// a flood of IPC calls. Mirrors the host's own per-process cap
+// (`FRONTEND_ERROR_REPORT_CAP` in telemetry.rs) on the frontend side.
+const SESSION_REPORT_CAP = 20;
+let reportCount = 0;
+
+// Fire-and-forget: invokes `report_frontend_error` with only `component`
+// and `kind`, and swallows any rejection - a failed telemetry report must
+// never surface as a second error.
+export function reportFrontendError(component: string, kind: string): void {
+  if (reportCount >= SESSION_REPORT_CAP) return;
+  reportCount += 1;
+  void invoke("report_frontend_error", { component, kind }).catch(() => {
+    // Telemetry is best-effort; a failed report must not throw.
+  });
+}
+
+// Test-only: resets the per-session counter to zero, so one test's cap
+// doesn't leak into the next - `reportCount` is otherwise module state for
+// the process's whole lifetime, same as the host's own
+// `FRONTEND_ERROR_REPORT_COUNT` (`reset_frontend_error_report_count` in
+// telemetry.rs).
+export function resetFrontendErrorReportCountForTest(): void {
+  reportCount = 0;
+}
+
+// The one field each listener below reads off a real `ErrorEvent` /
+// `PromiseRejectionEvent` - narrow domain types rather than the full DOM
+// event types, so a test's plain-object fake satisfies `ErrorReportingTarget`
+// structurally, with no `as Window` assertion needed. A real `ErrorEvent`
+// (`error: any`) and `PromiseRejectionEvent` (`reason: any`) both still
+// satisfy these, so the production default below is unchanged.
+interface WindowErrorEvent {
+  error: unknown;
+}
+interface WindowRejectionEvent {
+  reason: unknown;
+}
+
+interface ErrorReportingTarget {
+  addEventListener(type: "error", listener: (event: WindowErrorEvent) => void): void;
+  addEventListener(
+    type: "unhandledrejection",
+    listener: (event: WindowRejectionEvent) => void,
+  ): void;
+  removeEventListener(type: "error", listener: (event: WindowErrorEvent) => void): void;
+  removeEventListener(
+    type: "unhandledrejection",
+    listener: (event: WindowRejectionEvent) => void,
+  ): void;
+}
+
+// Adds `window` "error" and "unhandledrejection" listeners that report
+// through `reportFrontendError`, tagged "window" and "promise"
+// respectively. Returns a remover so the caller can uninstall them (tests,
+// hot reload).
+export function installWindowErrorReporting(target: ErrorReportingTarget = window): () => void {
+  const onError = (event: WindowErrorEvent) => {
+    reportFrontendError("window", errorKind(event.error));
+  };
+  const onRejection = (event: WindowRejectionEvent) => {
+    reportFrontendError("promise", errorKind(event.reason));
+  };
+
+  target.addEventListener("error", onError);
+  target.addEventListener("unhandledrejection", onRejection);
+
+  return () => {
+    target.removeEventListener("error", onError);
+    target.removeEventListener("unhandledrejection", onRejection);
+  };
+}

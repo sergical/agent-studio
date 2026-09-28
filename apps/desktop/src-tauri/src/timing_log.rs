@@ -503,6 +503,7 @@ mod tests {
         ("start_add_skills_operation", "in-memory state only"),
         ("get_add_skill_operation", "in-memory state only"),
         ("cancel_add_skill_operation", "in-memory state only"),
+        ("report_frontend_error", "in-memory state only"),
         (
             "open_skill_path",
             "#[tauri::command(async)], Tauri dispatches it off the main thread",

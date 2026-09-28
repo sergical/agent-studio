@@ -2,11 +2,22 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { KitPreview } from "@skill-studio/ui";
 import App from "./App";
+import {
+  componentNameFromStack,
+  errorKind,
+  installWindowErrorReporting,
+  reportFrontendError,
+} from "./lib/frontend-error-report";
 import { stampInitialTheme } from "./lib/theme";
 
 // Stamped before React renders, so the app never flashes the wrong palette
 // on first paint.
 stampInitialTheme();
+
+// Catches an uncaught `window` error or an unhandled promise rejection -
+// the two failure shapes an ErrorBoundary never sees. Installed once, before
+// the first render.
+installWindowErrorReporting();
 
 // Simple error boundary for debugging
 class ErrorBoundary extends React.Component<
@@ -22,10 +33,11 @@ class ErrorBoundary extends React.Component<
     return { hasError: true, error };
   }
 
-  componentDidCatch(_error: Error, _errorInfo: React.ErrorInfo) {
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     // No toast store is reachable here: a crash this deep may mean the
     // Zustand provider itself failed to mount. The fallback UI below is
     // the only surface left to report the error on.
+    reportFrontendError(componentNameFromStack(errorInfo.componentStack), errorKind(error));
   }
 
   render() {

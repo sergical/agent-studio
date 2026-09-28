@@ -3,11 +3,11 @@
 //! context - gated end-to-end by a live [`Consent`] flag. See `docs/spec-headless-performance-observability.md`.
 
 use std::panic::PanicHookInfo;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
-use sentry::protocol::{Event, Map};
+use sentry::protocol::{Event, Map, Stacktrace, Thread};
 use sentry::transports::ReqwestHttpTransportOptions;
 use sentry::{ClientInitGuard, ClientOptions, Envelope, Level, Transport, TransportFactory};
 
@@ -195,6 +195,75 @@ fn redact_event(mut event: Event<'static>, surface: Surface) -> Event<'static> {
         .tags
         .insert("surface".to_string(), surface.as_str().to_string());
     event
+}
+
+/// Ceiling on how many [`report_frontend_error`] calls this process will
+/// forward to Sentry - a render loop throwing on every frame must not turn
+/// into a flood.
+const FRONTEND_ERROR_REPORT_CAP: u32 = 20;
+
+/// Count of [`report_frontend_error`] calls this process has made so far.
+/// `Relaxed` is enough: this only needs to be monotonic, not ordered with
+/// respect to anything else.
+static FRONTEND_ERROR_REPORT_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Builds and captures one event for an error raised inside the `WebView` -
+/// a React `componentDidCatch`, an uncaught `window` error, or an unhandled
+/// promise rejection. `component` and `kind` are reduced to identifiers by
+/// [`identifier_only`] before use, so neither can carry a path, a URL, or an
+/// error message through to the event. No `exception`, no `extra`, and no
+/// real stack trace: a Rust backtrace of this Tauri command would only name
+/// this function, never the `WebView` code that actually failed, so this
+/// pushes one `Thread` with an empty [`Stacktrace`] rather than relying on
+/// `attach_stacktrace` - `AttachStacktraceIntegration::process_event` only
+/// adds its own thread when the event has no stacktrace at all
+/// (`has_stacktrace`), and an empty one already counts. Capped at
+/// [`FRONTEND_ERROR_REPORT_CAP`] per process by [`FRONTEND_ERROR_REPORT_COUNT`].
+pub fn report_frontend_error(component: &str, kind: &str) {
+    if FRONTEND_ERROR_REPORT_COUNT.fetch_add(1, Ordering::Relaxed) >= FRONTEND_ERROR_REPORT_CAP {
+        return;
+    }
+    let component = identifier_only(component);
+    let kind = identifier_only(kind);
+    let mut tags = Map::new();
+    tags.insert("source".to_string(), "webview".to_string());
+    tags.insert("component".to_string(), component.clone());
+    tags.insert("kind".to_string(), kind.clone());
+    let mut event = Event {
+        message: Some(format!("webview error in {component}: {kind}")),
+        level: Level::Error,
+        tags,
+        ..Default::default()
+    };
+    event.threads.values.push(Thread {
+        stacktrace: Some(Stacktrace::default()),
+        ..Default::default()
+    });
+    sentry::capture_event(event);
+}
+
+/// Resets [`FRONTEND_ERROR_REPORT_COUNT`] to zero so a test can exercise the
+/// cap from a known starting point without depending on test execution
+/// order.
+#[cfg(test)]
+fn reset_frontend_error_report_count() {
+    FRONTEND_ERROR_REPORT_COUNT.store(0, Ordering::Relaxed);
+}
+
+/// Keeps only `[A-Za-z0-9_$.]`, cuts at 64 chars, returns `"unknown"` when
+/// nothing is left. A path (`/`, spaces), a URL (`:`, `/`), or a sentence
+/// (spaces, punctuation) therefore cannot survive into a tag or the message.
+fn identifier_only(raw: &str) -> String {
+    let filtered: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.'))
+        .take(64)
+        .collect();
+    if filtered.is_empty() {
+        "unknown".to_string()
+    } else {
+        filtered
+    }
 }
 
 /// Wraps the real transport so [`Transport::send_envelope`] forwards only
@@ -740,6 +809,101 @@ mod tests {
         assert_eq!(options.server_name.as_deref(), Some("skill-studio"));
         assert_eq!(options.max_breadcrumbs, 0);
         assert_eq!(options.release.as_deref(), Some("skill-studio@9.9.9"));
+    }
+
+    /// guards: `report_frontend_error` growing an `exception`, an `extra`
+    /// value, or a real stack trace, or `AttachStacktraceIntegration`
+    /// sneaking a frame back in despite the event's empty thread
+    /// stacktrace.
+    #[test]
+    fn a_webview_error_event_carries_only_component_and_kind() {
+        let _guard = HOOK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_frontend_error_report_count();
+
+        let dsn: sentry::types::Dsn = "https://examplePublicKey@o0.ingest.sentry.io/0"
+            .parse()
+            .expect("placeholder dsn parses");
+        let mut opts = client_options(dsn, Surface::Desktop, "0.0.0", Consent::new(true));
+        opts.integrations.push(Arc::new(
+            sentry::integrations::contexts::ContextIntegration::default(),
+        ));
+        opts.integrations.push(Arc::new(
+            sentry::integrations::backtrace::AttachStacktraceIntegration,
+        ));
+
+        let events = sentry::test::with_captured_events_options(
+            || report_frontend_error("SkillList", "TypeError"),
+            opts,
+        );
+
+        assert_eq!(events.len(), 1, "expected exactly one captured event");
+        let event = &events[0];
+        assert_eq!(
+            event.message.as_deref(),
+            Some("webview error in SkillList: TypeError")
+        );
+        assert_eq!(event.level, Level::Error);
+        assert_eq!(
+            event.tags.get("surface").map(String::as_str),
+            Some("desktop")
+        );
+        assert_eq!(
+            event.tags.get("source").map(String::as_str),
+            Some("webview")
+        );
+        assert_eq!(
+            event.tags.get("component").map(String::as_str),
+            Some("SkillList")
+        );
+        assert_eq!(
+            event.tags.get("kind").map(String::as_str),
+            Some("TypeError")
+        );
+        assert!(event.exception.is_empty(), "no exception expected");
+        assert!(event.extra.is_empty(), "no extra expected");
+        for thread in &event.threads.values {
+            if let Some(stacktrace) = &thread.stacktrace {
+                assert!(
+                    stacktrace.frames.is_empty(),
+                    "no thread of a webview error event may carry a frame"
+                );
+            }
+        }
+    }
+
+    /// guards: `identifier_only` letting a path separator, a space, or an
+    /// over-long input survive into a tag.
+    #[test]
+    fn a_path_like_component_name_is_reduced_to_an_identifier() {
+        let reduced = identifier_only("/Users/x/skills/my skill");
+        assert!(!reduced.contains('/'), "a slash survived: {reduced:?}");
+        assert!(!reduced.contains(' '), "a space survived: {reduced:?}");
+
+        let long_input = "a".repeat(200);
+        assert_eq!(identifier_only(&long_input).len(), 64);
+
+        assert_eq!(identifier_only(""), "unknown");
+        assert_eq!(identifier_only("///   "), "unknown");
+    }
+
+    /// guards: `report_frontend_error` forgetting the per-process cap - a
+    /// render loop throwing on every frame must not flood Sentry.
+    #[test]
+    fn webview_error_reports_stop_after_the_process_cap() {
+        let _guard = HOOK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_frontend_error_report_count();
+
+        let events = sentry::test::with_captured_events(|| {
+            for _ in 0..21 {
+                report_frontend_error("SkillList", "TypeError");
+            }
+        });
+
+        assert_eq!(events.len(), 20, "expected the cap to stop the 21st report");
     }
 
     /// guards: the message format growing text beyond the code location -

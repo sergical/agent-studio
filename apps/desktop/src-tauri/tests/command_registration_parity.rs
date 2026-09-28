@@ -68,6 +68,14 @@ fn frontend_callers(skill_api_ts: &str) -> BTreeSet<String> {
     callers
 }
 
+/// Commands with a real frontend caller that deliberately isn't
+/// `callCommand` in `skill-api.ts`. `report_frontend_error` (telemetry PR 3)
+/// is called from `frontend-error-report.ts` through a bare `invoke`
+/// instead: it must fire-and-forget with no timing entry and no throw on
+/// failure, neither of which `callCommand` offers. Keep this list to exactly
+/// that kind of documented exception, not a general escape hatch.
+const NON_SKILL_API_CALLERS: &[&str] = &["report_frontend_error"];
+
 #[test]
 fn command_registration_matches_frontend_caller_count_or_names_the_orphan() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -78,7 +86,10 @@ fn command_registration_matches_frontend_caller_count_or_names_the_orphan() {
     let registered = registered_commands(&lib_rs);
     let called = frontend_callers(&skill_api_ts);
 
-    let orphans: Vec<&String> = registered.difference(&called).collect();
+    let orphans: Vec<&String> = registered
+        .difference(&called)
+        .filter(|name| !NON_SKILL_API_CALLERS.contains(&name.as_str()))
+        .collect();
     assert!(
         orphans.is_empty(),
         "these commands are registered in lib.rs's generate_handler! but have no \
