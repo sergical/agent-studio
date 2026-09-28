@@ -1137,6 +1137,9 @@ impl Runtime {
             *ctx.root_start
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(start);
+            // Nested ops an earlier top-level body collected and then lost
+            // by panicking must not be attributed to this run.
+            ctx.take_nested();
         }
         // A timing filed through `ctx` before this call started - either a
         // stale one left by an unrelated earlier op (`depth_before == 0`) or

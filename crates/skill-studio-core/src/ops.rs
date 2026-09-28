@@ -7548,6 +7548,9 @@ mod tests {
 
             let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 rt.run(Operation::Scan, &ctx, || -> Result<(), CoreError> {
+                    // A nested op that finished before the panic is already
+                    // in the context's `nested` list when the panic unwinds.
+                    rt.run(Operation::Diagnose, &ctx, || Ok(()))?;
                     panic!("boom")
                 })
             }));
@@ -7564,7 +7567,10 @@ mod tests {
                 "the call after the panic must record once, on its own"
             );
             assert_eq!(records[0].operation, Operation::Doctor);
-            assert!(records[0].nested.is_empty());
+            assert!(
+                records[0].nested.is_empty(),
+                "the panicked run's nested op must not be attributed to the next run"
+            );
         }
     }
 }
