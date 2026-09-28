@@ -13,12 +13,14 @@ import { parkSkill, pullForkUpstream, updateAllSkills, updateSkill } from "../..
 import { lifecycleTargetForPark, updateSkillOwners } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import { GroupHead } from "../SkillList/GroupHead";
-import { DEFAULT_HARNESS_LIST, rowState, whereFacts } from "../SkillList/skill-row-state";
+import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
+import type { RowState } from "../SkillList/skill-row-state";
 import { HarnessStack } from "../SkillList/HarnessStack";
 import { ROW_CLASS, RowGlyph, SkillNameCell } from "../SkillList/SkillRowCells";
 import { SkillLocationCell } from "../SkillList/SkillLocationCell";
 import { RichTooltipScope } from "../ui/RichTooltip";
 import {
+  homeRowState,
   issueActionLabel,
   issueKey,
   MAX_ROWS_PER_GROUP,
@@ -48,12 +50,14 @@ interface RowCursorProps {
 
 /**
  * One row of any inbox group - the Stack row Skills uses, with the tokens
- * column replaced by the group's own detail text and action node. The state
- * glyph comes from `rowState(skill)`, not the group's own severity, so a
- * skill with no state (e.g. a plain "recently used" row) shows no glyph.
+ * column replaced by the group's own detail text and action node. The
+ * glyph comes from the caller's `state`, not the skill's own worst
+ * condition, so a Broken/Warnings row always matches the group it sits in;
+ * a plain "recently used" row passes `null` and shows no glyph.
  */
 function HomeRow({
   skill,
+  state,
   detail,
   action,
   onOpen,
@@ -62,6 +66,7 @@ function HomeRow({
   tabIndex,
 }: {
   skill: InstalledSkill;
+  state: RowState | null;
   detail: ReactNode;
   action: ReactNode;
   onOpen: () => void;
@@ -87,7 +92,7 @@ function HomeRow({
       {/* Not `contents`: `RowGlyph` renders nothing when the skill has no state, and a `contents`
           wrapper around no children drops out of the grid, shifting every column after it. */}
       <div role="gridcell" className="flex items-center justify-center">
-        <RowGlyph state={rowState(skill)} size={HOME_GLYPH_SIZE} />
+        <RowGlyph state={state} size={HOME_GLYPH_SIZE} />
       </div>
       <div role="gridcell" className="contents">
         <SkillNameCell skill={skill} />
@@ -283,6 +288,7 @@ function BrokenGroup({
               <HomeRow
                 key={key}
                 skill={issue.skill}
+                state={homeRowState("broken", issue.skill, issue)}
                 rowIndex={rowAt(start, i)}
                 rowRef={rowRef(key)}
                 tabIndex={tabIndexFor(key)}
@@ -351,6 +357,7 @@ function WarningsGroup({
               <HomeRow
                 key={key}
                 skill={issue.skill}
+                state={homeRowState("warn", issue.skill, issue)}
                 rowIndex={rowAt(start, i)}
                 rowRef={rowRef(key)}
                 tabIndex={tabIndexFor(key)}
@@ -416,6 +423,7 @@ function UnusedGroup({
               <HomeRow
                 key={key}
                 skill={skill}
+                state={homeRowState("unused", skill, null)}
                 rowIndex={rowAt(start, i)}
                 rowRef={rowRef(key)}
                 tabIndex={tabIndexFor(key)}
@@ -488,6 +496,7 @@ function RecentGroup({
               <HomeRow
                 key={key}
                 skill={skill}
+                state={homeRowState("rec", skill, null)}
                 rowIndex={rowAt(start, i)}
                 rowRef={rowRef(key)}
                 tabIndex={tabIndexFor(key)}
@@ -586,6 +595,7 @@ function UpdatesGroup({
               <HomeRow
                 key={key}
                 skill={skill}
+                state={homeRowState("upd", skill, null)}
                 rowIndex={rowAt(start, i)}
                 rowRef={rowRef(key)}
                 tabIndex={tabIndexFor(key)}
