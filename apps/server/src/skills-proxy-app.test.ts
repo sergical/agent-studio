@@ -276,6 +276,54 @@ describe("edge cache middleware", () => {
   });
 });
 
+describe("reportServerError", () => {
+  it("an upstream fetch failure returns 502 and reports the cause as an upstream error", async () => {
+    const upstreamError = new Error("getaddrinfo ENOTFOUND skills.sh");
+    const fetchMock = vi.fn().mockRejectedValue(upstreamError);
+    const reportServerError = vi.fn();
+
+    const response = await createSkillsProxyApp({
+      apiKey: "sk-secret",
+      fetch: fetchMock,
+      reportServerError,
+    }).request("http://localhost/api/v1/skills");
+
+    expect(response.status).toBe(502);
+    expect(reportServerError).toHaveBeenCalledOnce();
+    expect(reportServerError).toHaveBeenCalledWith(upstreamError, { kind: "upstream" });
+  });
+
+  it("a route that throws returns a 500 without the message and reports it as unhandled", async () => {
+    const reportServerError = vi.fn();
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", reportServerError });
+    app.get("/boom", () => {
+      throw new Error("secret detail");
+    });
+
+    const response = await app.request("http://localhost/boom");
+
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body).toEqual({ error: "Skill Studio server error" });
+    expect(JSON.stringify(body)).not.toContain("secret detail");
+    expect(reportServerError).toHaveBeenCalledWith(expect.any(Error), { kind: "unhandled" });
+  });
+
+  it("a missing error sink never breaks a failing request", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("getaddrinfo ENOTFOUND skills.sh"));
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", fetch: fetchMock });
+    app.get("/boom", () => {
+      throw new Error("secret detail");
+    });
+
+    const upstreamResponse = await app.request("http://localhost/api/v1/skills");
+    const thrownResponse = await app.request("http://localhost/boom");
+
+    expect(upstreamResponse.status).toBe(502);
+    expect(thrownResponse.status).toBe(500);
+  });
+});
+
 describe("non-GET requests to /api/v1/*", () => {
   it("rejects a write method with 405, without consulting the cache or calling upstream", async () => {
     const fetchMock = vi.fn();

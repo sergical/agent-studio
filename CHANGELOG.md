@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## Unreleased
 
 - The telemetry switch in `~/.agents/skill-studio.json` is now `telemetry_enabled`; a file saved by an rc build under `error_reporting_enabled` is still read.
+- Server: unexpected errors and skills.sh failures in the hosted proxy are reported to Sentry when a `SENTRY_DSN` secret is set; caller IP, headers, and query strings are stripped first.
 
 ## v0.1.0
 

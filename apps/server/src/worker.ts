@@ -6,14 +6,19 @@
 // `createSkillsProxyApp` before every request reaches skills.sh.
 // ============================================================================
 
+import * as Sentry from "@sentry/cloudflare";
+
 import { createSkillsProxyApp, type RateLimiter, type ResponseCache } from "./skills-proxy-app";
+import { scrubSentryEvent } from "./sentry-event-scrub";
 
 /** The subset of Workers' `Fetcher.env` this proxy reads: the skills.sh key
- * (set once with `wrangler secret put SKILLS_SH_API_KEY`) and the rate limit
- * binding declared in `wrangler.jsonc`. */
+ * (set once with `wrangler secret put SKILLS_SH_API_KEY`), the rate limit
+ * binding declared in `wrangler.jsonc`, and the optional Sentry DSN (`wrangler
+ * secret put SENTRY_DSN`) - absent, `withSentry` is a no-op. */
 interface Env {
   SKILLS_SH_API_KEY: string;
   RATE_LIMITER: RateLimiter;
+  SENTRY_DSN?: string;
 }
 
 /** The Workers fetch handler's third argument - its `waitUntil` schedules the
@@ -31,14 +36,28 @@ interface ExecutionContext {
 // `@cloudflare/workers-types` package just for one global.
 declare const caches: { default: ResponseCache };
 
-export default {
+const handler = {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
     const app = createSkillsProxyApp({
       apiKey: env.SKILLS_SH_API_KEY,
       limiter: env.RATE_LIMITER,
       cache: caches.default,
       waitUntil: (promise) => ctx.waitUntil(promise),
+      reportServerError: (error, { kind }) =>
+        Sentry.captureException(error, { tags: { error_kind: kind } }),
     });
     return app.fetch(request);
   },
 };
+
+// `SENTRY_DSN` is an optional Worker secret (`wrangler secret put SENTRY_DSN`)
+// - absent, the SDK never initializes and every call below is a no-op.
+export default Sentry.withSentry(
+  (env: Env) => ({
+    dsn: env.SENTRY_DSN,
+    environment: "production",
+    tracesSampleRate: 0,
+    beforeSend: scrubSentryEvent,
+  }),
+  handler,
+);

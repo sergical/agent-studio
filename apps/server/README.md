@@ -31,8 +31,13 @@ The shortest path, from `apps/server`:
 ```bash
 npx wrangler login
 npx wrangler secret put SKILLS_SH_API_KEY   # paste the real skills.sh key when prompted
+npx wrangler secret put SENTRY_DSN          # optional; without it error reporting is off
 npm run deploy -w @skill-studio/server
 ```
+
+When `SENTRY_DSN` is set, an unexpected error and a failed skills.sh request are sent to
+Sentry with the error, its stack, and the request method and path - never headers, cookies,
+query strings, or the caller's IP.
 
 The optional second path is `.github/workflows/deploy-server.yml`, which
 redeploys on demand (`workflow_dispatch`) using `CLOUDFLARE_API_TOKEN` and
