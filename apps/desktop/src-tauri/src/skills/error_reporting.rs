@@ -106,16 +106,15 @@ pub fn set_global_state(state: Arc<ReportingState>) {
     let _ = REPORTING_STATE.set(state);
 }
 
-/// Builds the exception message from `info.location()` only - never
-/// `info.to_string()` or `info.payload()`, which carry whatever the
-/// panicking code passed to `panic!()`. That payload is exactly the kind of
-/// string that can quote a path, a skill name, or a file body, and this
-/// module's privacy promise ("only the place in the code where it crashed")
-/// holds only if that payload never reaches `RawException::message` in the
-/// first place - `sanitize`'s redaction is a second line of defense, not
-/// the only one.
-fn message_from_panic(info: &PanicHookInfo<'_>) -> String {
-    match info.location() {
+/// Builds the exception message from the panic's `Location` only. The
+/// signature takes no `PanicHookInfo`, so `info.to_string()` and
+/// `info.payload()` - whatever the panicking code passed to `panic!()`,
+/// which can quote a path, a skill name, or a file body - cannot reach
+/// `RawException::message` by construction. This module's privacy promise
+/// ("only the place in the code where it crashed") rests on that, with
+/// `sanitize`'s redaction as a second line of defense.
+fn message_from_location(location: Option<&std::panic::Location<'_>>) -> String {
+    match location {
         Some(location) => format!(
             "panicked at {}:{}:{}",
             location.file(),
@@ -152,7 +151,7 @@ pub fn install_panic_hook() {
                 operation: None,
                 dimensions: vec![],
                 exceptions: vec![RawException {
-                    message: message_from_panic(info),
+                    message: message_from_location(info.location()),
                     frames: frame_from_panic(info),
                 }],
             };
@@ -310,44 +309,29 @@ mod tests {
         );
     }
 
-    /// `a_panic_carrying_a_skill_path_in_its_payload_never_reaches_the_report_message_or_leaks_the_path`:
-    /// `message_from_panic` must build its string from `info.location()`
-    /// alone. A panic payload naming a real skill file
-    /// (`/Users/alice/.claude/skills/secret-skill/SKILL.md`) must not
-    /// appear anywhere in the captured message - not even redacted by
-    /// `sanitize` downstream, because it must never have been read from the
-    /// payload at all. Fails if `message_from_panic` goes back to
-    /// `info.to_string()`/`info.payload()`, which include whatever the
-    /// panicking code passed to `panic!()`.
+    /// `a_crash_report_message_carries_only_the_code_location_or_names_the_extra_text`:
+    /// the message the panic hook stores is `panicked at <file>:<line>:<column>`
+    /// for a known location and a fixed sentence for none. Fails if the
+    /// format grows any text beyond the location, which is the only thing
+    /// the welcome screen says a crash report carries.
     #[test]
-    fn a_panic_carrying_a_skill_path_in_its_payload_never_reaches_the_report_message_or_leaks_the_path(
-    ) {
-        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let captured_for_hook = captured.clone();
-        let default_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            *captured_for_hook.lock().expect("captured") = Some(message_from_panic(info));
-        }));
-
-        let panicked = std::panic::catch_unwind(|| {
-            panic!("failed to read /Users/alice/.claude/skills/secret-skill/SKILL.md");
-        });
-
-        std::panic::set_hook(default_hook);
-        assert!(panicked.is_err(), "the test panic must have been caught");
-
-        let message = captured
-            .lock()
-            .expect("captured")
-            .take()
-            .expect("the hook must have run and captured a message");
-        assert!(
-            !message.contains("/Users/alice/.claude/skills/secret-skill/SKILL.md"),
-            "the panic payload leaked into the report message: {message}"
+    fn a_crash_report_message_carries_only_the_code_location_or_names_the_extra_text() {
+        let location = std::panic::Location::caller();
+        let message = message_from_location(Some(location));
+        assert_eq!(
+            message,
+            format!(
+                "panicked at {}:{}:{}",
+                location.file(),
+                location.line(),
+                location.column()
+            ),
+            "the message carries more than the code location"
         );
-        assert!(
-            message.starts_with("panicked at "),
-            "the message must be built from the code location, not left empty: {message}"
+        assert_eq!(
+            message_from_location(None),
+            "panicked at an unknown location",
+            "a panic with no location must still produce a fixed message"
         );
     }
 }
