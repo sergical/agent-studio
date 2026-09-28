@@ -64,6 +64,12 @@ interface FirstRunScreenState {
   continue: () => void;
 }
 
+/** The welcome screen's telemetry switch starts on; the registry itself
+ * defaults to off (`skill_fork_registry.rs`) so a build that never shows
+ * this screen never opts a user in. `save_harnesses_choice` writes
+ * whatever the user leaves the switch at when they continue. */
+export const FIRST_RUN_TELEMETRY_DEFAULT = true;
+
 export interface FirstRunSave {
   choice: HarnessesChoice;
   errorReportingEnabled: boolean;
@@ -110,7 +116,7 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
   const [rows, setRows] = useState<HarnessDetection[] | null>(null);
   const [kept, setKept] = useState<Set<string>>(new Set());
   const [searchProjectFolders, setSearchProjectFolders] = useState(true);
-  const [telemetryEnabled, setTelemetryEnabled] = useState(true);
+  const [telemetryEnabled, setTelemetryEnabled] = useState(FIRST_RUN_TELEMETRY_DEFAULT);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 

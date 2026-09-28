@@ -114,7 +114,7 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
 
         <div className="space-y-1">
           <label className="flex items-center justify-between gap-3">
-            <span className="text-sm">Send telemetry to Skill Studio</span>
+            <span className="text-sm">Send crash reports to Skill Studio</span>
             <Switch
               checked={telemetryEnabled}
               onCheckedChange={setTelemetryEnabled}
@@ -122,9 +122,9 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
             />
           </label>
           <p id="telemetry-help" className="text-sm text-muted-foreground">
-            Crash reports and failed actions help us fix problems. We care about your privacy:
-            reports never contain your skill names, file contents, or paths, and they are sanitized
-            on this Mac before they are sent. You can change this at any time in Settings.
+            Today this is crash reports only. When Skill Studio crashes, it sends the place in its
+            own code where the crash happened. It never sends your skill names, file contents, or
+            paths. The report is built on this Mac, and you can change this at any time in Settings.
           </p>
         </div>
 

@@ -1,14 +1,15 @@
 // ============================================================================
 // Skills Module - error_reporting
-// Telemetry (unit 6.4): on by default, shown on the first-run screen and as
-// a switch in Settings (`error_reporting_enabled` in
-// `~/.agents/skill-studio.json`, alongside the other settings in
-// `skill_fork_registry`). When on, a panic is sanitized -
-// see `skill_studio_core::report_sanitizer` - and queued on a
-// `skill_studio_host::QueuedReportSink`; when off, the sink is never built,
-// so a panic or a failed command makes no network call. `ReportingState` is
-// the piece of Tauri-managed state the toggle command flips at runtime, so
-// switching Settings takes effect without a restart.
+// Telemetry (unit 6.4): a crash-report switch, off in the registry by
+// default (`error_reporting_enabled` in `~/.agents/skill-studio.json`,
+// alongside the other settings in `skill_fork_registry`) - the welcome
+// screen offers it on and `save_harnesses_choice` writes the user's
+// explicit choice; Settings' "Telemetry" card keeps it in sync afterward.
+// When on, a panic is sanitized - see `skill_studio_core::report_sanitizer`
+// - and queued on a `skill_studio_host::QueuedReportSink`; when off, the
+// sink is never built, so a panic makes no network call. `ReportingState`
+// is the piece of Tauri-managed state the toggle command flips at runtime,
+// so switching Settings takes effect without a restart.
 // ============================================================================
 
 use std::panic::PanicHookInfo;
@@ -105,6 +106,26 @@ pub fn set_global_state(state: Arc<ReportingState>) {
     let _ = REPORTING_STATE.set(state);
 }
 
+/// Builds the exception message from `info.location()` only - never
+/// `info.to_string()` or `info.payload()`, which carry whatever the
+/// panicking code passed to `panic!()`. That payload is exactly the kind of
+/// string that can quote a path, a skill name, or a file body, and this
+/// module's privacy promise ("only the place in the code where it crashed")
+/// holds only if that payload never reaches `RawException::message` in the
+/// first place - `sanitize`'s redaction is a second line of defense, not
+/// the only one.
+fn message_from_panic(info: &PanicHookInfo<'_>) -> String {
+    match info.location() {
+        Some(location) => format!(
+            "panicked at {}:{}:{}",
+            location.file(),
+            location.line(),
+            location.column()
+        ),
+        None => "panicked at an unknown location".to_string(),
+    }
+}
+
 /// One frame's `Display` text is all `std::panic::Location` gives without a
 /// backtrace crate; still enough for `sanitize` to reduce it to a file name.
 fn frame_from_panic(
@@ -131,7 +152,7 @@ pub fn install_panic_hook() {
                 operation: None,
                 dimensions: vec![],
                 exceptions: vec![RawException {
-                    message: info.to_string(),
+                    message: message_from_panic(info),
                     frames: frame_from_panic(info),
                 }],
             };
@@ -183,19 +204,6 @@ pub async fn set_error_reporting_enabled(
         },
     )
     .await
-}
-
-/// Nothing leaves this Mac until the welcome screen has been submitted -
-/// `registry.harnesses` is `None` until `save_harnesses_choice` runs, so a
-/// crash during the very first launch (before the user has seen the
-/// telemetry switch's copy) is never reported even if the registry's
-/// `error_reporting_enabled` default is `true`. After that first save,
-/// `save_harnesses_choice` flips the live state directly, and Settings'
-/// toggle (`set_error_reporting_enabled`) keeps it in sync from then on.
-pub(crate) fn startup_reporting_enabled(
-    registry: Option<&super::skill_fork_registry::ForkRegistry>,
-) -> bool {
-    registry.is_some_and(|r| r.error_reporting_enabled && r.harnesses.is_some())
 }
 
 /// Flips the managed `ReportingState`'s live switch - shared by
@@ -277,56 +285,6 @@ mod tests {
         );
     }
 
-    /// `startup_never_sends_before_the_welcome_screen_is_submitted_or_reports_too_early`:
-    /// a registry with `error_reporting_enabled: true` but no saved
-    /// `harnesses` choice (the state of a brand-new install, before the
-    /// welcome screen's Continue) must read as `false` at startup - only a
-    /// registry that also carries a `harnesses` choice may enable
-    /// reporting. Fails if a fresh install's default `true` reaches the
-    /// panic hook before the user has seen the telemetry copy.
-    #[test]
-    fn startup_never_sends_before_the_welcome_screen_is_submitted_or_reports_too_early() {
-        use super::super::harness_first_run::HarnessesChoice;
-        use super::super::skill_fork_registry::ForkRegistry;
-
-        let enabled_no_harnesses = ForkRegistry {
-            error_reporting_enabled: true,
-            ..ForkRegistry::default()
-        };
-        assert!(
-            !startup_reporting_enabled(Some(&enabled_no_harnesses)),
-            "a fresh install with no first-run choice must not report yet"
-        );
-
-        let enabled_with_harnesses = ForkRegistry {
-            error_reporting_enabled: true,
-            harnesses: Some(HarnessesChoice {
-                kept: vec![],
-                search_project_folders: false,
-                saved_at: "2026-09-28T00:00:00Z".to_string(),
-            }),
-            ..ForkRegistry::default()
-        };
-        assert!(
-            startup_reporting_enabled(Some(&enabled_with_harnesses)),
-            "an enabled switch plus a completed first run must report"
-        );
-
-        let disabled_with_harnesses = ForkRegistry {
-            error_reporting_enabled: false,
-            harnesses: Some(HarnessesChoice {
-                kept: vec![],
-                search_project_folders: false,
-                saved_at: "2026-09-28T00:00:00Z".to_string(),
-            }),
-            ..ForkRegistry::default()
-        };
-        assert!(
-            !startup_reporting_enabled(Some(&disabled_with_harnesses)),
-            "a switch the user turned off must stay off even after the first run"
-        );
-    }
-
     /// guards: the switch being on failing to actually queue and send a
     /// report once flushed, or the report reaching the transport
     /// unsanitized - a home path in the panic message must not survive to
@@ -349,6 +307,47 @@ mod tests {
         assert!(
             !body.contains("/Users/"),
             "a home path leaked into the bytes handed to the transport: {body}"
+        );
+    }
+
+    /// `a_panic_carrying_a_skill_path_in_its_payload_never_reaches_the_report_message_or_leaks_the_path`:
+    /// `message_from_panic` must build its string from `info.location()`
+    /// alone. A panic payload naming a real skill file
+    /// (`/Users/alice/.claude/skills/secret-skill/SKILL.md`) must not
+    /// appear anywhere in the captured message - not even redacted by
+    /// `sanitize` downstream, because it must never have been read from the
+    /// payload at all. Fails if `message_from_panic` goes back to
+    /// `info.to_string()`/`info.payload()`, which include whatever the
+    /// panicking code passed to `panic!()`.
+    #[test]
+    fn a_panic_carrying_a_skill_path_in_its_payload_never_reaches_the_report_message_or_leaks_the_path(
+    ) {
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_for_hook = captured.clone();
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            *captured_for_hook.lock().expect("captured") = Some(message_from_panic(info));
+        }));
+
+        let panicked = std::panic::catch_unwind(|| {
+            panic!("failed to read /Users/alice/.claude/skills/secret-skill/SKILL.md");
+        });
+
+        std::panic::set_hook(default_hook);
+        assert!(panicked.is_err(), "the test panic must have been caught");
+
+        let message = captured
+            .lock()
+            .expect("captured")
+            .take()
+            .expect("the hook must have run and captured a message");
+        assert!(
+            !message.contains("/Users/alice/.claude/skills/secret-skill/SKILL.md"),
+            "the panic payload leaked into the report message: {message}"
+        );
+        assert!(
+            message.starts_with("panicked at "),
+            "the message must be built from the code location, not left empty: {message}"
         );
     }
 }

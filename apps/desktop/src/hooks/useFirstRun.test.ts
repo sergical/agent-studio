@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildFirstRunSave, continueIsBlocked, showScreenForChoiceRead } from "./useFirstRun";
+import {
+  buildFirstRunSave,
+  continueIsBlocked,
+  FIRST_RUN_TELEMETRY_DEFAULT,
+  showScreenForChoiceRead,
+} from "./useFirstRun";
 
 describe("showScreenForChoiceRead", () => {
   it("an unreadable registry opens the app instead of trapping the user on the first-run screen", () => {
@@ -32,17 +37,13 @@ describe("continueIsBlocked", () => {
   });
 });
 
-describe("buildFirstRunSave", () => {
-  it("carries the default telemetry switch (on) into the save call or drops the user's choice", () => {
-    const { errorReportingEnabled } = buildFirstRunSave(
-      new Set(["claude-code"]),
-      true,
-      true,
-      "2026-01-01T00:00:00.000Z",
-    );
-    expect(errorReportingEnabled).toBe(true);
+describe("FIRST_RUN_TELEMETRY_DEFAULT", () => {
+  it("the welcome screen starts the telemetry switch on or the registry's off default silently opts users out", () => {
+    expect(FIRST_RUN_TELEMETRY_DEFAULT).toBe(true);
   });
+});
 
+describe("buildFirstRunSave", () => {
   it("carries a turned-off telemetry switch into the save call or silently re-enables it", () => {
     const { choice, errorReportingEnabled } = buildFirstRunSave(
       new Set(["claude-code"]),

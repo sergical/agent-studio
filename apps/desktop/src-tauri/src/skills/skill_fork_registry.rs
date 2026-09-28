@@ -227,11 +227,12 @@ pub struct ForkRegistry {
     /// the desktop app, the CLI, and the MCP server honour the same choice.
     #[serde(default, skip_serializing_if = "DiscoverySources::is_empty")]
     pub discovery: DiscoverySources,
-    /// Telemetry (Settings' "Telemetry" toggle, also offered on the
-    /// first-run screen) - see `error_reporting`. On by default: a panic or
-    /// a command failure is sanitized and sent to Sentry unless the user
-    /// turns this off.
-    #[serde(default = "error_reporting_enabled_default")]
+    /// Telemetry (Settings' "Telemetry" toggle) - see `error_reporting`.
+    /// Off in the registry by default; the welcome screen offers it on
+    /// (`FIRST_RUN_TELEMETRY_DEFAULT` in `useFirstRun.ts`) and
+    /// `save_harnesses_choice` writes the user's explicit choice here, so
+    /// this field is never read before a value has actually been chosen.
+    #[serde(default)]
     pub error_reporting_enabled: bool,
     /// The first-run screen's saved choice - see `harness_first_run`.
     /// Absent means the screen has never been completed, so the app shows
@@ -270,10 +271,6 @@ fn default_version() -> u32 {
     CURRENT_REGISTRY_VERSION
 }
 
-fn error_reporting_enabled_default() -> bool {
-    true
-}
-
 // `#[derive(Default)]` would use `u32`/`Value`'s own `Default` (0 / Null)
 // instead of the `#[serde(default = "...")]` functions above, so a freshly
 // created registry would round-trip differently than one that was never
@@ -294,7 +291,7 @@ impl Default for ForkRegistry {
             trusted_dotagents_sources: BTreeSet::new(),
             projects: TrackedProjects::default(),
             discovery: DiscoverySources::default(),
-            error_reporting_enabled: true,
+            error_reporting_enabled: false,
             harnesses: None,
             unknown: serde_json::Map::new(),
         }
@@ -723,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_error_reporting_key_reads_as_enabled_or_names_the_wrong_default() {
+    fn an_absent_error_reporting_key_reads_as_off_or_names_the_wrong_default() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".agents")).unwrap();
         std::fs::write(
@@ -733,7 +730,10 @@ mod tests {
         .unwrap();
 
         let reg = read_fork_registry(tmp.path()).unwrap();
-        assert!(reg.error_reporting_enabled);
+        assert!(
+            !reg.error_reporting_enabled,
+            "an absent key must read as off - only the welcome screen or Settings may turn it on"
+        );
     }
 
     #[test]
@@ -747,10 +747,16 @@ mod tests {
 
         let content =
             std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
-        assert!(content.contains(r#""error_reporting_enabled": false"#));
+        assert!(
+            content.contains(r#""error_reporting_enabled": false"#),
+            "a saved false must be written, not dropped by skip_serializing_if: {content}"
+        );
 
         let reloaded = read_fork_registry(tmp.path()).unwrap();
-        assert!(!reloaded.error_reporting_enabled);
+        assert!(
+            !reloaded.error_reporting_enabled,
+            "a saved false must still read back as false after the round trip"
+        );
     }
 
     #[test]

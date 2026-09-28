@@ -110,7 +110,8 @@ pub async fn save_harnesses_choice(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "save_harnesses_choice", move || {
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
-        save_harnesses_choice_at(&home, choice, error_reporting_enabled)?;
+        let write_lease = super::write_lease::WriteLease::default();
+        save_harnesses_choice_at(&write_lease, &home, choice, error_reporting_enabled)?;
         super::error_reporting::set_live_reporting_enabled(&app, error_reporting_enabled);
         Ok(())
     })
@@ -120,13 +121,17 @@ pub async fn save_harnesses_choice(
 /// The locked read-modify-write body of `save_harnesses_choice`, kept apart
 /// so a test can drive it with a plain `home` path - `tauri::AppHandle`
 /// can't be constructed outside a running app (see `detect_with_runtime`'s
-/// own split for the same reason).
+/// own split for the same reason). Takes the `WriteLease` itself, not just
+/// `home`, so a test can root it under a tempdir with
+/// `WriteLease::with_lease_root` instead of the real data root - matching
+/// `set_harness_enabled_with`'s own guard parameter in
+/// `skill_harness_disable.rs`.
 fn save_harnesses_choice_at(
+    write_lease: &super::write_lease::WriteLease,
     home: &std::path::Path,
     choice: HarnessesChoice,
     error_reporting_enabled: bool,
 ) -> Result<(), String> {
-    let write_lease = super::write_lease::WriteLease::default();
     let guard = write_lease.try_acquire(home)?;
     let mut registry = super::skill_fork_registry::read_fork_registry(home)?;
     registry.harnesses = Some(choice);
@@ -271,14 +276,19 @@ mod tests {
     /// `save_harnesses_choice_at` must write `error_reporting_enabled`
     /// alongside `harnesses` in the same locked write, not leave it at
     /// whatever `ForkRegistry::default()` picked. Fails if the telemetry
-    /// switch's value never reaches the registry.
+    /// switch's value never reaches the registry. Uses
+    /// `WriteLease::with_lease_root` rooted inside the tempdir so this test
+    /// never touches the real data root's lock files.
     #[test]
     fn a_first_run_save_writes_the_telemetry_choice_or_leaves_the_registrys_default() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         std::fs::create_dir_all(home.join(".agents")).unwrap();
+        let write_lease =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
 
         super::save_harnesses_choice_at(
+            &write_lease,
             &home,
             HarnessesChoice {
                 kept: vec!["claude-code".to_string()],
@@ -295,6 +305,7 @@ mod tests {
         );
 
         super::save_harnesses_choice_at(
+            &write_lease,
             &home,
             HarnessesChoice {
                 kept: vec!["claude-code".to_string()],

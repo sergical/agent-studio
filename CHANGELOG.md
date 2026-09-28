@@ -14,8 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   Gatekeeper warning.
 - Shared `skill-studio-core` crate: scan, ops, events, and DTOs used by the
   desktop app, the CLI, and the MCP server.
-- Opt-in error reporting scaffolding: a Settings switch and a panic hook,
-  off until the user turns it on.
+- Crash report scaffolding: a panic hook that sends only the code location
+  where Skill Studio crashed. The welcome screen offers it on; Settings'
+  "Telemetry" switch lets the user change that choice. Off in the registry
+  until a choice is saved.
 
 ### Removed
 
