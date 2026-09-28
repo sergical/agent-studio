@@ -717,25 +717,35 @@ pub fn record_command(surface: Surface, command: &'static str, elapsed_ms: u64, 
     client.send_envelope(envelope);
 }
 
-/// The one key this reads out of `<home>/.agents/skill-studio.json` -
-/// `#[serde(default)]` so a missing key, not just a missing file, still
-/// resolves to `false` rather than failing to deserialize.
+/// The two keys this reads out of `<home>/.agents/skill-studio.json`. An rc
+/// build wrote the switch as `error_reporting_enabled`; that key is read
+/// only when `telemetry_enabled` is absent, never merged with it - a file an
+/// rc build rewrote after this build's own write can hold both, and the new
+/// key is always the one this build (or a newer one) actually meant.
 #[derive(serde::Deserialize, Default)]
 struct TelemetryRegistry {
     #[serde(default)]
-    error_reporting_enabled: bool,
+    telemetry_enabled: Option<bool>,
+    #[serde(default)]
+    error_reporting_enabled: Option<bool>,
 }
 
-/// Reads only `error_reporting_enabled` from `<home>/.agents/skill-studio.json`.
-/// Missing file, malformed file, or missing key all resolve to `false` -
-/// consent defaults closed, never open.
+/// Reads `telemetry_enabled` from `<home>/.agents/skill-studio.json`, falling
+/// back to the rc-era `error_reporting_enabled` only when the new key is
+/// absent. Missing file, malformed file, or both keys absent all resolve to
+/// `false` - consent defaults closed, never open.
 pub fn consent_from_registry(home: &Path) -> bool {
     let path = home.join(".agents").join("skill-studio.json");
     let Ok(contents) = std::fs::read_to_string(path) else {
         return false;
     };
     serde_json::from_str::<TelemetryRegistry>(&contents)
-        .map(|registry| registry.error_reporting_enabled)
+        .map(|registry| {
+            registry
+                .telemetry_enabled
+                .or(registry.error_reporting_enabled)
+        })
+        .unwrap_or(None)
         .unwrap_or(false)
 }
 
@@ -1464,12 +1474,42 @@ mod tests {
 
         std::fs::write(
             &registry_path,
-            r#"{"skills_sh_api_key": "x", "error_reporting_enabled": true}"#,
+            r#"{"skills_sh_api_key": "x", "telemetry_enabled": true}"#,
         )
         .expect("write");
         assert!(
             consent_from_registry(dir.path()),
             "a true switch alongside other keys must resolve to true"
+        );
+    }
+
+    /// guards: the rc-era `error_reporting_enabled` key silently losing an
+    /// opted-in user's consent once the switch was renamed to
+    /// `telemetry_enabled`.
+    #[test]
+    fn an_rc_registry_saved_under_error_reporting_enabled_still_turns_telemetry_on() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agents_dir = dir.path().join(".agents");
+        std::fs::create_dir_all(&agents_dir).expect("mkdir");
+        std::fs::write(
+            agents_dir.join("skill-studio.json"),
+            r#"{"skills_sh_api_key": "x", "error_reporting_enabled": true}"#,
+        )
+        .expect("write");
+
+        assert!(
+            consent_from_registry(dir.path()),
+            "the CLI and MCP server must honour an rc user's opt-in saved under the old key"
+        );
+
+        std::fs::write(
+            agents_dir.join("skill-studio.json"),
+            r#"{"skills_sh_api_key": "x", "telemetry_enabled": false, "error_reporting_enabled": true}"#,
+        )
+        .expect("write");
+        assert!(
+            !consent_from_registry(dir.path()),
+            "when both keys exist the new key wins; the old key must not reopen consent"
         );
     }
 

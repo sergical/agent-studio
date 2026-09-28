@@ -419,11 +419,11 @@ fn main() -> ExitCode {
     // point a single invocation's scope elsewhere, but the switch itself
     // always lives on the real machine.
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-    let registry_reporting_enabled = skill_studio_host::telemetry::consent_from_registry(&home);
+    let registry_telemetry_enabled = skill_studio_host::telemetry::consent_from_registry(&home);
     let consent =
         skill_studio_host::telemetry::Consent::new(skill_studio_host::telemetry::resolve_consent(
             std::env::var("SKILL_STUDIO_TELEMETRY").ok(),
-            registry_reporting_enabled,
+            registry_telemetry_enabled,
         ));
     let _telemetry_guard = skill_studio_host::telemetry::init(
         skill_studio_host::telemetry::Surface::Cli,

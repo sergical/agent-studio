@@ -45,13 +45,13 @@ describe("FIRST_RUN_TELEMETRY_DEFAULT", () => {
 
 describe("buildFirstRunSave", () => {
   it("carries a turned-off telemetry switch into the save call or silently re-enables it", () => {
-    const { choice, errorReportingEnabled } = buildFirstRunSave(
+    const { choice, telemetryEnabled } = buildFirstRunSave(
       new Set(["claude-code"]),
       false,
       false,
       "2026-01-01T00:00:00.000Z",
     );
-    expect(errorReportingEnabled).toBe(false);
+    expect(telemetryEnabled).toBe(false);
     expect(choice).toEqual({
       kept: ["claude-code"],
       search_project_folders: false,

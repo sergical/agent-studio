@@ -393,9 +393,9 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
         case "set_preferred_editor":
           editorPreference = payload.appName == null ? null : String(payload.appName);
           return undefined;
-        case "get_error_reporting_enabled":
+        case "get_telemetry_enabled":
           return false;
-        case "set_error_reporting_enabled":
+        case "set_telemetry_enabled":
           return Boolean(payload.enabled);
 
         case "read_installed_skill_md": {

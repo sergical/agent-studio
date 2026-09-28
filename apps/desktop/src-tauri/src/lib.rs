@@ -286,20 +286,20 @@ pub fn run() {
             // first: a panic anywhere else in setup, including that
             // migration and `skill_refresh::init`, is still caught by the
             // hook `telemetry::init` installs.
-            let registry_reporting_enabled = dirs::home_dir()
+            let registry_telemetry_enabled = dirs::home_dir()
                 .and_then(|home| skills::skill_fork_registry::read_fork_registry(&home).ok())
-                .is_some_and(|registry| registry.error_reporting_enabled);
-            let error_reporting_enabled = skill_studio_host::telemetry::resolve_consent(
+                .is_some_and(|registry| registry.telemetry_enabled);
+            let telemetry_enabled = skill_studio_host::telemetry::resolve_consent(
                 std::env::var("SKILL_STUDIO_TELEMETRY").ok(),
-                registry_reporting_enabled,
+                registry_telemetry_enabled,
             );
-            let consent = skill_studio_host::telemetry::Consent::new(error_reporting_enabled);
+            let consent = skill_studio_host::telemetry::Consent::new(telemetry_enabled);
             let telemetry_guard = skill_studio_host::telemetry::init(
                 skill_studio_host::telemetry::Surface::Desktop,
                 env!("CARGO_PKG_VERSION"),
                 consent.clone(),
             );
-            app.manage(skills::error_reporting::ReportingState {
+            app.manage(skills::telemetry_commands::TelemetryState {
                 consent,
                 guard: std::sync::Mutex::new(telemetry_guard),
             });
@@ -404,9 +404,9 @@ pub fn run() {
             skills::commands::open_skill_path,
             skills::commands::get_editor_choices,
             skills::commands::set_preferred_editor,
-            skills::error_reporting::get_error_reporting_enabled,
-            skills::error_reporting::set_error_reporting_enabled,
-            skills::error_reporting::report_frontend_error,
+            skills::telemetry_commands::get_telemetry_enabled,
+            skills::telemetry_commands::set_telemetry_enabled,
+            skills::telemetry_commands::report_frontend_error,
             // Fork / Pull upstream / Un-fork
             skills::skill_fork::fork_skill,
             skills::skill_fork::pull_fork_upstream,
@@ -458,7 +458,8 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(move |app, event| {
             if let tauri::RunEvent::Exit = event {
-                let Some(state) = app.try_state::<skills::error_reporting::ReportingState>() else {
+                let Some(state) = app.try_state::<skills::telemetry_commands::TelemetryState>()
+                else {
                     return;
                 };
                 let taken_guard = state
