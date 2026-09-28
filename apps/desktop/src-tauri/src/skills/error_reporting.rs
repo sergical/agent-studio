@@ -185,6 +185,19 @@ pub async fn set_error_reporting_enabled(
     .await
 }
 
+/// Nothing leaves this Mac until the welcome screen has been submitted -
+/// `registry.harnesses` is `None` until `save_harnesses_choice` runs, so a
+/// crash during the very first launch (before the user has seen the
+/// telemetry switch's copy) is never reported even if the registry's
+/// `error_reporting_enabled` default is `true`. After that first save,
+/// `save_harnesses_choice` flips the live state directly, and Settings'
+/// toggle (`set_error_reporting_enabled`) keeps it in sync from then on.
+pub(crate) fn startup_reporting_enabled(
+    registry: Option<&super::skill_fork_registry::ForkRegistry>,
+) -> bool {
+    registry.is_some_and(|r| r.error_reporting_enabled && r.harnesses.is_some())
+}
+
 /// Flips the managed `ReportingState`'s live switch - shared by
 /// `set_error_reporting_enabled` and `harness_first_run::save_harnesses_choice`
 /// so the first-run screen's telemetry choice takes effect without a
@@ -261,6 +274,56 @@ mod tests {
             sent.len(),
             0,
             "reporting made a network call while off: {sent:?}"
+        );
+    }
+
+    /// `startup_never_sends_before_the_welcome_screen_is_submitted_or_reports_too_early`:
+    /// a registry with `error_reporting_enabled: true` but no saved
+    /// `harnesses` choice (the state of a brand-new install, before the
+    /// welcome screen's Continue) must read as `false` at startup - only a
+    /// registry that also carries a `harnesses` choice may enable
+    /// reporting. Fails if a fresh install's default `true` reaches the
+    /// panic hook before the user has seen the telemetry copy.
+    #[test]
+    fn startup_never_sends_before_the_welcome_screen_is_submitted_or_reports_too_early() {
+        use super::super::harness_first_run::HarnessesChoice;
+        use super::super::skill_fork_registry::ForkRegistry;
+
+        let enabled_no_harnesses = ForkRegistry {
+            error_reporting_enabled: true,
+            ..ForkRegistry::default()
+        };
+        assert!(
+            !startup_reporting_enabled(Some(&enabled_no_harnesses)),
+            "a fresh install with no first-run choice must not report yet"
+        );
+
+        let enabled_with_harnesses = ForkRegistry {
+            error_reporting_enabled: true,
+            harnesses: Some(HarnessesChoice {
+                kept: vec![],
+                search_project_folders: false,
+                saved_at: "2026-09-28T00:00:00Z".to_string(),
+            }),
+            ..ForkRegistry::default()
+        };
+        assert!(
+            startup_reporting_enabled(Some(&enabled_with_harnesses)),
+            "an enabled switch plus a completed first run must report"
+        );
+
+        let disabled_with_harnesses = ForkRegistry {
+            error_reporting_enabled: false,
+            harnesses: Some(HarnessesChoice {
+                kept: vec![],
+                search_project_folders: false,
+                saved_at: "2026-09-28T00:00:00Z".to_string(),
+            }),
+            ..ForkRegistry::default()
+        };
+        assert!(
+            !startup_reporting_enabled(Some(&disabled_with_harnesses)),
+            "a switch the user turned off must stay off even after the first run"
         );
     }
 
