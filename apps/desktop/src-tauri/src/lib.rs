@@ -393,7 +393,6 @@ pub fn run() {
             skills::commands::open_skill_path,
             skills::commands::get_editor_choices,
             skills::commands::set_preferred_editor,
-            skills::commands::command_health,
             skills::error_reporting::get_error_reporting_enabled,
             skills::error_reporting::set_error_reporting_enabled,
             // Fork / Pull upstream / Un-fork
@@ -435,8 +434,6 @@ pub fn run() {
             skills::skill_refresh::get_discovery_sources,
             skills::skill_refresh::set_discovery_source,
             skills::skill_project_folders::list_project_folders,
-            // Doctor pass over every lifecycle invariant (unit 5.3)
-            skills::skill_doctor::doctor,
             // First-run harness detection (unit 3.2)
             skills::harness_first_run::detect_harnesses,
             skills::harness_first_run::get_harnesses_choice,

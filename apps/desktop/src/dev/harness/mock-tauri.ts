@@ -14,10 +14,8 @@ import { z } from "zod";
 import { isProjectPattern } from "@skill-studio/lib";
 import type {
   AddSkillOperationEvent,
-  CommandHealth,
   Deployment,
   DiscoverySourceSetting,
-  DoctorReport,
   InstalledSkill,
   ProjectFolder,
   RemoveOutcome,
@@ -106,20 +104,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
     { app_name: "Cursor", label: "Cursor" },
     { app_name: "Visual Studio Code", label: "Visual Studio Code" },
     { app_name: "IntelliJ IDEA Ultimate Edition", label: "IntelliJ IDEA Ultimate Edition" },
-  ];
-
-  // Settings' "Command health" card - see `crates/skill-studio-core/src/health.rs`.
-  const COMMAND_HEALTH_ROWS: CommandHealth[] = [
-    { command: "scan", count: 42, failures: 0, p50_ms: 18, p95_ms: 64, last_error: null },
-    {
-      command: "add_skill",
-      count: 9,
-      failures: 1,
-      p50_ms: 210,
-      p95_ms: 890,
-      last_error: "disk full",
-    },
-    { command: "list_events", count: 130, failures: 0, p50_ms: 4, p95_ms: 11, last_error: null },
   ];
 
   function editorChoices(): EditorChoices {
@@ -390,8 +374,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           return null;
         case "save_harnesses_choice":
           return undefined;
-        case "doctor":
-          return { violations: [], checked: currentSnapshot.skills.length } satisfies DoctorReport;
         case "open_skill_path":
         case "unfork_skill":
           return undefined;
@@ -408,8 +390,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           return undefined;
         case "get_editor_choices":
           return editorChoices();
-        case "command_health":
-          return COMMAND_HEALTH_ROWS;
         case "set_preferred_editor":
           editorPreference = payload.appName == null ? null : String(payload.appName);
           return undefined;
