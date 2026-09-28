@@ -1,8 +1,9 @@
 // ============================================================================
 // Skills Module - error_reporting
-// Opt-in error reporting (unit 6.4): off by default, one switch in Settings
-// (`error_reporting_enabled` in `~/.agents/skill-studio.json`, alongside the
-// other settings in `skill_fork_registry`). When on, a panic is sanitized -
+// Telemetry (unit 6.4): on by default, shown on the first-run screen and as
+// a switch in Settings (`error_reporting_enabled` in
+// `~/.agents/skill-studio.json`, alongside the other settings in
+// `skill_fork_registry`). When on, a panic is sanitized -
 // see `skill_studio_core::report_sanitizer` - and queued on a
 // `skill_studio_host::QueuedReportSink`; when off, the sink is never built,
 // so a panic or a failed command makes no network call. `ReportingState` is
@@ -177,11 +178,19 @@ pub async fn set_error_reporting_enabled(
             let mut registry = super::skill_fork_registry::read_fork_registry(&home)?;
             registry.error_reporting_enabled = enabled;
             super::skill_fork_registry::write_fork_registry(&home, &registry)?;
-            app.state::<Arc<ReportingState>>().set_enabled(enabled);
+            set_live_reporting_enabled(&app, enabled);
             Ok(enabled)
         },
     )
     .await
+}
+
+/// Flips the managed `ReportingState`'s live switch - shared by
+/// `set_error_reporting_enabled` and `harness_first_run::save_harnesses_choice`
+/// so the first-run screen's telemetry choice takes effect without a
+/// restart the same way Settings' toggle does.
+pub(crate) fn set_live_reporting_enabled(app: &tauri::AppHandle, enabled: bool) {
+    app.state::<Arc<ReportingState>>().set_enabled(enabled);
 }
 
 #[cfg(test)]
@@ -224,8 +233,9 @@ mod tests {
 
     /// guards: the switch being off failing to stop `maybe_report` from
     /// queuing (and, on the next flush, sending) a report - the whole point
-    /// of "off by default" is that nothing leaves the machine. Exercises
-    /// the production `ReportingState` gate directly, not a copy of it.
+    /// of the switch is that turning it off means nothing leaves the
+    /// machine. Exercises the production `ReportingState` gate directly,
+    /// not a copy of it.
     #[test]
     fn reporting_off_makes_no_network_call() {
         let recorder = Arc::new(RecordingTransport::default());

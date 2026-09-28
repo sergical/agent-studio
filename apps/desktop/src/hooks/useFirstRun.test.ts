@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { continueIsBlocked, showScreenForChoiceRead } from "./useFirstRun";
+import { buildFirstRunSave, continueIsBlocked, showScreenForChoiceRead } from "./useFirstRun";
 
 describe("showScreenForChoiceRead", () => {
   it("an unreadable registry opens the app instead of trapping the user on the first-run screen", () => {
@@ -29,5 +29,32 @@ describe("continueIsBlocked", () => {
 
   it("a save in progress blocks a second continue", () => {
     expect(continueIsBlocked({ rows: [], error: null, saving: true })).toBe(true);
+  });
+});
+
+describe("buildFirstRunSave", () => {
+  it("carries the default telemetry switch (on) into the save call or drops the user's choice", () => {
+    const { errorReportingEnabled } = buildFirstRunSave(
+      new Set(["claude-code"]),
+      true,
+      true,
+      "2026-01-01T00:00:00.000Z",
+    );
+    expect(errorReportingEnabled).toBe(true);
+  });
+
+  it("carries a turned-off telemetry switch into the save call or silently re-enables it", () => {
+    const { choice, errorReportingEnabled } = buildFirstRunSave(
+      new Set(["claude-code"]),
+      false,
+      false,
+      "2026-01-01T00:00:00.000Z",
+    );
+    expect(errorReportingEnabled).toBe(false);
+    expect(choice).toEqual({
+      kept: ["claude-code"],
+      search_project_folders: false,
+      saved_at: "2026-01-01T00:00:00.000Z",
+    });
   });
 });

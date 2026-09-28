@@ -1,8 +1,9 @@
 // ============================================================================
-// ErrorReportingCard - Settings' "Error reporting" card: the opt-in switch
-// that sends a sanitized panic or command failure to Sentry. Off by default -
-// see the Rust `error_reporting` and `skill_studio_core::report_sanitizer`
-// for what a report can and can't carry.
+// ErrorReportingCard - Settings' "Telemetry" card: the switch that sends a
+// sanitized panic or command failure to Sentry. On by default, also shown
+// on the first-run screen - see the Rust `error_reporting` and
+// `skill_studio_core::report_sanitizer` for what a report can and can't
+// carry.
 // ============================================================================
 
 import { useEffect, useState } from "react";
@@ -56,15 +57,15 @@ export function ErrorReportingCard() {
   return (
     <SettingsCard
       icon={<Bug size={15} className="text-text-tertiary" />}
-      title="Error reporting"
-      description="Send a sanitized crash or a failed action to us. Off by default; never your skill names, file contents, or paths."
+      title="Telemetry"
+      description="Crash reports and failed actions help us fix problems. Reports never contain your skill names, file contents, or paths, and they are sanitized on this Mac before they are sent."
     >
       <label className="flex h-9 items-center gap-2 px-2 text-body text-text-secondary">
         <SwitchControl
           checked={enabled}
           onCheckedChange={toggle}
           disabled={isLoading}
-          ariaLabel="Error reporting"
+          ariaLabel="Telemetry"
         />
         {enabled ? "On" : "Off"}
       </label>

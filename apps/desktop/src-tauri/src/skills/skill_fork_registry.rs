@@ -227,10 +227,11 @@ pub struct ForkRegistry {
     /// the desktop app, the CLI, and the MCP server honour the same choice.
     #[serde(default, skip_serializing_if = "DiscoverySources::is_empty")]
     pub discovery: DiscoverySources,
-    /// Opt-in error reporting (Settings' "Error reporting" toggle) - see
-    /// `error_reporting`. Off by default: a panic or a command failure is
-    /// sanitized and sent to Sentry only once this is `true`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// Telemetry (Settings' "Telemetry" toggle, also offered on the
+    /// first-run screen) - see `error_reporting`. On by default: a panic or
+    /// a command failure is sanitized and sent to Sentry unless the user
+    /// turns this off.
+    #[serde(default = "error_reporting_enabled_default")]
     pub error_reporting_enabled: bool,
     /// The first-run screen's saved choice - see `harness_first_run`.
     /// Absent means the screen has never been completed, so the app shows
@@ -269,6 +270,10 @@ fn default_version() -> u32 {
     CURRENT_REGISTRY_VERSION
 }
 
+fn error_reporting_enabled_default() -> bool {
+    true
+}
+
 // `#[derive(Default)]` would use `u32`/`Value`'s own `Default` (0 / Null)
 // instead of the `#[serde(default = "...")]` functions above, so a freshly
 // created registry would round-trip differently than one that was never
@@ -289,7 +294,7 @@ impl Default for ForkRegistry {
             trusted_dotagents_sources: BTreeSet::new(),
             projects: TrackedProjects::default(),
             discovery: DiscoverySources::default(),
-            error_reporting_enabled: false,
+            error_reporting_enabled: true,
             harnesses: None,
             unknown: serde_json::Map::new(),
         }
@@ -715,6 +720,37 @@ mod tests {
         let content =
             std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
         assert!(!content.contains("\"discovery\""));
+    }
+
+    #[test]
+    fn an_absent_error_reporting_key_reads_as_enabled_or_names_the_wrong_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".agents")).unwrap();
+        std::fs::write(
+            tmp.path().join(".agents/skill-studio.json"),
+            r#"{"version":4,"write_version":0}"#,
+        )
+        .unwrap();
+
+        let reg = read_fork_registry(tmp.path()).unwrap();
+        assert!(reg.error_reporting_enabled);
+    }
+
+    #[test]
+    fn a_saved_false_for_error_reporting_survives_a_round_trip_or_names_the_dropped_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = ForkRegistry {
+            error_reporting_enabled: false,
+            ..ForkRegistry::default()
+        };
+        write_fork_registry(tmp.path(), &reg).unwrap();
+
+        let content =
+            std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
+        assert!(content.contains(r#""error_reporting_enabled": false"#));
+
+        let reloaded = read_fork_registry(tmp.path()).unwrap();
+        assert!(!reloaded.error_reporting_enabled);
     }
 
     #[test]

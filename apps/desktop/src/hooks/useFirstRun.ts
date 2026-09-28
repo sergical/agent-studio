@@ -57,9 +57,35 @@ interface FirstRunScreenState {
   toggleRow: (id: string, checked: boolean) => void;
   searchProjectFolders: boolean;
   setSearchProjectFolders: (value: boolean) => void;
+  telemetryEnabled: boolean;
+  setTelemetryEnabled: (value: boolean) => void;
   error: string | null;
   saving: boolean;
   continue: () => void;
+}
+
+export interface FirstRunSave {
+  choice: HarnessesChoice;
+  errorReportingEnabled: boolean;
+}
+
+/** Builds `saveHarnessesChoice`'s arguments from the screen's state, kept
+ * apart from `continueToApp` so a test can check the save without a
+ * `tauri::AppHandle`-backed `saveHarnessesChoice` call. */
+export function buildFirstRunSave(
+  kept: Set<string>,
+  searchProjectFolders: boolean,
+  telemetryEnabled: boolean,
+  savedAt: string,
+): FirstRunSave {
+  return {
+    choice: {
+      kept: Array.from(kept),
+      search_project_folders: searchProjectFolders,
+      saved_at: savedAt,
+    },
+    errorReportingEnabled: telemetryEnabled,
+  };
 }
 
 /** Continue waits only for detection still in flight or a save in
@@ -84,6 +110,7 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
   const [rows, setRows] = useState<HarnessDetection[] | null>(null);
   const [kept, setKept] = useState<Set<string>>(new Set());
   const [searchProjectFolders, setSearchProjectFolders] = useState(true);
+  const [telemetryEnabled, setTelemetryEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -116,12 +143,13 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
 
   function continueToApp() {
     setSaving(true);
-    const choice: HarnessesChoice = {
-      kept: Array.from(kept),
-      search_project_folders: searchProjectFolders,
-      saved_at: new Date().toISOString(),
-    };
-    saveHarnessesChoice(choice)
+    const { choice, errorReportingEnabled } = buildFirstRunSave(
+      kept,
+      searchProjectFolders,
+      telemetryEnabled,
+      new Date().toISOString(),
+    );
+    saveHarnessesChoice(choice, errorReportingEnabled)
       .then(onSaved)
       .catch((cause: unknown) => {
         // eslint-disable-next-line no-console
@@ -136,6 +164,8 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
     toggleRow,
     searchProjectFolders,
     setSearchProjectFolders,
+    telemetryEnabled,
+    setTelemetryEnabled,
     error,
     saving,
     continue: continueToApp,

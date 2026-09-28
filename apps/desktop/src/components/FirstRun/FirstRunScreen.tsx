@@ -57,6 +57,8 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
     toggleRow,
     searchProjectFolders,
     setSearchProjectFolders,
+    telemetryEnabled,
+    setTelemetryEnabled,
     error,
     saving,
     continue: onContinue,
@@ -109,6 +111,22 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
           <span className="text-sm">Find my projects from agent history</span>
           <Switch checked={searchProjectFolders} onCheckedChange={setSearchProjectFolders} />
         </label>
+
+        <div className="space-y-1">
+          <label className="flex items-center justify-between gap-3">
+            <span className="text-sm">Send telemetry to Skill Studio</span>
+            <Switch
+              checked={telemetryEnabled}
+              onCheckedChange={setTelemetryEnabled}
+              aria-describedby="telemetry-help"
+            />
+          </label>
+          <p id="telemetry-help" className="text-sm text-muted-foreground">
+            Crash reports and failed actions help us fix problems. We care about your privacy:
+            reports never contain your skill names, file contents, or paths, and they are sanitized
+            on this Mac before they are sent. You can change this at any time in Settings.
+          </p>
+        </div>
 
         <Button
           onClick={onContinue}
