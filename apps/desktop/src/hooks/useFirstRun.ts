@@ -108,6 +108,21 @@ export function continueIsBlocked(state: {
   return detecting || state.saving;
 }
 
+/** Saves the welcome-screen choice and then opens the app. A save that fails keeps the
+ *  welcome screen: `onSaved` is not called and `onSaveFailed` gets the reason text. */
+export async function saveChoiceThenOpenApp(
+  save: () => Promise<void>,
+  effects: { onSaved: () => void; onSaveFailed: (reason: string) => void },
+): Promise<void> {
+  try {
+    await save();
+  } catch (cause) {
+    effects.onSaveFailed(invokeErrorMessage(cause));
+    return;
+  }
+  effects.onSaved();
+}
+
 /** Detects harnesses once on mount, tracks which rows the user keeps
  * (defaulting every non-"not_found" row to kept once detection resolves),
  * and exposes `continue` to persist the choice through
@@ -148,6 +163,7 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
   }
 
   function continueToApp() {
+    setError(null);
     setSaving(true);
     const { choice, telemetryEnabled: savedTelemetryEnabled } = buildFirstRunSave(
       kept,
@@ -155,13 +171,13 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
       telemetryEnabled,
       new Date().toISOString(),
     );
-    saveHarnessesChoice(choice, savedTelemetryEnabled)
-      .then(onSaved)
-      .catch((cause: unknown) => {
-        // eslint-disable-next-line no-console
-        console.error(invokeErrorMessage(cause));
-        onSaved();
-      });
+    void saveChoiceThenOpenApp(() => saveHarnessesChoice(choice, savedTelemetryEnabled), {
+      onSaved,
+      onSaveFailed: (reason) => {
+        setError(`Couldn't save your choice. ${reason}`);
+        setSaving(false);
+      },
+    });
   }
 
   return {

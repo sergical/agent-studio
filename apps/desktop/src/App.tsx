@@ -67,7 +67,13 @@ function App() {
       .then((message) => setDataFolderStatusState({ kind: "ready", message }))
       .catch(() => setDataFolderStatusState({ kind: "ready", message: null }));
   }, []);
-  const { snapshot, emittedSnapshotRevision, isLoading, requestRescan } = useSkillSnapshot();
+  const {
+    snapshot,
+    emittedSnapshotRevision,
+    isLoading,
+    error: snapshotError,
+    requestRescan,
+  } = useSkillSnapshot();
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const activeView = useAppStore((state) => state.activeView);
   const openSkill = useAppStore((state) => state.openSkill);
@@ -104,6 +110,23 @@ function App() {
       }
     })();
   }, [setTrackedProjects, addToast]);
+
+  // The skill list fails silently otherwise: `useSkillSnapshot` already logs and stores the
+  // reason, but nothing on screen told the user their skills never loaded.
+  useEffect(() => {
+    if (snapshotError == null) return;
+    addToast({
+      type: "error",
+      title: "Couldn't load your skills",
+      message: snapshotError,
+      action: {
+        label: "Try again",
+        onClick: () => {
+          void requestRescan();
+        },
+      },
+    });
+  }, [snapshotError, addToast, requestRescan]);
 
   /** One skill view - the page it opens, standalone (no kept-alive list underneath). */
   function renderSkillPage(view: Extract<ActiveView, { kind: "skill" }>): React.ReactNode {
