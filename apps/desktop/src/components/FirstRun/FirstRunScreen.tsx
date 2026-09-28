@@ -122,9 +122,8 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
             />
           </label>
           <p id="telemetry-help" className="text-sm text-muted-foreground">
-            Today this is crash reports only. When Skill Studio crashes, it sends the place in its
-            own code where the crash happened. It never sends your skill names, file contents, or
-            paths. The report is built on this Mac, and you can change this at any time in Settings.
+            It sends only where in its own code the crash happened, never your skill names, files,
+            or paths. You can change this later in Settings.
           </p>
         </div>
 

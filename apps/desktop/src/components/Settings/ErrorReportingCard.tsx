@@ -59,7 +59,7 @@ export function ErrorReportingCard() {
     <SettingsCard
       icon={<Bug size={15} className="text-text-tertiary" />}
       title="Telemetry"
-      description="Crash reports only. When Skill Studio crashes, it sends the place in its own code where the crash happened. It never sends your skill names, file contents, or paths."
+      description="When Skill Studio crashes, it sends only where in its own code the crash happened, never your skill names, files, or paths."
     >
       <label className="flex h-9 items-center gap-2 px-2 text-body text-text-secondary">
         <SwitchControl
