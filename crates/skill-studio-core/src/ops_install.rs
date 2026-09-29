@@ -512,12 +512,12 @@ fn install_body(
                 .finish(&session.guard, &id, EventStatus::Failed, None);
             Err(e)
         }
-        Ok(harness_results) => {
-            let _ = session.store.patch_inverse(
-                &session.guard,
-                &id,
-                written_inverse_patch(fs, &destination, &written_paths),
-            );
+        Ok((harness_results, registry_undo)) => {
+            let mut inverse_patch = written_inverse_patch(fs, &destination, &written_paths);
+            inverse_patch["registry_undo"] = registry_undo.to_json();
+            let _ = session
+                .store
+                .patch_inverse(&session.guard, &id, inverse_patch);
             session
                 .store
                 .finish(&session.guard, &id, EventStatus::Done, None)?;
@@ -641,7 +641,7 @@ fn install_and_link(
     req: &InstallRequest,
     targets: &InstallTargets,
     documents: RegistryDocuments,
-) -> Result<Vec<InstallHarnessResult>, CoreError> {
+) -> Result<(Vec<InstallHarnessResult>, RegistryUndo), CoreError> {
     let RegistryDocuments {
         scope: mut document,
         home: mut home_document,
@@ -729,20 +729,30 @@ fn install_and_link(
         results.push(result);
     }
 
+    let scope_root = targets.root.to_path_buf();
+    let mut undo = RegistryUndo::default();
     if req.save_as_preference {
-        document.insert(
-            "preferred_method".to_string(),
-            serde_json::Value::String(method_wire_name(req.method).to_string()),
-        );
-        document.insert(
-            "preferred_harnesses".to_string(),
-            serde_json::to_value(&req.harnesses).unwrap_or(serde_json::Value::Array(Vec::new())),
-        );
+        for (key, value) in [
+            (
+                "preferred_method",
+                serde_json::Value::String(method_wire_name(req.method).to_string()),
+            ),
+            (
+                "preferred_harnesses",
+                serde_json::to_value(&req.harnesses)
+                    .unwrap_or(serde_json::Value::Array(Vec::new())),
+            ),
+        ] {
+            undo.push(&scope_root, key, None, document.get(key));
+            document.insert(key.to_string(), value);
+        }
     }
     if native {
+        let home_root = rt.scope.home.lexical.clone();
         let home_doc = home_document.as_mut().unwrap_or(&mut document);
         for (path, harness) in &real_folders {
-            record_copy(fs, ctx, home_doc, req, path, harness.as_ref())?;
+            let (id, replaced) = record_copy(fs, ctx, home_doc, req, path, harness.as_ref())?;
+            undo.push(&home_root, "copies", Some(&id), replaced.as_ref());
         }
     }
     if document != original_document {
@@ -756,7 +766,101 @@ fn install_and_link(
         write_registry_document(&session.guard, fs, &rt.scope.home.lexical, home_doc)?;
     }
 
-    Ok(results)
+    Ok((results, undo))
+}
+
+/// One registry key an install wrote, with the value it held before: the
+/// `restore_backup` inverse's `registry_undo` list, which `restore_event`
+/// replays through [`restore_registry`] so undo puts back the preferences
+/// and drops the `copies` entries the install added.
+#[derive(Debug, Default)]
+pub(crate) struct RegistryUndo(Vec<serde_json::Value>);
+
+impl RegistryUndo {
+    /// `id` names one entry inside the `key` map (`copies`); `None` means the
+    /// top-level `key` itself. `previous` is `None` when nothing was there.
+    fn push(
+        &mut self,
+        root: &Path,
+        key: &str,
+        id: Option<&str>,
+        previous: Option<&serde_json::Value>,
+    ) {
+        self.0.push(serde_json::json!({
+            "root": root,
+            "key": key,
+            "id": id,
+            "previous": previous,
+        }));
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::Array(self.0.clone())
+    }
+}
+
+/// Replays an inverse's `registry_undo` list: each key goes back to its
+/// recorded value, or is removed when it held none. An inverse without the
+/// list (an older event) changes nothing. Only the recorded keys are
+/// touched, so registry edits made since the install stay.
+pub(crate) fn restore_registry(
+    guard: &ExclusiveGuard,
+    fs: &dyn ScopeFs,
+    inverse: &serde_json::Value,
+) -> Result<(), CoreError> {
+    let Some(edits) = inverse
+        .get("registry_undo")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(());
+    };
+    let root_of = |edit: &serde_json::Value| {
+        edit.get("root")
+            .and_then(serde_json::Value::as_str)
+            .map(PathBuf::from)
+    };
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for root in edits.iter().filter_map(root_of) {
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    for root in roots {
+        let mut document = read_registry_document(fs, &root)?;
+        let original = document.clone();
+        for edit in edits.iter().filter(|e| root_of(e).as_ref() == Some(&root)) {
+            let Some(key) = edit.get("key").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let previous = edit.get("previous").filter(|v| !v.is_null()).cloned();
+            match edit.get("id").and_then(serde_json::Value::as_str) {
+                None => match previous {
+                    Some(value) => {
+                        document.insert(key.to_string(), value);
+                    }
+                    None => {
+                        document.shift_remove(key);
+                    }
+                },
+                Some(id) => {
+                    if let Some(serde_json::Value::Object(map)) = document.get_mut(key) {
+                        match previous {
+                            Some(value) => {
+                                map.insert(id.to_string(), value);
+                            }
+                            None => {
+                                map.shift_remove(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if document != original {
+            write_registry_document(guard, fs, &root, document)?;
+        }
+    }
+    Ok(())
 }
 
 /// Adds the `copies` entry for one real folder the native method wrote.
@@ -773,7 +877,7 @@ fn record_copy(
     req: &InstallRequest,
     path: &Path,
     harness: Option<&AgentId>,
-) -> Result<(), CoreError> {
+) -> Result<(String, Option<serde_json::Value>), CoreError> {
     let (destination, slot) = match harness {
         None => (SkillDestination::Universal, "universal".to_string()),
         Some(harness) => (
@@ -786,8 +890,9 @@ fn record_copy(
     let copies = home_doc
         .entry("copies".to_string())
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let mut replaced = None;
     if let serde_json::Value::Object(copies) = copies {
-        copies.insert(
+        replaced = copies.insert(
             deployment_id.clone(),
             serde_json::json!({
                 "deployment_id": deployment_id,
@@ -805,7 +910,7 @@ fn record_copy(
             }),
         );
     }
-    Ok(())
+    Ok((deployment_id, replaced))
 }
 
 /// `Copy`: stages `files` under [`journal_root`]'s [`FsJournal`], then

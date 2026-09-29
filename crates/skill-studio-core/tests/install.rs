@@ -1809,3 +1809,71 @@ fn copy_install_keeps_each_source_files_mode_or_names_the_file_that_lost_its_bit
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// `undo_of_a_copy_install_restores_the_registry_and_preferences_or_names_the_key_left_behind`:
+/// Flow: `skill-studio.json` already holds an unrelated `copies` entry and a
+/// saved `preferred_method`/`preferred_harnesses`; a global Copy install with
+/// `save_as_preference` changes both and adds its own `copies` entries; the
+/// install is then undone. Expectation: the registry equals its state before
+/// the install (the other copy and the earlier preferences come back
+/// unchanged, none of the install's copies stay) and a scan finds no
+/// deployment of the skill. A failure here means undo removed the folders
+/// but left the install's registry writes behind.
+#[test]
+fn undo_of_a_copy_install_restores_the_registry_and_preferences_or_names_the_key_left_behind() {
+    let home = unique_temp_dir("install_undo_registry");
+    std::fs::create_dir_all(home.join(".agents")).unwrap();
+    let registry_path = home.join(".agents").join("skill-studio.json");
+    let before = serde_json::json!({
+        "preferred_method": "skills-sh",
+        "preferred_harnesses": ["codex"],
+        "copies": { "other-id": { "deployment_id": "other-id", "name": "other" } },
+        "added_folders": ["/somewhere"],
+    });
+    std::fs::write(&registry_path, serde_json::to_vec(&before).unwrap()).unwrap();
+    let rt = runtime_for(&home);
+
+    let req = copy_request("undone");
+    let InstallOutcome::Installed { event_id, .. } = ops::install(&rt, &ctx(), &req).unwrap()
+    else {
+        panic!("expected Installed");
+    };
+    assert_ne!(
+        read_registry(&registry_path),
+        before,
+        "the install must write"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        read_registry(&registry_path),
+        before,
+        "undo must put copies and preferences back"
+    );
+    let inventory =
+        ops::scan(&rt, &ctx(), &skill_studio_core::dto::ScanRequest::default()).unwrap();
+    assert!(
+        !inventory.skills.iter().any(|s| s.name.0 == "undone"),
+        "a scan must show no deployment after undo"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// The registry file without its `write_version` counter, which every write
+/// bumps and undo cannot rewind.
+fn read_registry(path: &std::path::Path) -> serde_json::Value {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    doc.as_object_mut().unwrap().remove("write_version");
+    doc
+}

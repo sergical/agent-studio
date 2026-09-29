@@ -5149,6 +5149,16 @@ fn restore_event_body(
         }
     }
 
+    // An install's registry writes (`copies` entries, saved preferences),
+    // put back the same best-effort way as the lock row above.
+    if let Err(error) = crate::ops_install::restore_registry(&session.guard, fs, inverse) {
+        let _ = session.store.patch_payload(
+            &session.guard,
+            &restore_id,
+            serde_json::json!({ "registry_restore_error": error.message }),
+        );
+    }
+
     let restored_fingerprint = crate::events::fingerprint_path(fs, &path)?;
     session.store.finish(
         &session.guard,

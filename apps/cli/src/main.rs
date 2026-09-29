@@ -976,6 +976,7 @@ struct AddArgs {
 
 /// The permission bits of a file read from disk, for `InstallFile::mode`;
 /// `None` off Unix.
+#[allow(clippy::unnecessary_wraps)] // `None` off Unix
 fn unix_mode(metadata: &std::fs::Metadata) -> Option<u32> {
     #[cfg(unix)]
     {
