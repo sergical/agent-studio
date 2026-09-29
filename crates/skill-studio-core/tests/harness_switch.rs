@@ -1473,6 +1473,7 @@ fn undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_
 fn codex_switch_writes_the_config_under_codex_home_or_names_the_file_it_wrote_instead() {
     let home = unique_temp_dir("switch_codex_home");
     let codex_home = unique_temp_dir("switch_codex_home_custom");
+    std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&codex_home).unwrap();
     // `RuntimeScope::codex_home` has no canonical form and is checked
     // lexically only (see its doc comment): canonicalize here so a
@@ -1482,8 +1483,9 @@ fn codex_switch_writes_the_config_under_codex_home_or_names_the_file_it_wrote_in
     let codex_home = codex_home.canonicalize().unwrap();
     // Codex's own harness root, not the universal root: `native_disabled_by`
     // only attributes `DisabledBy::CodexConfig` to a `RootKind::Harness`
-    // (Codex) deployment, so the scan assertion below needs one.
-    let codex_dir = home.join(CODEX_ROOT_RELATIVE).join("gamma");
+    // (Codex) deployment, so the scan assertion below needs one. With
+    // `CODEX_HOME` set, Codex reads `$CODEX_HOME/skills`, not `~/.codex/skills`.
+    let codex_dir = codex_home.join("skills").join("gamma");
     std::fs::create_dir_all(&codex_dir).unwrap();
     std::fs::write(
         codex_dir.join("SKILL.md"),
