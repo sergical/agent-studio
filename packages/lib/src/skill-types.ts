@@ -196,14 +196,17 @@ export interface AppVersion {
 
 /**
  * Settings' "Version" card update state (unit 6.2) - see the Rust
- * `skill_update::UpdateStatus`. `"error"` names the failure but is not
- * itself an install failure: no update ever installs without
- * `installUpdate`, which the card's "Restart to update" button is the only
- * caller of.
+ * `skill_update::UpdateStatus`. `"up-to-date"` means a check ran and found
+ * nothing newer; `"check-failed"` means a background check could not reach
+ * the update endpoint, so the channel is broken and an update was not ruled
+ * out. `"error"` names the failure but is not itself an install failure: no
+ * update ever installs without `installUpdate`, which the card's "Restart to
+ * update" button is the only caller of.
  */
 export type UpdateStatus =
   | { status: "up-to-date" }
   | { status: "checking" }
   | { status: "downloading"; version: string }
   | { status: "ready-to-install"; version: string }
+  | { status: "check-failed"; message: string }
   | { status: "error"; message: string };

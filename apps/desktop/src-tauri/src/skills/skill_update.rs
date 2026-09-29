@@ -44,14 +44,21 @@ pub enum UpdateStatus {
     Downloading { version: String },
     ReadyToInstall { version: String },
     Error { message: String },
+    // A background check (the launch check, or the four-hour loop) could not
+    // reach the update endpoint at all. Kept distinct from `UpToDate` on
+    // purpose: `UpToDate` means the check ran and nothing newer exists, while
+    // this means the channel itself is broken and no update was ruled out -
+    // reporting it as "up to date" hides exactly that.
+    CheckFailed { message: String },
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Distinguishes a background check (the launch check, the four-hour loop)
-/// from a manual "Check for updates" click, so `run_check` can decide
-/// whether a failed `check()` call surfaces as `Error` or falls back to
-/// `UpToDate` silently (round B item 3).
+/// from a manual "Check for updates" click, so `run_check` can label a
+/// failed `check()` call differently: a manual click shows the hard
+/// `Error`, a background check the softer `CheckFailed`. Neither may
+/// present a failed check as `UpToDate` (round B item 3, corrected).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckTrigger {
     Manual,
@@ -160,7 +167,7 @@ impl<U: UpdaterPort> UpdateEngine<U> {
     }
 
     /// Runs one check-download pass: `Checking` -> (`UpToDate` or
-    /// `Downloading` -> `ReadyToInstall`) -> or `Error`/`UpToDate` on
+    /// `Downloading` -> `ReadyToInstall`) -> or `Error`/`CheckFailed` on
     /// `check()`'s own failure, depending on `trigger` (see below). Calls
     /// `on_change` after every transition, so a caller with no direct
     /// response to await (the launch check, the four-hour loop) can still
@@ -208,18 +215,21 @@ impl<U: UpdaterPort> UpdateEngine<U> {
                     }
                 }
             }
-            // Round B item 3: the repo has no non-pre-release release on
-            // day one, so every launch/four-hour check 404s until one
-            // exists - a background trigger must not surface that (or a
-            // plain offline check) as a red Settings error. Only a manual
-            // click, which the user just asked to run, shows it.
+            // Round B item 3: a background trigger must not paint a red
+            // error for a plain offline check the user never asked for. It
+            // must not claim `UpToDate` either: a check that never
+            // completed has ruled nothing out, and while the repo has only
+            // pre-releases the endpoint 404s on every launch/four-hour
+            // check, so `UpToDate` would tell every user the broken channel
+            // is fine. A failed background check is `CheckFailed` -
+            // visible in Settings, softer than the manual click's `Error`.
             Err(message) => match trigger {
                 CheckTrigger::Manual => {
                     self.set_status(&UpdateStatus::Error { message }, &mut on_change);
                 }
                 CheckTrigger::Background => {
                     eprintln!("[skill_update] background check failed: {message}");
-                    self.set_status(&UpdateStatus::UpToDate, &mut on_change);
+                    self.set_status(&UpdateStatus::CheckFailed { message }, &mut on_change);
                 }
             },
         }
@@ -396,8 +406,9 @@ async fn run_check_and_emit(
 /// `UPDATE_CHECK_INTERVAL`. Both the launch check and every four-hour
 /// recheck run as `CheckTrigger::Background`, so a failure (offline, or no
 /// non-pre-release release published yet) is logged here and does not stop
-/// the loop, surface a red Settings error, or block the rest of startup -
-/// `run_check` itself falls back to `UpToDate` for this trigger.
+/// the loop, surface the manual click's hard `Error`, or block the rest of
+/// startup - `run_check` reports it as `CheckFailed`, which Settings shows
+/// without claiming the app is up to date.
 pub fn spawn_update_check_loop(app: AppHandle) {
     let engine = app.state::<UpdateEngineState>().0.clone();
     let scheduler = UpdateCheckScheduler::new(SystemClock, UPDATE_CHECK_INTERVAL);
@@ -945,17 +956,44 @@ mod tests {
     /// Flow: `check()` itself fails (offline, or no non-pre-release release
     /// exists yet) from the background trigger (the launch check or the
     /// four-hour loop).
-    /// Expectation: the status falls back to `UpToDate`, not `Error` - the
-    /// repo's first build has no release yet, so every launch check would
-    /// otherwise show a red error to every user.
-    /// A failure here (an `Error` status) means every user of the first
-    /// build sees that red error on every launch.
+    /// Expectation: the status is `CheckFailed` naming the failure - never
+    /// `UpToDate`, which would tell a user on a build that cannot reach any
+    /// release that it is current, and never the manual click's hard
+    /// `Error`.
+    /// A failure here (an `UpToDate` status) means a user whose update
+    /// channel is broken is told "Up to date" forever.
     #[tokio::test]
-    async fn check_error_from_a_background_trigger_falls_back_to_up_to_date() {
+    async fn check_error_from_a_background_trigger_reports_check_failed() {
         let port = FakeUpdaterPort {
             version: "5.0.0".to_string(),
             has_update: false,
             check_fails: true,
+            download_fails: false,
+            install_fails: false,
+            install_calls: Arc::new(AtomicU32::new(0)),
+            download_called: Arc::new(AtomicBool::new(false)),
+        };
+        let engine = UpdateEngine::new(port);
+        engine.run_check(CheckTrigger::Background, |_| {}).await;
+        match engine.status() {
+            UpdateStatus::CheckFailed { message } => assert!(message.contains("offline")),
+            other => panic!("expected CheckFailed status, got {other:?}"),
+        }
+    }
+
+    /// Flow: a background check that reaches the endpoint and finds nothing
+    /// newer.
+    /// Expectation: `UpToDate` - the `CheckFailed` status must not swallow
+    /// the genuine "you are current" case, or every user would be shown a
+    /// failure forever.
+    /// A failure here (a `CheckFailed` status) means a healthy check that
+    /// finds no update would still look broken in Settings.
+    #[tokio::test]
+    async fn successful_background_check_with_no_update_still_reports_up_to_date() {
+        let port = FakeUpdaterPort {
+            version: "5.0.0".to_string(),
+            has_update: false,
+            check_fails: false,
             download_fails: false,
             install_fails: false,
             install_calls: Arc::new(AtomicU32::new(0)),
