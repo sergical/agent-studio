@@ -128,6 +128,23 @@ describe("canOfferHarnessSwitch", () => {
     expect(canOfferHarnessSwitch(projectCopy)).toBe(false);
   });
 
+  it("claude_code_row_under_a_whole_root_link_offers_the_switch_that_converts_the_root", () => {
+    // The scanner reads the entry through `~/.claude/skills -> ../.agents/skills`,
+    // so the entry is a real folder (`is_symlink: false`). The switch must stay
+    // live: its toggle-off opens the convert-then-disable dialog.
+    const wholeRootRow = sharedDeployment({
+      id: "dep:v1/global/claude-code/find-bugs",
+      agent: "Claude Code",
+      path: "/home/.claude/skills/find-bugs",
+      is_symlink: false,
+      shared_via_whole_dir_link: true,
+    });
+    const plainCopy = { ...wholeRootRow, shared_via_whole_dir_link: false };
+
+    expect(canOfferHarnessSwitch(wholeRootRow)).toBe(true);
+    expect(canOfferHarnessSwitch(plainCopy)).toBe(false);
+  });
+
   it("studio_moved_row_keeps_its_switch_or_names_the_missing_native_disable", () => {
     const movedCopy = sharedDeployment({
       id: "dep:v1/project/pi/find-bugs",

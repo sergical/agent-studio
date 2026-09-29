@@ -151,7 +151,7 @@ describe("buildScopeGroups", () => {
     const shared = fixtureDeployment();
     const claude = fixtureDeployment({
       agent: "Claude Code",
-      is_symlink: true,
+      is_symlink: false,
       shared_via_whole_dir_link: true,
       path: "/home/.claude/skills/find-bugs",
     });

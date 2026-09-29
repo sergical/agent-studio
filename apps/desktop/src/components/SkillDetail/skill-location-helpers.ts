@@ -48,7 +48,9 @@ export function canToggleHarness(deployment: Deployment): boolean {
   if (!HARNESSES_WITH_PER_SKILL_DISABLE.includes(id)) return false;
   if (deployment.disabled) return true;
   if (deployment.scope !== "global") return false;
-  return id !== "claude-code" || deployment.is_symlink;
+  // A whole-root link's entry is a real folder, so `is_symlink` is false; its
+  // toggle-off converts the root first (`materializeRequestForLocationAction`).
+  return id !== "claude-code" || deployment.is_symlink || deployment.shared_via_whole_dir_link;
 }
 
 /**
