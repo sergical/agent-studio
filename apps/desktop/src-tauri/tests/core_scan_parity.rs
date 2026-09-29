@@ -763,17 +763,20 @@ fn opencode_config_dir_resolves_the_same_on_linux_and_macos_rules_or_names_the_d
     builder
         .materialize(&home)
         .unwrap_or_else(|e| panic!("materialize: {e}"));
-    // Move the fixture's own `opencode.json` out from under the default
-    // `home/.config/opencode` and into the `XDG_CONFIG_HOME` location, so a
-    // scan that ignores the override finds nothing there.
+    // Move the fixture's own `opencode.json` and `skills` folder out from
+    // under the default `home/.config/opencode` and into the
+    // `XDG_CONFIG_HOME` location, where OpenCode reads both, so a scan that
+    // ignores the override finds nothing there.
     let xdg_config_home = dir.join("xdg-config");
     let xdg_opencode_dir = xdg_config_home.join("opencode");
     std::fs::create_dir_all(&xdg_opencode_dir).unwrap();
-    std::fs::rename(
-        home.join(".config/opencode/opencode.json"),
-        xdg_opencode_dir.join("opencode.json"),
-    )
-    .unwrap();
+    for entry in ["opencode.json", "skills"] {
+        std::fs::rename(
+            home.join(".config/opencode").join(entry),
+            xdg_opencode_dir.join(entry),
+        )
+        .unwrap();
+    }
 
     let _guard = home_env_lock()
         .lock()
