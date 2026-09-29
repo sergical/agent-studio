@@ -42,6 +42,7 @@ pub mod harness;
 mod harness_switch;
 pub mod health;
 pub mod identity;
+pub mod install_targets;
 pub mod journal;
 pub mod lock_file;
 pub mod opencode_config;

@@ -27,11 +27,12 @@
 //! `skill_trust_policy.rs`, minus its `WriteLeaseGuard`-specific entry
 //! points (this op always already holds the exclusive lease itself).
 //!
-//! Linking: only Claude Code gets an explicit per-skill link from this op,
-//! matching the desktop's `add_skill` (`skill_add.rs`'s doc comment: "then,
-//! for `dotagents`/`copy` ..., symlinks the new skill into
-//! `~/.claude/skills`"); every other harness reads the universal root
-//! directly.
+//! Linking: `req.harnesses` is the `skills` CLI's `--agent` set, and
+//! [`crate::install_targets`] turns it into the folders to write - the
+//! shared copy, a relative link or a real copy per harness with its own
+//! folder, and a reported skip. The native `Copy` method writes that plan
+//! itself; `SkillsSh` passes the same set to the CLI and then makes any
+//! link the CLI left out. `Dotagents` ignores the set except for its links.
 //!
 //! Preferences: `install` (when `save_as_preference`) and
 //! [`install_preferences`] read and write `preferred_method`/
@@ -52,11 +53,15 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::dto::{InstallFile, InstallMethod, InstallOutcome, InstallPreferences, InstallRequest};
+use crate::dto::{
+    InstallFile, InstallHarnessResult, InstallMethod, InstallOutcome, InstallPreferences,
+    InstallRequest,
+};
 use crate::error::{CoreError, ErrorCode};
 use crate::events::{EventDraft, EventKind, EventStatus};
 use crate::fsops::{self, Root};
-use crate::identity::{AgentId, RootScope, SkillName, UNIVERSAL_ROOT_RELATIVE};
+use crate::identity::{AgentId, RootScope, SkillDestination, SkillName};
+use crate::install_targets::{self, InstallPlan, StepAction};
 use crate::journal::{FsJournal, PlanWriter};
 use crate::ops::Operation;
 use crate::ops_install_cli::{install_via_cli, validate_cli_project_path};
@@ -263,13 +268,15 @@ fn method_from_wire_name(name: &str) -> Option<InstallMethod> {
 
 /// Builds the same `dep:v1/{scope}/{slot}/{destination}/{name}/{project}/
 /// {lexical-entry}` id the desktop's `skill_deployment::deployment_id` does,
-/// via `ops::deployment_id` - `slot` and `destination` are always `universal`
-/// for a `Copy` install, since this op only ever writes the shared universal
-/// root (see the module doc, "Linking").
+/// via `ops::deployment_id`, for one real folder a `Copy` install wrote:
+/// the shared copy (`Universal`, slot `universal`) or a harness's own copy
+/// (`PerHarness`, slot `ops::harness_slot`).
 pub(crate) fn copy_deployment_id(
     scope: &RootScope,
     skill: &SkillName,
-    destination: &Path,
+    path: &Path,
+    destination: SkillDestination,
+    slot: &str,
 ) -> String {
     let scope_label = crate::ops::scope_label(scope);
     let project_path = match scope {
@@ -279,10 +286,10 @@ pub(crate) fn copy_deployment_id(
     crate::ops::deployment_id(
         &skill.0,
         scope_label,
-        crate::identity::SkillDestination::Universal,
-        "universal",
-        project_path.as_deref(),
         destination,
+        slot,
+        project_path.as_deref(),
+        path,
     )
     .as_str()
     .to_string()
@@ -343,22 +350,10 @@ fn install_preferences_body(
     })
 }
 
-/// Targets `install_and_link` writes to - bundled so the function stays
-/// under clippy's argument-count lint.
-struct InstallTargets<'a> {
-    root: &'a Path,
-    universal_root: &'a Path,
-    destination: &'a Path,
-    /// `<root>/.claude/skills/<skill>`, when `req.harnesses` names Claude
-    /// Code - computed once, from the request alone, so the same path can
-    /// be named in the journal row's inverse before any write and reused
-    /// for the actual link afterward.
-    claude_link_path: Option<&'a Path>,
-}
-
-/// Installs one skill by `req.method`, under the exclusive lease over
-/// `req.scope`'s root - see the module doc for the write shape each method
-/// takes.
+/// Installs one skill by `req.method` for `req.harnesses`, under the
+/// exclusive lease over `req.scope`'s root - see the module doc for the
+/// write shape each method takes, and [`crate::install_targets`] for where
+/// each harness's copy or link goes.
 pub fn install(
     rt: &Runtime,
     ctx: &OpContext,
@@ -373,6 +368,7 @@ fn install_body(
     req: &InstallRequest,
 ) -> Result<InstallOutcome, CoreError> {
     ctx.checkpoint()?;
+    install_targets::validate_harnesses(&req.harnesses)?;
     // Before anything below creates so much as a directory: `ensure_dir_all`
     // (further down, via `install_and_link`) `mkdir -p`s
     // `<project>/.agents/skills`, which would silently create a missing
@@ -426,50 +422,46 @@ fn install_body(
         }
     }
 
-    let universal_root = root.join(UNIVERSAL_ROOT_RELATIVE);
-    let destination = universal_root.join(&req.skill.0);
-    if fs.symlink_metadata(&destination).is_ok() {
+    let harnesses = install_targets::requested_harnesses(&req.harnesses);
+    let mode =
+        install_targets::effective_link_mode(req.method, &harnesses, &req.scope, req.link_mode)?;
+    let plan = install_targets::plan_install(fs, &root, &req.scope, &req.skill, &harnesses, mode)?;
+    let destination = plan
+        .primary_path()
+        .ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::InvalidRequest,
+                "the chosen harnesses leave nothing to write",
+            )
+        })?
+        .to_path_buf();
+    let written_paths = plan.written_paths();
+    if let Some(existing) = written_paths
+        .iter()
+        .find(|p| fs.symlink_metadata(p).is_ok())
+    {
         return Err(CoreError::new(
             ErrorCode::InvalidRequest,
             "a deployment already exists at this destination; install does not overwrite one",
         )
-        .at(&destination));
-    }
-    let claude_link_requested = req
-        .harnesses
-        .iter()
-        .any(|h| h.as_str() == AgentId::CLAUDE_CODE);
-    let claude_link_path =
-        claude_link_requested.then(|| root.join(".claude").join("skills").join(&req.skill.0));
-    if claude_link_requested {
-        refuse_foreign_claude_skills_link(
-            fs,
-            &root.join(".claude").join("skills"),
-            &universal_root,
-        )?;
+        .at(existing));
     }
 
     let step_start = clock.monotonic();
     let id = rt.ports.ids.next_event_id();
     // The row goes down before the first byte moves (F7): its backup is
-    // whatever currently sits at the destination and the Claude Code link
-    // path - normally nothing, which `backup_paths` records as "absent",
-    // itself the pre-state a later restore compares against - and its
-    // inverse describes undoing a completed install. `claude_link_path` is
-    // already known from the request alone, so this doesn't need to wait
-    // for `link_claude_code` to actually run.
-    let mut backup_targets = vec![destination.clone()];
-    if let Some(link) = &claude_link_path {
-        backup_targets.push(link.clone());
-    }
+    // whatever currently sits at every path the plan writes - normally
+    // nothing, which `backup_paths` records as "absent", itself the
+    // pre-state a later restore compares against - and its inverse
+    // describes undoing a completed install.
     let manifest = session
         .store
-        .backup_paths(&session.guard, &id, &backup_targets)?;
+        .backup_paths(&session.guard, &id, &written_paths)?;
     // R6: the shared `restore_backup` shape every other write-then-record op
     // uses - not a one-off `remove_install` shape nothing parses (`events.rs`
     // only recognizes `restore_backup`/`recreate_symlink`/`remove_symlink`).
-    // `pre` is always `None` (absent): `destination` was checked above to
-    // not exist yet, so `backup_paths` already recorded it as "absent" in
+    // `pre` is always `None` (absent): every written path was checked above
+    // to not exist yet, so `backup_paths` already recorded it as "absent" in
     // the manifest this inverse's `backup_dir` points at. `post` is `None`
     // too, matching every other pre-mutation inverse in this crate
     // (`ops.rs`'s own `restore_backup_inverse` call sites) - the bytes this
@@ -488,25 +480,26 @@ fn install_body(
             "method": method_wire_name(req.method),
             "destination": destination,
             "source": req.source,
+            "harnesses": harnesses,
+            "link_mode": mode,
         }),
         inverse: Some(inverse),
         backup_dir: Some(manifest.backup_dir.clone()),
     };
     session.store.record(&session.guard, &id, &draft)?;
 
-    let targets = InstallTargets {
-        root: &root,
-        universal_root: &universal_root,
-        destination: &destination,
-        claude_link_path: claude_link_path.as_deref(),
-    };
-    // F9: `ensure_dir_all`, the write itself, the Claude Code link, and the
-    // registry write all share this one fallible step, so any of their
-    // failures - not just the write's - marks the row `Failed` instead of
-    // leaving it `Pending`.
+    // F9: `ensure_dir_all`, the writes, the links, and the registry write
+    // all share this one fallible step, so any of their failures - not just
+    // the first write's - marks the row `Failed` instead of leaving it
+    // `Pending`.
     let documents = RegistryDocuments {
         scope: document,
         home: home_document,
+    };
+    let targets = InstallTargets {
+        root: &root,
+        destination: &destination,
+        plan: &plan,
     };
     match install_and_link(rt, ctx, &mut session, fs, req, &targets, documents) {
         Err(e) => {
@@ -515,7 +508,7 @@ fn install_body(
                 .finish(&session.guard, &id, EventStatus::Failed, None);
             Err(e)
         }
-        Ok(linked) => {
+        Ok(harness_results) => {
             session
                 .store
                 .finish(&session.guard, &id, EventStatus::Done, None)?;
@@ -531,10 +524,37 @@ fn install_body(
                 event_id: id,
                 skill: req.skill.clone(),
                 deployment_path: destination,
-                linked_harnesses: linked,
+                linked_harnesses: linked_harnesses(&harness_results),
+                harness_results,
             })
         }
     }
+}
+
+/// Harnesses with their own folder that now see the skill through a link:
+/// a new per-skill link, or a whole-folder link into the shared folder.
+fn linked_harnesses(results: &[InstallHarnessResult]) -> Vec<AgentId> {
+    results
+        .iter()
+        .filter_map(|r| match r {
+            InstallHarnessResult::Linked { harness, .. } => Some(harness.clone()),
+            InstallHarnessResult::ReadsShared { harness, .. }
+                if install_targets::has_own_folder(harness) =>
+            {
+                Some(harness.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// What `install_and_link` writes, bundled so it stays under clippy's
+/// argument-count lint.
+struct InstallTargets<'a> {
+    root: &'a Path,
+    /// [`InstallPlan::primary_path`].
+    destination: &'a Path,
+    plan: &'a InstallPlan,
 }
 
 /// `install`'s two registry documents, bundled so `install_and_link` stays
@@ -548,10 +568,9 @@ struct RegistryDocuments {
 }
 
 /// The write-and-link step every `install` call shares, once its journal
-/// row is already recorded: creates `targets.universal_root`, writes
-/// `req.method`'s bytes, links Claude Code when requested, and writes the
-/// registry document(s) back - any failure here bubbles up so `install` can
-/// mark the row `Failed` (F9).
+/// row is already recorded: writes `req.method`'s bytes, makes each
+/// harness's link or copy, and writes the registry document(s) back - any
+/// failure here bubbles up so `install` can mark the row `Failed` (F9).
 fn install_and_link(
     rt: &Runtime,
     ctx: &OpContext,
@@ -560,7 +579,7 @@ fn install_and_link(
     req: &InstallRequest,
     targets: &InstallTargets,
     documents: RegistryDocuments,
-) -> Result<Vec<AgentId>, CoreError> {
+) -> Result<Vec<InstallHarnessResult>, CoreError> {
     let RegistryDocuments {
         scope: mut document,
         home: mut home_document,
@@ -572,25 +591,80 @@ fn install_and_link(
     // `<scope>/.agents/skill-studio.json` holding nothing but a bumped
     // `write_version`.
     let original_document = document.clone();
-    crate::ops::ensure_dir_all(rt, session, fs, targets.universal_root)?;
-
-    match req.method {
-        InstallMethod::Copy => install_copy(
-            rt,
-            &session.guard,
-            targets.universal_root,
-            &req.skill,
-            &req.files,
-        )?,
-        InstallMethod::Dotagents | InstallMethod::SkillsSh => {
-            install_via_cli(rt, ctx, req, targets.destination)?;
-        }
+    let plan = targets.plan;
+    let native = req.method == InstallMethod::Copy;
+    if plan.shared.is_some() {
+        crate::ops::ensure_dir_all(rt, session, fs, &plan.universal_root)?;
     }
 
-    let mut linked = Vec::new();
-    if let Some(link_path) = targets.claude_link_path {
-        link_claude_code(rt, session, fs, targets.destination, link_path)?;
-        linked.push(AgentId::from(AgentId::CLAUDE_CODE));
+    if !native {
+        install_via_cli(rt, ctx, req, targets.destination)?;
+    } else if plan.shared.is_some() {
+        install_copy(
+            rt,
+            &session.guard,
+            &plan.universal_root,
+            &req.skill,
+            &req.files,
+        )?;
+    }
+
+    // Every real folder this install wrote, with the harness whose own
+    // folder holds it (`None` for the shared copy) - the native method
+    // records each in `copies`.
+    let mut real_folders: Vec<(PathBuf, Option<AgentId>)> =
+        plan.shared.iter().map(|p| (p.clone(), None)).collect();
+    let mut results = Vec::with_capacity(plan.steps.len());
+    for step in &plan.steps {
+        let harness = step.harness.clone();
+        let result = match &step.action {
+            StepAction::ReadsShared { path } => InstallHarnessResult::ReadsShared {
+                harness,
+                path: path.clone(),
+            },
+            StepAction::Skip { reason } => InstallHarnessResult::Skipped {
+                harness,
+                reason: reason.clone(),
+            },
+            StepAction::Copy { dir, path } => {
+                if native {
+                    crate::ops::ensure_dir_all(rt, session, fs, dir)?;
+                    install_copy(rt, &session.guard, dir, &req.skill, &req.files)?;
+                } else if fs.symlink_metadata(path).is_err() {
+                    return Err(CoreError::new(
+                        ErrorCode::Io,
+                        "the CLI did not create the expected harness copy",
+                    )
+                    .at(path));
+                }
+                real_folders.push((path.clone(), Some(harness.clone())));
+                InstallHarnessResult::Copied {
+                    harness,
+                    path: path.clone(),
+                    link_failed: false,
+                }
+            }
+            StepAction::Link { dir, link } => {
+                let shared = plan.shared.as_deref().ok_or_else(|| {
+                    CoreError::new(ErrorCode::Io, "a link step needs the shared copy")
+                })?;
+                match link_or_copy(rt, session, fs, req, shared, dir, link)? {
+                    LinkResult::Linked => InstallHarnessResult::Linked {
+                        harness,
+                        path: link.clone(),
+                    },
+                    LinkResult::Copied => {
+                        real_folders.push((link.clone(), Some(harness.clone())));
+                        InstallHarnessResult::Copied {
+                            harness,
+                            path: link.clone(),
+                            link_failed: true,
+                        }
+                    }
+                }
+            }
+        };
+        results.push(result);
     }
 
     if req.save_as_preference {
@@ -603,37 +677,10 @@ fn install_and_link(
             serde_json::to_value(&req.harnesses).unwrap_or(serde_json::Value::Array(Vec::new())),
         );
     }
-    if req.method == InstallMethod::Copy {
-        // R1: keyed by the deployment id, not the skill name - every
-        // consumer (`ops.rs::classify_owner`'s `home_registry.copies.get(cx.id)`,
-        // the desktop's `commands.rs`/`skill_harness_disable.rs`) looks this
-        // map up by id, never by name. R2: a non-empty `content_hash` - the
-        // desktop's `CopyDeploymentRecord` doc says empty is legacy-only,
-        // and destructive mutations refuse it.
-        let deployment_id = copy_deployment_id(&req.scope, &req.skill, targets.destination);
-        let content_hash = crate::ops::skill_content_hash(fs, ctx, targets.destination)?;
+    if native {
         let home_doc = home_document.as_mut().unwrap_or(&mut document);
-        let copies = home_doc
-            .entry("copies".to_string())
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        if let serde_json::Value::Object(copies) = copies {
-            copies.insert(
-                deployment_id.clone(),
-                serde_json::json!({
-                    "deployment_id": deployment_id,
-                    "name": req.skill.0,
-                    "path": targets.destination,
-                    "scope": crate::ops::scope_label(&req.scope),
-                    "destination": "universal",
-                    "slot": "universal",
-                    "project_path": match &req.scope {
-                        RootScope::Global => None,
-                        RootScope::Project(p) => Some(p.0.clone()),
-                    },
-                    "content_hash": content_hash,
-                    "disabled": false,
-                }),
-            );
+        for (path, harness) in &real_folders {
+            record_copy(fs, ctx, home_doc, req, path, harness.as_ref())?;
         }
     }
     if document != original_document {
@@ -647,18 +694,67 @@ fn install_and_link(
         write_registry_document(&session.guard, fs, &rt.scope.home.lexical, home_doc)?;
     }
 
-    Ok(linked)
+    Ok(results)
+}
+
+/// Adds the `copies` entry for one real folder the native method wrote.
+/// R1: keyed by the deployment id, not the skill name - every consumer
+/// (`ops.rs::classify_owner`'s `home_registry.copies.get(cx.id)`, the
+/// desktop's `commands.rs`/`skill_harness_disable.rs`) looks this map up by
+/// id, never by name. R2: a non-empty `content_hash` - the desktop's
+/// `CopyDeploymentRecord` doc says empty is legacy-only, and destructive
+/// mutations refuse it.
+fn record_copy(
+    fs: &dyn ScopeFs,
+    ctx: &OpContext,
+    home_doc: &mut serde_json::Map<String, serde_json::Value>,
+    req: &InstallRequest,
+    path: &Path,
+    harness: Option<&AgentId>,
+) -> Result<(), CoreError> {
+    let (destination, slot) = match harness {
+        None => (SkillDestination::Universal, "universal".to_string()),
+        Some(harness) => (
+            SkillDestination::PerHarness,
+            crate::ops::harness_slot(harness),
+        ),
+    };
+    let deployment_id = copy_deployment_id(&req.scope, &req.skill, path, destination, &slot);
+    let content_hash = crate::ops::skill_content_hash(fs, ctx, path)?;
+    let copies = home_doc
+        .entry("copies".to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let serde_json::Value::Object(copies) = copies {
+        copies.insert(
+            deployment_id.clone(),
+            serde_json::json!({
+                "deployment_id": deployment_id,
+                "name": req.skill.0,
+                "path": path,
+                "scope": crate::ops::scope_label(&req.scope),
+                "destination": destination,
+                "slot": slot,
+                "project_path": match &req.scope {
+                    RootScope::Global => None,
+                    RootScope::Project(p) => Some(p.0.clone()),
+                },
+                "content_hash": content_hash,
+                "disabled": false,
+            }),
+        );
+    }
+    Ok(())
 }
 
 /// `Copy`: stages `files` under [`journal_root`]'s [`FsJournal`], then
-/// swaps the staged folder into `<universal_root>/<skill>`. The journal's
+/// swaps the staged folder into `<skills_dir>/<skill>`. The journal's
 /// own crash from a previous install is already swept by this call's
 /// `MutationSession::begin`, so this only opens it, never reconciles it a
 /// second time.
 fn install_copy(
     rt: &Runtime,
     guard: &ExclusiveGuard,
-    universal_root: &Path,
+    skills_dir: &Path,
     skill: &SkillName,
     files: &[InstallFile],
 ) -> Result<(), CoreError> {
@@ -667,14 +763,13 @@ fn install_copy(
     // the doc on `journal_root`'s only call site in `MutationSession::begin`),
     // never under the op's own target root - so for a project-scope install,
     // `<home>/.agents` was never brought up by the caller's own
-    // `ensure_dir_all(targets.universal_root)`, which only reaches the
-    // *project's* `.agents`.
+    // `ensure_dir_all`, which only reaches the *project's* folders.
     ensure_journal_root(rt, guard, fs.as_ref())?;
     let journal_root = journal_root(&rt.scope.home.lexical);
     let journal = FsJournal::new(journal_root, fs.clone());
 
-    let root = Root::open(fs.as_ref(), universal_root.to_path_buf())
-        .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
+    let root = Root::open(fs.as_ref(), skills_dir.to_path_buf())
+        .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(skills_dir))?;
     let plan_id = crate::identity::PlanId(rt.ports.ids.next_event_id().0);
     let plan = PlanWriter::begin(
         &journal,
@@ -682,7 +777,7 @@ fn install_copy(
         plan_id,
         rt.ports.clock.now(),
         format!("install {}", skill.0),
-        universal_root.to_path_buf(),
+        skills_dir.to_path_buf(),
         Vec::new(),
     )
     .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()))?;
@@ -692,95 +787,59 @@ fn install_copy(
         .map(|f| (f.relative_path.clone(), f.contents.clone()))
         .collect();
     let staged = fsops::stage(&root, &plan, &contents)
-        .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
+        .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(skills_dir))?;
     let final_name = Path::new(&skill.0);
     let quarantine_dir = Path::new(".skill-studio-install-quarantine");
     fsops::swap(&root, &plan, final_name, &staged, quarantine_dir)
-        .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
+        .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(skills_dir))?;
     plan.finish(PlanStatus::Done)
         .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()))?;
     Ok(())
 }
 
-/// Refuses an install that asks for Claude Code when `.claude/skills` is a
-/// whole-folder link to anywhere but this scope's universal root: the skill
-/// would land in the universal root, which Claude Code never reads through
-/// such a link, so reporting the harness as linked would be false. A link
-/// whose target does not exist yet is judged by its lexical target, since the
-/// universal root itself may not exist before the first install.
-fn refuse_foreign_claude_skills_link(
-    fs: &dyn ScopeFs,
-    claude_skills_dir: &Path,
-    universal_root: &Path,
-) -> Result<(), CoreError> {
-    if !fs
-        .symlink_metadata(claude_skills_dir)
-        .is_ok_and(|f| f.kind == FileKind::Symlink)
-    {
-        return Ok(());
-    }
-    let reaches_universal_root = match (
-        fs.canonicalize(claude_skills_dir),
-        fs.canonicalize(universal_root),
-    ) {
-        (Ok(link), Ok(universal)) => link == universal,
-        _ => fs.read_link(claude_skills_dir).is_ok_and(|target| {
-            let parent = claude_skills_dir.parent().unwrap_or(claude_skills_dir);
-            fsops::join_lexical(parent, &target)
-                == fsops::join_lexical(Path::new("/"), universal_root)
-        }),
-    };
-    if reaches_universal_root {
-        return Ok(());
-    }
-    Err(CoreError::new(
-        ErrorCode::InvalidRequest,
-        format!(
-            "{} is a link to another folder, not to {}, so Claude Code would not see this skill; \
-             point the link at {} or replace it with a real folder, then install again",
-            claude_skills_dir.display(),
-            universal_root.display(),
-            universal_root.display(),
-        ),
-    )
-    .at(claude_skills_dir))
+enum LinkResult {
+    Linked,
+    Copied,
 }
 
-/// Symlinks `link_path` (`<scope>/.claude/skills/<skill>`) to `destination`,
-/// unless `.claude/skills` is already a whole-directory link into the shared
-/// root (every skill is already visible through it; `install_body` has
-/// already refused a whole-directory link that points anywhere else, via
-/// `refuse_foreign_claude_skills_link`) - mirrors the guard in
-/// `ops::set_claude_code_switch` - or `link_path` itself already exists
-/// (R3): `cli_args_and_cwd` passes `--agent claude-code` for a `SkillsSh`
-/// install that requests the Claude Code harness, so the CLI already created
-/// this exact link before this call ever runs; treating that as done rather
-/// than an `EEXIST` failure mirrors the desktop's
-/// `skill_add::maybe_claude_code_symlink`.
-fn link_claude_code(
+/// Makes the relative link `link` (inside the harness folder `dir`) to the
+/// shared copy. A `Dotagents`/`SkillsSh` CLI may already have made it, or
+/// copied a folder there after its own symlink failed; both count as done
+/// (R3, mirrors the desktop's `skill_add::maybe_claude_code_symlink`). When
+/// the symlink itself fails, the native method copies the folder instead,
+/// the same fallback as the `skills` CLI.
+fn link_or_copy(
     rt: &Runtime,
     session: &mut MutationSession,
     fs: &dyn ScopeFs,
-    destination: &Path,
-    link_path: &Path,
-) -> Result<(), CoreError> {
-    let claude_skills_dir = link_path
-        .parent()
-        .ok_or_else(|| CoreError::new(ErrorCode::InvalidRequest, "link path has no parent"))?;
-    if fs
-        .symlink_metadata(claude_skills_dir)
-        .is_ok_and(|f| f.kind == FileKind::Symlink)
-    {
-        return Ok(());
+    req: &InstallRequest,
+    shared: &Path,
+    dir: &Path,
+    link: &Path,
+) -> Result<LinkResult, CoreError> {
+    if let Ok(existing) = fs.symlink_metadata(link) {
+        return Ok(if existing.kind == FileKind::Symlink {
+            LinkResult::Linked
+        } else {
+            LinkResult::Copied
+        });
     }
-    crate::ops::ensure_dir_all(rt, session, fs, claude_skills_dir)?;
-    if fs.symlink_metadata(link_path).is_ok() {
-        return Ok(());
+    crate::ops::ensure_dir_all(rt, session, fs, dir)?;
+    let scoped_target = ports::confine(&rt.scope, fs, shared)?;
+    let scoped_link = ports::confine(&rt.scope, fs, link)?;
+    let from = fs.canonicalize(dir).map_err(|e| CoreError::io(dir, e))?;
+    let to = fs
+        .canonicalize(shared)
+        .map_err(|e| CoreError::io(shared, e))?;
+    let relative = install_targets::relative_path(&from, &to);
+    match fs.symlink_relative(&session.guard, &scoped_target, &relative, &scoped_link) {
+        Ok(()) => Ok(LinkResult::Linked),
+        Err(_) if req.method == InstallMethod::Copy => {
+            install_copy(rt, &session.guard, dir, &req.skill, &req.files)?;
+            Ok(LinkResult::Copied)
+        }
+        Err(e) => Err(CoreError::io(link, e)),
     }
-    let scoped_target = ports::confine(&rt.scope, fs, destination)?;
-    let scoped_link = ports::confine(&rt.scope, fs, link_path)?;
-    fs.symlink(&session.guard, &scoped_target, &scoped_link)
-        .map_err(|e| CoreError::io(link_path, e))
 }
 
 #[cfg(test)]

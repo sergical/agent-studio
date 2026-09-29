@@ -13,7 +13,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use skill_studio_core::dto::{
-    InstallFile, InstallMethod, InstallOutcome, InstallRequest, ListEventsRequest,
+    InstallFile, InstallHarnessResult, InstallLinkMode, InstallMethod, InstallOutcome,
+    InstallRequest, ListEventsRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::{AgentId, RootScope, SkillName};
@@ -141,9 +142,17 @@ fn runtime_with(
     fs: Arc<dyn skill_studio_core::ports::ScopeFs>,
     spawner: Option<Arc<dyn ProcessSpawner>>,
 ) -> Runtime {
+    runtime_in(&RuntimeScope::fixture(home), home, fs, spawner)
+}
+
+fn runtime_in(
+    scope: &RuntimeScope,
+    home: &std::path::Path,
+    fs: Arc<dyn skill_studio_core::ports::ScopeFs>,
+    spawner: Option<Arc<dyn ProcessSpawner>>,
+) -> Runtime {
     let history_root = home.join(".history");
     let db_path = history_root.join("events.sqlite3");
-    let scope = RuntimeScope::fixture(home);
     let ports = Ports {
         fs,
         clock: Arc::new(FakeClock::at(0)),
@@ -158,7 +167,7 @@ fn runtime_with(
 
         telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
     };
-    Runtime::new(&scope, ports).unwrap()
+    Runtime::new(scope, ports).unwrap()
 }
 
 fn runtime_for(home: &std::path::Path) -> Runtime {
@@ -169,12 +178,20 @@ fn runtime_for(home: &std::path::Path) -> Runtime {
     )
 }
 
+/// Today's default set: the shared folder plus a Claude Code link.
+fn universal_and_claude() -> Vec<AgentId> {
+    vec![
+        AgentId::from("universal"),
+        AgentId::from(AgentId::CLAUDE_CODE),
+    ]
+}
+
 fn copy_request(skill: &str) -> InstallRequest {
     InstallRequest {
         skill: SkillName(skill.to_string()),
         method: InstallMethod::Copy,
         scope: RootScope::Global,
-        harnesses: vec![AgentId::from(AgentId::CLAUDE_CODE)],
+        harnesses: universal_and_claude(),
         files: vec![InstallFile {
             relative_path: PathBuf::from("SKILL.md"),
             contents: format!("---\nname: {skill}\ndescription: a copied skill\n---\nBody.\n")
@@ -184,6 +201,7 @@ fn copy_request(skill: &str) -> InstallRequest {
         trust_identity: None,
         trust_confirmed: false,
         save_as_preference: true,
+        link_mode: InstallLinkMode::Link,
     }
 }
 
@@ -192,7 +210,7 @@ fn cli_request(skill: &str, method: InstallMethod) -> InstallRequest {
         skill: SkillName(skill.to_string()),
         method,
         scope: RootScope::Global,
-        harnesses: vec![AgentId::from(AgentId::CLAUDE_CODE)],
+        harnesses: universal_and_claude(),
         files: Vec::new(),
         source: Some(skill.to_string()),
         trust_identity: None,
@@ -203,6 +221,7 @@ fn cli_request(skill: &str, method: InstallMethod) -> InstallRequest {
         // methods.
         trust_confirmed: method == InstallMethod::Dotagents,
         save_as_preference: true,
+        link_mode: InstallLinkMode::Link,
     }
 }
 
@@ -377,7 +396,7 @@ fn install_preferences_round_trips_a_saved_method_and_harnesses() {
     let after = ops::install_preferences(&rt, &ctx(), &RootScope::Global).unwrap();
     assert!(after.saved);
     assert_eq!(after.method, InstallMethod::Copy);
-    assert_eq!(after.harnesses, vec![AgentId::from(AgentId::CLAUDE_CODE)]);
+    assert_eq!(after.harnesses, universal_and_claude());
 
     std::fs::remove_dir_all(&home).ok();
 }
@@ -1227,4 +1246,317 @@ fn install_with_claude_code_under_a_whole_folder_link_to_the_universal_root_repo
 
         std::fs::remove_dir_all(&home).ok();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Install for a harness set (`skills` CLI 1.7.0 rules).
+// ---------------------------------------------------------------------------
+
+fn harness_set_request(
+    skill: &str,
+    harnesses: &[&'static str],
+    mode: InstallLinkMode,
+) -> InstallRequest {
+    let mut req = copy_request(skill);
+    req.harnesses = harnesses.iter().map(|h| AgentId::from(*h)).collect();
+    req.link_mode = mode;
+    req.save_as_preference = false;
+    req
+}
+
+fn harness_results(outcome: InstallOutcome) -> (PathBuf, Vec<InstallHarnessResult>) {
+    match outcome {
+        InstallOutcome::Installed {
+            deployment_path,
+            harness_results,
+            ..
+        } => (deployment_path, harness_results),
+        other => panic!("expected Installed, got {other:?}"),
+    }
+}
+
+fn is_real_folder(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_dir())
+}
+
+fn home_copies(home: &std::path::Path) -> serde_json::Map<String, serde_json::Value> {
+    let raw = std::fs::read_to_string(home.join(".agents").join("skill-studio.json")).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    doc["copies"].as_object().cloned().unwrap_or_default()
+}
+
+/// `install_for_claude_code_and_pi_links_both_to_one_shared_copy_with_relative_targets_or_names_the_bad_link`:
+/// a global Link install for Claude Code and pi writes one real folder in
+/// `~/.agents/skills` and a relative link in `~/.claude/skills` and in
+/// `~/.pi/agent/skills`, the same `../` spelling the CLI writes. Fails when
+/// a link is absolute, missing, or pi's link lands in `~/.pi/skills`.
+#[test]
+fn install_for_claude_code_and_pi_links_both_to_one_shared_copy_with_relative_targets_or_names_the_bad_link(
+) {
+    let home = unique_temp_dir("install_claude_and_pi_link");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let req = harness_set_request(
+        "lambda",
+        &[AgentId::CLAUDE_CODE, AgentId::PI],
+        InstallLinkMode::Link,
+    );
+
+    let (deployment_path, results) = harness_results(ops::install(&rt, &ctx(), &req).unwrap());
+
+    let shared = home.join(UNIVERSAL_ROOT_RELATIVE).join("lambda");
+    assert_eq!(deployment_path, shared, "the shared copy is the deployment");
+    assert!(
+        is_real_folder(&shared),
+        "the shared copy must be a real folder"
+    );
+    let claude_link = home.join(".claude/skills/lambda");
+    let pi_link = home.join(".pi/agent/skills/lambda");
+    assert_eq!(
+        std::fs::read_link(&claude_link).unwrap(),
+        PathBuf::from("../../.agents/skills/lambda"),
+        "Claude Code's link must be relative"
+    );
+    assert_eq!(
+        std::fs::read_link(&pi_link).unwrap(),
+        PathBuf::from("../../../.agents/skills/lambda"),
+        "pi's global link lives in ~/.pi/agent/skills and must be relative"
+    );
+    assert!(
+        pi_link.join("SKILL.md").exists(),
+        "pi must read the skill through its link"
+    );
+    assert_eq!(
+        results,
+        vec![
+            InstallHarnessResult::Linked {
+                harness: AgentId::from(AgentId::CLAUDE_CODE),
+                path: claude_link,
+            },
+            InstallHarnessResult::Linked {
+                harness: AgentId::from(AgentId::PI),
+                path: pi_link,
+            },
+        ]
+    );
+    assert_eq!(
+        home_copies(&home).len(),
+        1,
+        "only the shared copy is a real folder"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `install_for_pi_at_project_scope_without_a_pi_folder_skips_pi_and_says_why_or_names_the_folder_it_made`:
+/// in a project with no `.pi` folder, a Link install for Claude Code and pi
+/// links Claude Code (always made) and skips pi with a plain reason. Fails
+/// when `.pi` is created or the skip is not reported.
+#[test]
+fn install_for_pi_at_project_scope_without_a_pi_folder_skips_pi_and_says_why_or_names_the_folder_it_made(
+) {
+    let home = unique_temp_dir("install_pi_project_skip");
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut scope = RuntimeScope::fixture(&home);
+    scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
+        paths: vec![project.clone()],
+    };
+    let rt = runtime_in(&scope, &home, Arc::new(RealFs::new()), None);
+    let mut req = harness_set_request(
+        "mu",
+        &[AgentId::CLAUDE_CODE, AgentId::PI],
+        InstallLinkMode::Link,
+    );
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+
+    let (_, results) = harness_results(ops::install(&rt, &ctx(), &req).unwrap());
+
+    assert!(
+        !project.join(".pi").exists(),
+        "no .pi folder may be created"
+    );
+    assert_eq!(
+        results,
+        vec![
+            InstallHarnessResult::Linked {
+                harness: AgentId::from(AgentId::CLAUDE_CODE),
+                path: project.join(".claude/skills/mu"),
+            },
+            InstallHarnessResult::Skipped {
+                harness: AgentId::from(AgentId::PI),
+                reason: "pi has no .pi folder in this project".to_string(),
+            },
+        ]
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `install_under_a_whole_folder_claude_link_to_the_shared_folder_makes_no_self_link_or_names_the_link_it_wrote`:
+/// with `~/.claude/skills -> ../.agents/skills`, a Link install for Claude
+/// Code and pi reports Claude Code as reading the shared folder, leaves the
+/// shared copy a real folder (never a link to itself), and still links pi.
+#[test]
+fn install_under_a_whole_folder_claude_link_to_the_shared_folder_makes_no_self_link_or_names_the_link_it_wrote(
+) {
+    let home = unique_temp_dir("install_whole_folder_no_self_link");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::create_dir_all(home.join(UNIVERSAL_ROOT_RELATIVE)).unwrap();
+    std::os::unix::fs::symlink("../.agents/skills", home.join(".claude/skills")).unwrap();
+    let rt = runtime_for(&home);
+    let req = harness_set_request(
+        "nu",
+        &[AgentId::CLAUDE_CODE, AgentId::PI],
+        InstallLinkMode::Link,
+    );
+
+    let (_, results) = harness_results(ops::install(&rt, &ctx(), &req).unwrap());
+
+    let shared = home.join(UNIVERSAL_ROOT_RELATIVE).join("nu");
+    assert!(
+        is_real_folder(&shared),
+        "the shared copy must stay a real folder"
+    );
+    assert_eq!(
+        results[0],
+        InstallHarnessResult::ReadsShared {
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            path: shared,
+        },
+        "Claude Code reads the shared folder through the whole-folder link"
+    );
+    assert!(
+        matches!(&results[1], InstallHarnessResult::Linked { harness, .. } if harness.as_str() == AgentId::PI),
+        "pi still gets its own link: {:?}",
+        results[1]
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `install_for_claude_code_alone_forces_a_copy_with_no_shared_folder_or_names_the_link_it_made`:
+/// one chosen folder forces Copy even when Link is asked (the CLI's
+/// `uniqueDirs.size <= 1` rule), so Claude Code alone gets a real folder in
+/// `~/.claude/skills` and nothing is written to `~/.agents/skills`.
+#[test]
+fn install_for_claude_code_alone_forces_a_copy_with_no_shared_folder_or_names_the_link_it_made() {
+    let home = unique_temp_dir("install_claude_alone_copy");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let req = harness_set_request("xi", &[AgentId::CLAUDE_CODE], InstallLinkMode::Link);
+
+    let (deployment_path, results) = harness_results(ops::install(&rt, &ctx(), &req).unwrap());
+
+    let claude_copy = home.join(".claude/skills/xi");
+    assert_eq!(deployment_path, claude_copy);
+    assert!(
+        is_real_folder(&claude_copy),
+        "Claude Code must get a real folder"
+    );
+    assert!(claude_copy.join("SKILL.md").exists());
+    assert!(
+        !home.join(UNIVERSAL_ROOT_RELATIVE).join("xi").exists(),
+        "a forced copy writes no shared copy"
+    );
+    assert_eq!(
+        results,
+        vec![InstallHarnessResult::Copied {
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            path: claude_copy,
+            link_failed: false,
+        }]
+    );
+    let copies = home_copies(&home);
+    assert_eq!(copies.len(), 1);
+    let entry = copies.values().next().unwrap();
+    assert_eq!(entry["destination"], "per_harness");
+    assert_eq!(entry["slot"], "claude-code");
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `install_in_copy_mode_for_claude_code_and_codex_writes_two_real_folders_or_names_the_link`:
+/// Copy mode for Claude Code and Codex writes the shared copy (Codex reads
+/// it) and a separate real folder in `~/.claude/skills`, and records both.
+#[test]
+fn install_in_copy_mode_for_claude_code_and_codex_writes_two_real_folders_or_names_the_link() {
+    let home = unique_temp_dir("install_copy_mode_two_folders");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let req = harness_set_request(
+        "omicron",
+        &[AgentId::CLAUDE_CODE, AgentId::CODEX],
+        InstallLinkMode::Copy,
+    );
+
+    let (_, results) = harness_results(ops::install(&rt, &ctx(), &req).unwrap());
+
+    let shared = home.join(UNIVERSAL_ROOT_RELATIVE).join("omicron");
+    let claude_copy = home.join(".claude/skills/omicron");
+    assert!(
+        is_real_folder(&shared),
+        "Codex's shared copy must be a real folder"
+    );
+    assert!(
+        is_real_folder(&claude_copy),
+        "Claude Code's copy must be a real folder, not a link"
+    );
+    assert_eq!(
+        results,
+        vec![
+            InstallHarnessResult::Copied {
+                harness: AgentId::from(AgentId::CLAUDE_CODE),
+                path: claude_copy,
+                link_failed: false,
+            },
+            InstallHarnessResult::ReadsShared {
+                harness: AgentId::from(AgentId::CODEX),
+                path: shared,
+            },
+        ]
+    );
+    assert_eq!(
+        home_copies(&home).len(),
+        2,
+        "both real folders are recorded"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `install_falls_back_to_a_copy_when_the_link_fails_and_reports_it_or_names_the_missing_folder`:
+/// when the symlink call fails, the native method copies the folder into
+/// the harness folder instead, the same fallback as the CLI, and reports
+/// `link_failed`.
+#[test]
+fn install_falls_back_to_a_copy_when_the_link_fails_and_reports_it_or_names_the_missing_folder() {
+    let home = unique_temp_dir("install_link_fails_copy");
+    std::fs::create_dir_all(&home).unwrap();
+    let failing = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
+    failing.fail_next_symlink();
+    let rt = runtime_with(&home, failing, None);
+    let req = harness_set_request(
+        "rho",
+        &[AgentId::CLAUDE_CODE, AgentId::CODEX],
+        InstallLinkMode::Link,
+    );
+
+    let (_, results) = harness_results(ops::install(&rt, &ctx(), &req).unwrap());
+
+    let claude_copy = home.join(".claude/skills/rho");
+    assert!(
+        is_real_folder(&claude_copy),
+        "a failed link must leave a real folder"
+    );
+    assert_eq!(
+        results[0],
+        InstallHarnessResult::Copied {
+            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            path: claude_copy,
+            link_failed: true,
+        }
+    );
+
+    std::fs::remove_dir_all(&home).ok();
 }

@@ -2539,7 +2539,7 @@ fn project_label(scope: &RootScope) -> Option<String> {
 /// desktop's `harness_slot` (`skill_deployment.rs`): every harness's own
 /// wire id, except `OpenCode`, whose slot is the un-hyphenated CLI name
 /// `opencode`; `universal` for the shared and parked roots.
-fn harness_slot(id: &AgentId) -> String {
+pub(crate) fn harness_slot(id: &AgentId) -> String {
     if id.as_str() == AgentId::OPEN_CODE {
         "opencode".to_string()
     } else {
@@ -7377,6 +7377,7 @@ mod tests {
                 trust_identity: None,
                 trust_confirmed: false,
                 save_as_preference: false,
+                link_mode: crate::dto::InstallLinkMode::Link,
             };
             let err = install(&rt, &ctx, &req).unwrap_err();
 

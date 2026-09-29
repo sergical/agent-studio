@@ -221,6 +221,7 @@ fn copy_request(skill: &str) -> InstallRequest {
         trust_identity: None,
         trust_confirmed: false,
         save_as_preference: false,
+        link_mode: skill_studio_core::dto::InstallLinkMode::Link,
     }
 }
 
@@ -407,7 +408,10 @@ fn setup_owner_kind_with_claude_link(
 ) -> DeploymentId {
     if kind == LifecycleOwnerKind::Copy {
         let mut req = copy_request(skill);
-        req.harnesses = vec![AgentId::parse(AgentId::CLAUDE_CODE).unwrap()];
+        req.harnesses = vec![
+            AgentId::parse("universal").unwrap(),
+            AgentId::parse(AgentId::CLAUDE_CODE).unwrap(),
+        ];
         let InstallOutcome::Installed { .. } = ops::install(rt, &ctx(), &req).unwrap() else {
             panic!("expected Installed");
         };

@@ -760,11 +760,17 @@ pub struct InstallRequest {
     /// `Global` installs under the scope home; `Project` installs under one
     /// project.
     pub scope: RootScope,
-    /// Harnesses to link the new skill into right after install. Only
-    /// Claude Code has a per-skill link this build writes; other harnesses
-    /// read the universal root directly.
+    /// The harness set to install for, as the `skills` CLI's `--agent` list:
+    /// harness ids plus the pseudo id `universal` for the shared
+    /// `.agents/skills` folder alone. Empty means `universal` only. Codex,
+    /// OpenCode, Cursor, and `universal` read the shared folder; Claude
+    /// Code, pi, and Grok Build get their own folder (see `link_mode`).
     #[serde(default)]
     pub harnesses: Vec<AgentId>,
+    /// How each chosen harness with its own folder receives the skill. See
+    /// [`InstallLinkMode`].
+    #[serde(default)]
+    pub link_mode: InstallLinkMode,
     /// `Copy` only: the folder's files, staged then swapped into place.
     #[serde(default)]
     pub files: Vec<InstallFile>,
@@ -804,9 +810,12 @@ pub enum InstallOutcome {
         skill: SkillName,
         /// Where its canonical folder now lives.
         deployment_path: PathBuf,
-        /// Harnesses actually linked (a subset of the request's
-        /// `harnesses` - only Claude Code gets a link this build).
+        /// Harnesses that now see the skill through a per-skill link or a
+        /// whole-folder link into the shared folder.
         linked_harnesses: Vec<AgentId>,
+        /// What happened for each requested harness, in request order.
+        #[serde(default)]
+        harness_results: Vec<InstallHarnessResult>,
     },
     /// `trust_identity` was set, is not yet trusted, and `trust_confirmed`
     /// was `false`. Nothing was written; retry with `trust_confirmed: true`
@@ -814,6 +823,64 @@ pub enum InstallOutcome {
     NeedsTrust {
         /// The normalized identity that needs confirming.
         identity: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Install for a harness set (`skills` CLI 1.7.0 `--agent`/`--copy`).
+// ---------------------------------------------------------------------------
+
+/// How `install` puts the skill into each chosen harness that has its own
+/// folder - the `skills` CLI's symlink/`--copy` choice. `install` forces
+/// `Copy` when the chosen harnesses resolve to one folder or fewer, the same
+/// as the CLI, and always uses `Link` for `Dotagents`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallLinkMode {
+    /// One real folder at `<scope>/.agents/skills/<name>`, and a relative
+    /// symlink to it in each other chosen harness folder.
+    #[default]
+    Link,
+    /// One real folder in each chosen harness folder. The shared folder
+    /// gets one only when a harness that reads it is chosen.
+    Copy,
+}
+
+/// What `install` did for one requested harness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum InstallHarnessResult {
+    /// The harness reads the skill from the shared folder at `path`, either
+    /// directly or because its own folder is a link to the shared folder.
+    ReadsShared {
+        /// The requested harness (or `universal`).
+        harness: AgentId,
+        /// The skill folder the harness reads.
+        path: PathBuf,
+    },
+    /// A relative symlink at `path` points to the shared folder's copy.
+    Linked {
+        /// The requested harness.
+        harness: AgentId,
+        /// The new link.
+        path: PathBuf,
+    },
+    /// A real folder at `path`.
+    Copied {
+        /// The requested harness.
+        harness: AgentId,
+        /// The new folder.
+        path: PathBuf,
+        /// `true` when a link was asked for but the symlink failed, so the
+        /// folder was copied instead.
+        link_failed: bool,
+    },
+    /// Nothing was written for this harness.
+    Skipped {
+        /// The requested harness.
+        harness: AgentId,
+        /// Why, in one plain sentence.
+        reason: String,
     },
 }
 
