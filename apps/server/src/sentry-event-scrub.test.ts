@@ -47,4 +47,47 @@ describe("scrubSentryEvent", () => {
     expect(scrubbed.user).toBeUndefined();
     expect(scrubbed.request).toBeUndefined();
   });
+
+  it("a fetch breadcrumb carrying a query string is removed from the event", () => {
+    // SAFETY: only `breadcrumbs` matters to this test.
+    const event = {
+      type: undefined,
+      breadcrumbs: [
+        { category: "fetch", data: { url: "https://skills.sh/api/v1/skills/search?q=secret" } },
+      ],
+    } as ErrorEvent;
+
+    const scrubbed = scrubSentryEvent(event);
+
+    expect(scrubbed.breadcrumbs).toBeUndefined();
+  });
+
+  it("the culture context (timezone) is removed while other contexts stay", () => {
+    // SAFETY: only `contexts` matters to this test.
+    const event = {
+      type: undefined,
+      contexts: { culture: { timezone: "America/New_York" }, runtime: { name: "workerd" } },
+    } as ErrorEvent;
+
+    const scrubbed = scrubSentryEvent(event);
+
+    expect(scrubbed.contexts?.culture).toBeUndefined();
+    expect(scrubbed.contexts?.runtime).toEqual({ name: "workerd" });
+  });
+
+  it("an exception message loses its query string but keeps the rest of the text", () => {
+    // SAFETY: only `exception.values` matters to this test.
+    const event = {
+      type: undefined,
+      exception: {
+        values: [{ value: "fetch failed for https://skills.sh/api/v1/skills/search?q=secret" }],
+      },
+    } as ErrorEvent;
+
+    const scrubbed = scrubSentryEvent(event);
+
+    expect(scrubbed.exception?.values?.[0]?.value).toBe(
+      "fetch failed for https://skills.sh/api/v1/skills/search",
+    );
+  });
 });

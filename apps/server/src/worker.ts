@@ -11,11 +11,13 @@ import * as Sentry from "@sentry/cloudflare";
 import { createSkillsProxyApp, type RateLimiter, type ResponseCache } from "./skills-proxy-app";
 import { scrubSentryEvent } from "./sentry-event-scrub";
 
+import type { CloudflareOptions } from "@sentry/cloudflare";
+
 /** The subset of Workers' `Fetcher.env` this proxy reads: the skills.sh key
  * (set once with `wrangler secret put SKILLS_SH_API_KEY`), the rate limit
  * binding declared in `wrangler.jsonc`, and the optional Sentry DSN (`wrangler
- * secret put SENTRY_DSN`) - absent, `withSentry` is a no-op. */
-interface Env {
+ * secret put SENTRY_DSN`). */
+export interface Env {
   SKILLS_SH_API_KEY: string;
   RATE_LIMITER: RateLimiter;
   SENTRY_DSN?: string;
@@ -50,14 +52,24 @@ const handler = {
   },
 };
 
-// `SENTRY_DSN` is an optional Worker secret (`wrangler secret put SENTRY_DSN`)
-// - absent, the SDK never initializes and every call below is a no-op.
-export default Sentry.withSentry(
-  (env: Env) => ({
+/** Without `SENTRY_DSN` the SDK still initializes on every request but has no
+ * transport, so it captures locally and sends nothing.
+ *
+ * Tracing stays off on purpose: no `tracesSampleRate` or `tracesSampler` is
+ * set below. A caller can send a sampled `sentry-trace` header on any
+ * request, and that alone forces a transaction regardless of this Worker's
+ * own sampling config - transactions skip `beforeSend`, so a transaction is
+ * the one event type this scrub can't clean. `tracePropagationTargets: []`
+ * closes the other half: it stops the SDK from attaching `sentry-trace`/
+ * `baggage` headers to the outgoing skills.sh requests. */
+export function sentryOptionsFor(env: Env): CloudflareOptions {
+  return {
     dsn: env.SENTRY_DSN,
     environment: "production",
-    tracesSampleRate: 0,
     beforeSend: scrubSentryEvent,
-  }),
-  handler,
-);
+    beforeSendTransaction: () => null,
+    tracePropagationTargets: [],
+  };
+}
+
+export default Sentry.withSentry(sentryOptionsFor, handler);

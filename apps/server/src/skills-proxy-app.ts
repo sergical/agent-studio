@@ -54,9 +54,15 @@ export async function proxyGet(
       body: { error: e instanceof Error ? e.message : "Failed to reach skills.sh" },
     };
   }
-  const body = await response
-    .json()
-    .catch(() => ({ error: "skills.sh returned a non-JSON response" }));
+  if (response.status >= 500) {
+    reportServerError?.(new Error(`skills.sh answered ${response.status}`), { kind: "upstream" });
+  }
+  const body = await response.json().catch(() => {
+    reportServerError?.(new Error(`skills.sh answered ${response.status} with a non-JSON body`), {
+      kind: "upstream",
+    });
+    return { error: "skills.sh returned a non-JSON response" };
+  });
   return { status: response.status, body };
 }
 
@@ -130,7 +136,7 @@ interface CreateSkillsProxyAppOptions {
   /** Schedules work past the response, e.g. Workers' `ExecutionContext.waitUntil` -
    * when absent, the cache write is awaited inline instead. */
   waitUntil?: (promise: Promise<unknown>) => void;
-  /** Receives every failure the proxy turns into a 5xx: an upstream fetch that failed (`kind: "upstream"`)
+  /** Receives a skills.sh network failure, a skills.sh 5xx or non-JSON answer (`kind: "upstream"`),
    *  or a route that threw (`kind: "unhandled"`). Absent in the Node dev server; the Worker forwards it to Sentry. */
   reportServerError?: (cause: unknown, context: { kind: "upstream" | "unhandled" }) => void;
 }
@@ -181,11 +187,17 @@ export function createSkillsProxyApp({
 }: CreateSkillsProxyAppOptions): Hono {
   const app = new Hono();
 
-  // A thrown `HTTPException` (Hono's own control-flow, not a bug) keeps its
-  // intended response and is never reported - only a route that throws
-  // something else reaches `reportServerError` as `kind: "unhandled"`.
+  // An `HTTPException` is Hono's own control-flow, not a bug, so it's never reported.
   app.onError((error, c) => {
-    if (error instanceof HTTPException) return error.getResponse();
+    if (error instanceof HTTPException) {
+      const res = error.getResponse();
+      return c.newResponse(res.body, res);
+    }
+    // `no-console` bans `console.error` repo-wide, so this reaches the terminal and
+    // Workers Logs the same way the request-logging middleware below does.
+    process.stderr.write(
+      `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+    );
     reportServerError?.(error, { kind: "unhandled" });
     return c.json({ error: "Skill Studio server error" }, 500);
   });
