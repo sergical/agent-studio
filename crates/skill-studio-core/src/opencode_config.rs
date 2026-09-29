@@ -401,21 +401,21 @@ pub(crate) fn skill_denied_text(
                 rule.pattern
             ),
         )
-        .at(&path));
+        .at(path));
     }
 
     let permission = root
         .entry("permission")
         .or_insert_with(|| Value::Object(Map::new()));
     let Value::Object(permission) = permission else {
-        return Err(CoreError::new(ErrorCode::Io, "has a non-object `permission` key").at(&path));
+        return Err(CoreError::new(ErrorCode::Io, "has a non-object `permission` key").at(path));
     };
     let skill = permission
         .entry("skill")
         .or_insert_with(|| Value::Object(Map::new()));
     let Value::Object(skill) = skill else {
         return Err(
-            CoreError::new(ErrorCode::Io, "has a non-object `permission.skill` key").at(&path),
+            CoreError::new(ErrorCode::Io, "has a non-object `permission.skill` key").at(path),
         );
     };
 
@@ -454,7 +454,7 @@ pub(crate) fn skill_denied_text(
                     rule.pattern
                 ),
             )
-            .at(&path));
+            .at(path));
         }
 
         if skill.is_empty() {

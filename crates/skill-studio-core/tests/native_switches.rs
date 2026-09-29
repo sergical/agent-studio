@@ -4,8 +4,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Real-disk tests for the per-harness switches other than Claude Code's:
-//! Codex's `[[skills.config]]` row, OpenCode's `permission.skill` deny, and
-//! pi, which has no switch. Every test runs against a temp home.
+//! Codex's `[[skills.config]]` row and `OpenCode`'s `permission.skill` deny.
+//! Every test runs against a temp home.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ use skill_studio_core::testing::{FakeClock, FakeIds, RecordingSink};
 
 use skill_studio_host::{FileLease, RealFs, SqliteHistoryOpener};
 
-fn runtime_with_scope(home: &Path, scope: RuntimeScope) -> Runtime {
+fn runtime_with_scope(home: &Path, scope: &RuntimeScope) -> Runtime {
     let ports = Ports {
         fs: Arc::new(RealFs::new()),
         clock: Arc::new(FakeClock::at(0)),
@@ -38,11 +38,11 @@ fn runtime_with_scope(home: &Path, scope: RuntimeScope) -> Runtime {
         catalog: Arc::new(HarnessCatalog::builtin()),
         telemetry: Arc::new(skill_studio_core::ports::NoopTelemetry),
     };
-    Runtime::new(&scope, ports).unwrap()
+    Runtime::new(scope, ports).unwrap()
 }
 
 fn runtime_for(home: &Path) -> Runtime {
-    runtime_with_scope(home, RuntimeScope::fixture(home))
+    runtime_with_scope(home, &RuntimeScope::fixture(home))
 }
 
 fn write_skill(dir: &Path, name: &str) {
@@ -237,7 +237,7 @@ fn opencode_disable_writes_the_config_root_the_scan_reads_and_the_rescan_shows_t
     std::fs::create_dir_all(&config_root).unwrap();
     let mut scope = RuntimeScope::fixture(&home);
     scope.opencode_config_root = Some(config_root.clone());
-    let rt = runtime_with_scope(&home, scope);
+    let rt = runtime_with_scope(&home, &scope);
 
     switch(&rt, "delta", AgentId::OPEN_CODE, false);
 

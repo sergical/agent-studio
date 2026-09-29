@@ -3,7 +3,7 @@
 //!
 //! The edits themselves live beside their readers so one writer owns each
 //! file: Codex's `[[skills.config]]` row is `crate::ops::codex_write_disabled_row`
-//! and OpenCode's `permission.skill` deny is
+//! and `OpenCode`'s `permission.skill` deny is
 //! `crate::opencode_config::skill_denied_text`. pi, Cursor, and Grok Build
 //! have no switch Skill Studio writes; Park is their off path.
 

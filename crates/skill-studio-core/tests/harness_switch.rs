@@ -220,7 +220,7 @@ fn each_of_the_three_harness_switch_tests_passes_against_its_fixture_home_or_nam
 }
 
 /// `set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_names_the_missing_step`:
-/// a failure on OpenCode's single write still leaves a durable journal row - the
+/// a failure on `OpenCode`'s single write still leaves a durable journal row - the
 /// row was recorded before the write, not after.
 #[test]
 fn set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_names_the_missing_step(
@@ -259,7 +259,7 @@ fn set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_nam
 }
 
 /// `any_error_after_the_event_is_recorded_marks_it_failed_or_names_the_row_left_pending`:
-/// OpenCode's `ensure_dir_all`, called after the journal row is recorded to create
+/// `OpenCode`'s `ensure_dir_all`, called after the journal row is recorded to create
 /// `~/.config/opencode` on a fresh home but before `write_atomic`, fails. That row
 /// must finish `failed`, not stay `pending` - `recover_interrupted` would
 /// later read a `pending` row as a crash mid-write rather than a plain,
