@@ -1393,6 +1393,52 @@ fn install_for_pi_at_project_scope_without_a_pi_folder_skips_pi_and_says_why_or_
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// `copy_mode_install_for_pi_at_project_scope_without_a_pi_folder_skips_pi_or_names_the_folder_it_made`:
+/// the missing-folder skip does not depend on the mode. A Copy install for
+/// Claude Code and pi in a project with no `.pi` folder copies for Claude
+/// Code and skips pi. Fails when Copy mode creates `.pi/skills`.
+#[test]
+fn copy_mode_install_for_pi_at_project_scope_without_a_pi_folder_skips_pi_or_names_the_folder_it_made(
+) {
+    let home = unique_temp_dir("install_pi_project_copy_skip");
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut scope = RuntimeScope::fixture(&home);
+    scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
+        paths: vec![project.clone()],
+    };
+    let rt = runtime_in(&scope, &home, Arc::new(RealFs::new()), None);
+    let mut req = harness_set_request(
+        "mu",
+        &[AgentId::CLAUDE_CODE, AgentId::PI],
+        InstallLinkMode::Copy,
+    );
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+
+    let (_, results) = harness_results(ops::install(&rt, &ctx(), &req).unwrap());
+
+    assert!(
+        !project.join(".pi").exists(),
+        "Copy mode may not create a .pi folder either"
+    );
+    assert_eq!(
+        results,
+        vec![
+            InstallHarnessResult::Copied {
+                harness: AgentId::from(AgentId::CLAUDE_CODE),
+                path: project.join(".claude/skills/mu"),
+                link_failed: false,
+            },
+            InstallHarnessResult::Skipped {
+                harness: AgentId::from(AgentId::PI),
+                reason: "pi has no .pi folder in this project".to_string(),
+            },
+        ]
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `install_under_a_whole_folder_claude_link_to_the_shared_folder_makes_no_self_link_or_names_the_link_it_wrote`:
 /// with `~/.claude/skills -> ../.agents/skills`, a Link install for Claude
 /// Code and pi reports Claude Code as reading the shared folder, leaves the
