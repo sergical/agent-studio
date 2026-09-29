@@ -68,21 +68,25 @@ pub struct OwnershipLedgers {
 }
 
 /// Load the home Universal ledger (`~/.agents`) plus one ledger per project
-/// that has `.agents/agents.toml`, `agents.lock`, or `.skill-lock.json`.
+/// that has `<project>/agents.toml`, `<project>/agents.lock` (where dotagents
+/// puts its project files), or `.agents/.skill-lock.json`.
 pub fn load_ownership_ledgers(home: &Path, project_paths: &[PathBuf]) -> Vec<OwnershipLedgers> {
     let mut out = Vec::new();
     out.push(read_ledgers(
+        home,
         home.join(".agents"),
         InstallScope::Global,
         None,
     ));
     for project in project_paths {
         let agents_dir = project.join(".agents");
-        if agents_dir.join("agents.toml").exists()
-            || agents_dir.join("agents.lock").exists()
+        let dotagents_dir = dotagents_ledger::dotagents_dir(home, Some(project));
+        if dotagents_dir.join("agents.toml").exists()
+            || dotagents_dir.join("agents.lock").exists()
             || lock_file::lock_file_path_in(&agents_dir).exists()
         {
             out.push(read_ledgers(
+                home,
                 agents_dir,
                 InstallScope::Project,
                 Some(project.clone()),
@@ -93,6 +97,7 @@ pub fn load_ownership_ledgers(home: &Path, project_paths: &[PathBuf]) -> Vec<Own
 }
 
 fn read_ledgers(
+    home: &Path,
     agents_dir: PathBuf,
     scope: InstallScope,
     project_path: Option<PathBuf>,
@@ -103,7 +108,9 @@ fn read_ledgers(
             version: 3,
             skills: HashMap::new(),
         });
-    let dotagents = dotagents_ledger::read_dotagents_ledger(&fs, &agents_dir).unwrap_or_default();
+    let dotagents_dir = dotagents_ledger::dotagents_dir(home, project_path.as_deref());
+    let dotagents =
+        dotagents_ledger::read_dotagents_ledger(&fs, &dotagents_dir).unwrap_or_default();
     OwnershipLedgers {
         agents_dir,
         scope,

@@ -104,17 +104,6 @@ fn update_cli_args_and_cwd(
     }
 }
 
-/// The scope's dotagents files, where `dotagents [--project]` itself puts
-/// them (`dotagents/dist/scope.js`'s `resolveScope`): `~/.agents` globally,
-/// and for a project the project root itself - `<project>/agents.toml`, not
-/// inside `<project>/.agents`.
-fn dotagents_file_dir(rt: &Runtime, scope: &RootScope) -> PathBuf {
-    match scope {
-        RootScope::Global => rt.scope.home.lexical.join(".agents"),
-        RootScope::Project(project) => project.0.clone(),
-    }
-}
-
 /// What a `Dotagents` update decided before its journal row exists.
 struct DotagentsPlan {
     /// `agents.toml`, or the file its link resolves to, so undo restores the
@@ -136,7 +125,11 @@ fn plan_dotagents_update(
     fs: &dyn ScopeFs,
     req: &UpdateRequest,
 ) -> Result<DotagentsPlan, CoreError> {
-    let dir = dotagents_file_dir(rt, &req.scope);
+    let project = match &req.scope {
+        RootScope::Global => None,
+        RootScope::Project(project) => Some(project.0.as_path()),
+    };
+    let dir = crate::dotagents_ledger::dotagents_dir(&rt.scope.home.lexical, project);
     let config = crate::ports::resolve_config_link(fs, &dir.join("agents.toml"))?;
     let text = match fs.read_capped(&config, crate::dotagents_ledger::DOTAGENTS_FILE_MAX_BYTES) {
         Ok(bytes) => String::from_utf8(bytes).map_err(|e| {

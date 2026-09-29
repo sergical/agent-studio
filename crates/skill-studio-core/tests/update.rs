@@ -943,3 +943,90 @@ fn update_leaves_a_real_folder_the_cli_wrote_in_place_or_names_the_deleted_folde
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// Flow: a project-scope dotagents update where dotagents keeps
+/// `agents.toml` and `agents.lock` in the project root (`resolveScope`),
+/// with a pinned ref, then undo.
+/// Expectation: `<project>/agents.toml` gets the new ref, the CLI runs
+/// `--project install` with the project as cwd, and undo restores both root
+/// files.
+/// A failure here means the update looks for `<project>/.agents/agents.toml`
+/// and refuses a project skill dotagents itself manages, or undo leaves the
+/// root lock rewritten.
+#[test]
+fn project_dotagents_update_edits_the_project_root_agents_toml_runs_project_install_and_undo_restores_both_files(
+) {
+    let home = unique_temp_dir("update_dotagents_project_root");
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    seed_installed_skill(&project, "delta", "v1");
+    std::fs::write(project.join("agents.toml"), DECLARED_TOML).unwrap();
+    std::fs::write(project.join("agents.lock"), LOCK_BEFORE).unwrap();
+
+    let spawner = Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"));
+    let mut scope = RuntimeScope::fixture(&home);
+    scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
+        paths: vec![project.clone()],
+    };
+    let ports = Ports {
+        fs: Arc::new(RealFs::new()),
+        clock: Arc::new(FakeClock::at(0)),
+        ids: Arc::new(FakeIds::default()),
+        leases: Arc::new(FileLease::new(home.join(".leases"))),
+        history: Arc::new(SqliteHistoryOpener::new(
+            home.join(".history").join("events.sqlite3"),
+        )),
+        sink: Arc::new(RecordingSink::default()),
+        spawner: Some(spawner.clone()),
+        discovery: None,
+        tools: None,
+        catalog: Arc::new(HarnessCatalog::builtin()),
+        telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
+    };
+    let rt = Runtime::new(&scope, ports).unwrap();
+
+    let mut req = cli_request("delta", InstallMethod::Dotagents);
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+    req.ref_pin = Some("bbb".to_string());
+    let outcome = ops::update(&rt, &ctx(), &req).unwrap();
+
+    let recorded = spawner.recorded.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(
+        recorded[0].0,
+        vec!["-y", "@sentry/dotagents", "--project", "install"]
+    );
+    assert_eq!(recorded[0].1.as_deref(), Some(project.as_path()));
+    drop(recorded);
+
+    assert_eq!(
+        std::fs::read_to_string(project.join("agents.toml")).unwrap(),
+        DECLARED_TOML.replace("ref = \"aaa\"", "ref = \"bbb\"")
+    );
+    assert_ne!(
+        std::fs::read_to_string(project.join("agents.lock")).unwrap(),
+        LOCK_BEFORE,
+        "the fake install must have rewritten the lock, or this test proves nothing about undo"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap_or_else(|e| panic!("undo of a project dotagents update must succeed: {e}"));
+
+    assert_eq!(
+        std::fs::read_to_string(project.join("agents.toml")).unwrap(),
+        DECLARED_TOML
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("agents.lock")).unwrap(),
+        LOCK_BEFORE
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}

@@ -11,7 +11,7 @@
 //! pass the already-normalized `agents_dir`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -114,6 +114,18 @@ pub fn github_repo_from_source(source: &str) -> Option<String> {
         Some(source.to_string())
     } else {
         None
+    }
+}
+
+/// The directory holding a scope's `agents.toml` and `agents.lock`, where
+/// `dotagents [--project]` itself puts them (`dotagents/dist/scope.js`'s
+/// `resolveScope`): `<home>/.agents` globally, and for a project the project
+/// root itself - `<project>/agents.toml`, not inside `<project>/.agents`.
+/// The skills.sh lock files do not follow this rule.
+pub fn dotagents_dir(home: &Path, project: Option<&Path>) -> PathBuf {
+    match project {
+        Some(project) => project.to_path_buf(),
+        None => home.join(".agents"),
     }
 }
 

@@ -1025,6 +1025,59 @@ mod tests {
         assert_eq!(req.skill.0, "accepted");
     }
 
+    #[test]
+    fn build_update_request_accepts_a_project_dotagents_skill_declared_in_the_project_root_or_names_the_refusal(
+    ) {
+        use skill_studio_core::dto::InstallMethod;
+        use skill_studio_core::identity::RootScope;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("proj");
+        let app_data = tmp.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+        let _home_guard = super::super::test_support::HomeGuard::new(&home);
+
+        std::fs::create_dir_all(&home).unwrap();
+        let skill_dir = project.join(".agents/skills/alpha");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "body").unwrap();
+        // dotagents --project writes these in the project root, not `.agents/`.
+        std::fs::write(
+            project.join("agents.toml"),
+            "[[skills]]\nname = \"alpha\"\nsource = \"o/r\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("agents.lock"),
+            "[skills.alpha]\nsource = \"o/r\"\nresolved_path = \"skills/alpha\"\nresolved_commit = \"aaa\"\n",
+        )
+        .unwrap();
+
+        let mut snapshot = discovered_dotagents_snapshot(&home, std::slice::from_ref(&project));
+        snapshot.projects = vec![project.to_string_lossy().to_string()];
+        let skill = snapshot
+            .skills
+            .iter()
+            .find(|s| s.name == "alpha")
+            .expect("the scan lists the project skill");
+        let deployment = skill
+            .deployments
+            .iter()
+            .find(|d| d.owner_kind == super::super::skill_ownership::LifecycleOwnerKind::Dotagents)
+            .expect("the project skill is dotagents-owned");
+        assert_eq!(deployment.scope, "project");
+
+        let req = build_update_request(&app_data, &snapshot, skill, deployment)
+            .unwrap_or_else(|e| panic!("project dotagents skill must be accepted, got: {e}"));
+        assert_eq!(req.method, InstallMethod::Dotagents);
+        assert_eq!(
+            req.scope,
+            RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()))
+        );
+        assert_eq!(req.source.as_deref(), Some("o/r"));
+    }
+
     /// A `ProcessSpawner`/runtime-builder pair for the thread-recording
     /// test below - mirrors `harness_first_run.rs`'s
     /// `ThreadRecordingSpawner`/`detect_with_runtime` test, adapted to
