@@ -169,6 +169,18 @@ impl ScopeFs for RealFs {
         std::os::unix::fs::symlink(target.as_path(), link.as_path())
     }
 
+    fn symlink_relative(
+        &self,
+        _guard: &ExclusiveGuard,
+        _target: &ScopedPath,
+        relative_target: &Path,
+        link: &ScopedPath,
+    ) -> io::Result<()> {
+        // `relative_target` resolves from `link`'s parent to `_target`,
+        // which `confine` already proved lies inside the scope.
+        std::os::unix::fs::symlink(relative_target, link.as_path())
+    }
+
     fn fsops_device_inode(&self, path: &Path) -> io::Result<(u64, u64)> {
         let meta = fs::symlink_metadata(path)?;
         Ok((meta.dev(), meta.ino()))
