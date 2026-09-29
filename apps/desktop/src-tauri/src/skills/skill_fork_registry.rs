@@ -597,6 +597,7 @@ mod tests {
             trust_identity: None,
             trust_confirmed: false,
             save_as_preference: false,
+            link_mode: skill_studio_core::dto::InstallLinkMode::Link,
         };
         skill_studio_core::ops::install(&rt, &skill_studio_core::testing::golden::ctx(), &req)
             .unwrap();

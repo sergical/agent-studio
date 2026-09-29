@@ -340,6 +340,7 @@ fn park_unpark_harness_toggle_and_install_each_appear_in_history_and_park_undo_r
             trust_identity: None,
             trust_confirmed: false,
             save_as_preference: false,
+            link_mode: skill_studio_core::dto::InstallLinkMode::Link,
         },
     )
     .unwrap();

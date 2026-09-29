@@ -1089,6 +1089,7 @@ mod tests {
                 trust_identity: None,
                 trust_confirmed: false,
                 save_as_preference: false,
+                link_mode: skill_studio_core::dto::InstallLinkMode::Link,
             };
             let result = ops::install(&rt, &ctx, &req);
             let envelope = ResultEnvelope::from_result(Operation::Install, &rt.scope, &ctx, result);

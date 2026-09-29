@@ -1021,6 +1021,7 @@ mod tests {
             destination: SkillDestination::Universal,
             agents: vec![],
             disabled_harnesses: vec![],
+            link_mode: skill_studio_core::dto::InstallLinkMode::Link,
             scope: InstallScope::Global,
             project_path: None,
         }
@@ -1355,6 +1356,7 @@ mod tests {
                 destination: SkillDestination::Universal,
                 agents: vec![],
                 disabled_harnesses: vec![],
+                link_mode: skill_studio_core::dto::InstallLinkMode::Link,
                 scope: InstallScope::Global,
                 project_path: None,
             };
@@ -1460,6 +1462,7 @@ mod tests {
             destination: SkillDestination::Universal,
             agents: vec![],
             disabled_harnesses: vec![],
+            link_mode: skill_studio_core::dto::InstallLinkMode::Link,
             scope: InstallScope::Global,
             project_path: None,
         };
