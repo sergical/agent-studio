@@ -13,9 +13,9 @@ import { useAppStore } from "../../store/appStore";
 import {
   bulkActionToast,
   bulkProgressLabel,
-  bulkRemovalTarget,
+  bulkRemovalTargets,
   bulkUpdateResult,
-  bulkUpdateTarget,
+  bulkUpdateTargets,
   planBulkAction,
   runBulkSequentially,
 } from "./skill-bulk-actions";
@@ -23,13 +23,16 @@ import type { BulkAction, BulkRunResult } from "./skill-bulk-actions";
 import { runBatchAction } from "./skill-bulk-run";
 
 async function runRemoval(skill: InstalledSkill): Promise<void> {
-  const target = bulkRemovalTarget(skill);
-  if (!target) throw new Error("No removable copy.");
-  await removeSkill(target);
+  const targets = bulkRemovalTargets(skill);
+  if (targets.length === 0) throw new Error("No removable copy.");
+  for (const target of targets) {
+    // react-doctor-disable-next-line react-doctor/async-await-in-loop -- each core op takes an exclusive lease, so the calls must not overlap
+    await removeSkill(target);
+  }
 }
 
 async function runUpdateBatch(skills: InstalledSkill[]): Promise<BulkRunResult> {
-  const targets = skills.flatMap((skill) => bulkUpdateTarget(skill) ?? []);
+  const targets = skills.flatMap(bulkUpdateTargets);
   return bulkUpdateResult(skills, await updateAllSkills(targets));
 }
 

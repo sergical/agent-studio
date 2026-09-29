@@ -8,7 +8,7 @@
 
 import type { InstalledSkill, InvocationPolicy, LifecycleTarget, Toast } from "@skill-studio/lib";
 import {
-  skillLifecycleScopeSelection,
+  skillMutableLifecycleScopes,
   skillParkVerb,
   skillRemovalAvailability,
   skillUpdateAvailability,
@@ -63,17 +63,17 @@ function skipReason(skill: InstalledSkill, action: BulkAction): string | null {
       return files.length === 0 ? "no SKILL.md to edit" : "no editable file";
     }
     case "update": {
-      const selection = skillLifecycleScopeSelection(skill);
-      if (!selection) return "no managed copy";
-      if (skillUpdateAvailability(skill, selection).available) return null;
+      if (skillMutableLifecycleScopes(skill).length === 0) return "no managed copy";
+      if (bulkUpdateTargets(skill).length > 0) return null;
       return skillUpdateOwnerTargets(skill).length === 0
         ? "no update available"
         : "needs a specific location";
     }
     case "remove": {
-      const selection = skillLifecycleScopeSelection(skill);
-      if (!selection) return "no removable copy";
-      return skillRemovalAvailability(skill, selection).available ? null : "needs a specific copy";
+      const scopes = skillMutableLifecycleScopes(skill);
+      if (scopes.length === 0) return "no removable copy";
+      // Every location must be removable, or "removed" would leave a copy behind.
+      return bulkRemovalTargets(skill).length === scopes.length ? null : "needs a specific copy";
     }
   }
 }
@@ -89,18 +89,20 @@ export function planBulkAction(skills: InstalledSkill[], action: BulkAction): Bu
   return plan;
 }
 
-/** The update target of a skill `planBulkAction` accepted for "update". */
-export function bulkUpdateTarget(skill: InstalledSkill): LifecycleTarget | null {
-  const selection = skillLifecycleScopeSelection(skill);
-  const availability = selection && skillUpdateAvailability(skill, selection);
-  return availability?.available ? availability.target : null;
+/** The update targets of a skill `planBulkAction` accepted for "update": one per location with an update. */
+export function bulkUpdateTargets(skill: InstalledSkill): LifecycleTarget[] {
+  return skillMutableLifecycleScopes(skill).flatMap((selection) => {
+    const availability = skillUpdateAvailability(skill, selection);
+    return availability.available ? [availability.target] : [];
+  });
 }
 
-/** The removal target of a skill `planBulkAction` accepted for "remove". */
-export function bulkRemovalTarget(skill: InstalledSkill): LifecycleTarget | null {
-  const selection = skillLifecycleScopeSelection(skill);
-  const availability = selection && skillRemovalAvailability(skill, selection);
-  return availability?.available ? availability.preview.target : null;
+/** The removal targets of a skill `planBulkAction` accepted for "remove": one per location. */
+export function bulkRemovalTargets(skill: InstalledSkill): LifecycleTarget[] {
+  return skillMutableLifecycleScopes(skill).flatMap((selection) => {
+    const availability = skillRemovalAvailability(skill, selection);
+    return availability.available ? [availability.preview.target] : [];
+  });
 }
 
 /**
@@ -130,19 +132,21 @@ export async function runBulkSequentially(
   return result;
 }
 
-/** Turns an `updateAllSkills` outcome into a run result: an item without an outcome failed. */
+/**
+ * Turns an `updateAllSkills` outcome into a run result: an item without an
+ * outcome failed, and a skill with several location items fails if any one did.
+ */
 export function bulkUpdateResult(
   skills: InstalledSkill[],
   outcome: { items: { skill: string; outcome: unknown }[]; errors: Record<string, string> },
 ): BulkRunResult {
   const result: BulkRunResult = { succeeded: [], failed: [] };
-  const itemsBySkill = new Map(outcome.items.map((item) => [item.skill, item]));
   for (const skill of skills) {
-    const item = itemsBySkill.get(skill.name);
+    const items = outcome.items.filter((item) => item.skill === skill.name);
     const error = outcome.errors[skill.name];
-    if (error !== undefined || (item && item.outcome === null)) {
+    if (error !== undefined || items.some((item) => item.outcome === null)) {
       result.failed.push({ skill, error: error ?? "Update failed without an error message." });
-    } else if (item) {
+    } else if (items.length > 0) {
       result.succeeded.push(skill);
     } else {
       result.failed.push({ skill, error: "The update returned no result for this skill." });
