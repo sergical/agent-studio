@@ -211,6 +211,24 @@ impl ScopeFs for RealFs {
         file.write_all(bytes)
     }
 
+    fn fsops_write_new_file_with_mode(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        mode: u32,
+    ) -> io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(path)?;
+        file.write_all(bytes)?;
+        // The umask already masked the create mode above.
+        file.set_permissions(fs::Permissions::from_mode(mode))
+    }
+
     fn fsops_rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         fs::rename(from, to)
     }

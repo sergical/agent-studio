@@ -240,6 +240,14 @@ impl ScopeFs for ScopedReads<'_> {
     fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         self.inner.fsops_write_new_file(path, bytes)
     }
+    fn fsops_write_new_file_with_mode(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        mode: u32,
+    ) -> std::io::Result<()> {
+        self.inner.fsops_write_new_file_with_mode(path, bytes, mode)
+    }
     fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         self.inner.fsops_rename(from, to)
     }
@@ -341,6 +349,14 @@ pub trait ScopeFs: Send + Sync {
     /// [`crate::fsops::write_file`], which goes through a temp name and a
     /// rename instead.
     fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
+    /// [`Self::fsops_write_new_file`] that leaves the file with exactly the
+    /// `mode` permission bits, whatever the process umask is.
+    fn fsops_write_new_file_with_mode(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        mode: u32,
+    ) -> std::io::Result<()>;
     /// Renames within one filesystem, confined by the caller's own
     /// [`crate::fsops::Root`] rather than a [`ScopedPath`].
     fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()>;
@@ -579,17 +595,17 @@ pub trait HistoryStore: Send {
     /// [`Self::read_manifest`]. Never called for an absent entry.
     fn read_backup_bytes(&self, backup_dir: &str, relative: &str) -> Result<Vec<u8>, CoreError>;
     /// Lists every regular file under `relative` inside `backup_dir`
-    /// (recursively, paths relative to `relative` itself) with its bytes.
-    /// Used only when [`Self::read_manifest`] names a directory entry: a
-    /// restore of a directory reads the whole subtree this way and replays
-    /// it with [`crate::fsops::stage`]. A symlink inside the backed-up tree
-    /// is an [`crate::error::ErrorCode::Unsupported`] error; nothing writes
-    /// one into a skill folder today.
+    /// (recursively, paths relative to `relative` itself) with its bytes and
+    /// permission bits. Used only when [`Self::read_manifest`] names a
+    /// directory entry: a restore of a directory reads the whole subtree
+    /// this way and replays it with [`crate::fsops::stage_files`]. A symlink
+    /// inside the backed-up tree is an
+    /// [`crate::error::ErrorCode::Unsupported`] error.
     fn read_backup_files(
         &self,
         backup_dir: &str,
         relative: &str,
-    ) -> Result<Vec<(PathBuf, Vec<u8>)>, CoreError>;
+    ) -> Result<Vec<crate::fsops::StageFile>, CoreError>;
     /// Merges `patch`'s top-level keys into an already-recorded event's
     /// payload, leaving every other key as-is. For best-effort follow-up
     /// work a mutation performs after its own row already exists (e.g.

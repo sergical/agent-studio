@@ -152,6 +152,15 @@ impl ScopeFs for CountingFs {
     fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         self.inner().fsops_write_new_file(path, bytes)
     }
+    fn fsops_write_new_file_with_mode(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        mode: u32,
+    ) -> std::io::Result<()> {
+        self.inner()
+            .fsops_write_new_file_with_mode(path, bytes, mode)
+    }
     fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         self.inner().fsops_rename(from, to)
     }

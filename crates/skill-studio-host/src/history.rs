@@ -6,6 +6,7 @@
 
 use std::fs::{self, File};
 use std::io::Write as _;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -16,6 +17,7 @@ use skill_studio_core::error::{CoreError, ErrorCode};
 use skill_studio_core::events::{
     BackupEntry, BackupManifest, EventDraft, EventFilter, EventRecord, EventStatus,
 };
+use skill_studio_core::fsops::StageFile;
 use skill_studio_core::identity::{sha256_hex, AgentId, EventId, Fingerprint, SkillName};
 use skill_studio_core::ports::{ExclusiveGuard, HistoryAccess, HistoryOpener, HistoryStore};
 use skill_studio_core::scope::NormalizedScope;
@@ -511,7 +513,7 @@ impl HistoryStore for SqliteHistoryStore {
         &self,
         backup_dir: &str,
         relative: &str,
-    ) -> Result<Vec<(PathBuf, Vec<u8>)>, CoreError> {
+    ) -> Result<Vec<StageFile>, CoreError> {
         let root = self.root.join(backup_dir).join(relative);
         let mut out = Vec::new();
         read_backup_files_into(&root, &root, &mut out)?;
@@ -520,12 +522,13 @@ impl HistoryStore for SqliteHistoryStore {
 }
 
 /// Recursion for [`SqliteHistoryStore::read_backup_files`]: walks `dir`
-/// (under `root`) and appends `(path relative to root, bytes)` for every
-/// regular file. A symlink is an error - see the trait method's own doc.
+/// (under `root`) and appends every regular file with its path relative to
+/// `root`, its bytes, and its permission bits (the backup is an `fs::copy`,
+/// which keeps them). A symlink is an error - see the trait method's own doc.
 fn read_backup_files_into(
     root: &Path,
     dir: &Path,
-    out: &mut Vec<(PathBuf, Vec<u8>)>,
+    out: &mut Vec<StageFile>,
 ) -> Result<(), CoreError> {
     let mut entries: Vec<_> = fs::read_dir(dir)
         .map_err(|e| CoreError::io(dir, e))?
@@ -547,7 +550,11 @@ fn read_backup_files_into(
         } else {
             let bytes = fs::read(&path).map_err(|e| CoreError::io(&path, e))?;
             let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-            out.push((relative, bytes));
+            out.push(StageFile {
+                relative,
+                bytes,
+                mode: Some(meta.permissions().mode() & 0o777),
+            });
         }
     }
     Ok(())
@@ -1272,8 +1279,8 @@ mod tests {
         let mut files = store
             .read_backup_files(&written.backup_dir, &entry.relative)
             .unwrap();
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-        let names: Vec<_> = files.iter().map(|(path, _)| path.clone()).collect();
+        files.sort_by(|a, b| a.relative.cmp(&b.relative));
+        let names: Vec<_> = files.iter().map(|f| f.relative.clone()).collect();
         assert_eq!(
             names,
             vec![
@@ -1286,9 +1293,9 @@ mod tests {
         assert_eq!(
             files
                 .iter()
-                .find(|(p, _)| p == Path::new("SKILL.md"))
+                .find(|f| f.relative == Path::new("SKILL.md"))
                 .unwrap()
-                .1,
+                .bytes,
             b"top",
             "each entry's bytes must be the real file contents, not a placeholder"
         );

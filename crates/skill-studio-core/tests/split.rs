@@ -342,3 +342,60 @@ fn split_opencode_copy_follows_the_configured_opencode_root() {
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+/// Flow: split a skill whose `scripts/check.sh` is 0755, then undo the
+/// split. Expect each copy's script and the restored Universal script to
+/// stay 0755. Catches a copy or restore that writes files with the default
+/// 0644, so the skill's script stops being runnable.
+#[test]
+fn split_and_its_undo_keep_a_script_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = unique_temp_dir("split_exec_bits");
+    splittable_home(&home);
+    let script = universal(&home).join("scripts/check.sh");
+    std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+    std::fs::write(&script, b"#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+
+    let outcome = ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["claude-code", "codex"]),
+        },
+    )
+    .unwrap();
+    for copy in [claude_copy(&home), codex_copy(&home)] {
+        assert_eq!(
+            mode_of(&copy.join("scripts/check.sh")),
+            0o755,
+            "{} lost its executable bits",
+            copy.display()
+        );
+    }
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        mode_of(&script),
+        0o755,
+        "the restored Universal script lost its executable bits"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}

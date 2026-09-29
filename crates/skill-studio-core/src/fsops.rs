@@ -311,6 +311,49 @@ pub fn stage(
     plan: &PlanWriter<'_>,
     contents: &[(PathBuf, Vec<u8>)],
 ) -> Result<Staged, FsOpsError> {
+    stage_entries(
+        root,
+        plan,
+        contents
+            .iter()
+            .map(|(relative, bytes)| (relative.as_path(), bytes.as_slice(), None)),
+    )
+}
+
+/// One file to write into a staged folder, with the permission bits it had
+/// where it was read from. `mode` is `None` for bytes that never had a file
+/// of their own, which get the process default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageFile {
+    /// Path inside the staged folder.
+    pub relative: PathBuf,
+    /// File contents.
+    pub bytes: Vec<u8>,
+    /// The `0o777` permission bits to give the written file.
+    pub mode: Option<u32>,
+}
+
+/// [`stage`] for files that carry their own permission bits, so a restored
+/// or copied `scripts/check.sh` stays executable.
+pub fn stage_files(
+    root: &Root,
+    plan: &PlanWriter<'_>,
+    contents: &[StageFile],
+) -> Result<Staged, FsOpsError> {
+    stage_entries(
+        root,
+        plan,
+        contents
+            .iter()
+            .map(|f| (f.relative.as_path(), f.bytes.as_slice(), f.mode)),
+    )
+}
+
+fn stage_entries<'c>(
+    root: &Root,
+    plan: &PlanWriter<'_>,
+    contents: impl Iterator<Item = (&'c Path, &'c [u8], Option<u32>)>,
+) -> Result<Staged, FsOpsError> {
     root.revalidate()?;
     let tmp_name = PathBuf::from(format!(".skill-studio-stage-{}", unique_suffix()));
     let tmp_path = root.confine(&tmp_name)?;
@@ -321,7 +364,7 @@ pub fn stage(
     root.fs.fsops_create_dir(&tmp_path).fs_err(&tmp_path)?;
 
     let mut created_dirs = vec![tmp_path.clone()];
-    for (relative, bytes) in contents {
+    for (relative, bytes, mode) in contents {
         if relative.is_absolute()
             || relative
                 .components()
@@ -342,9 +385,13 @@ pub fn stage(
             }
         }
         let file_path = tmp_path.join(relative);
-        root.fs
-            .fsops_write_new_file(&file_path, bytes)
-            .fs_err(&file_path)?;
+        match mode {
+            Some(mode) => root
+                .fs
+                .fsops_write_new_file_with_mode(&file_path, bytes, mode),
+            None => root.fs.fsops_write_new_file(&file_path, bytes),
+        }
+        .fs_err(&file_path)?;
         root.fs.fsops_fsync_file(&file_path).fs_err(&file_path)?;
     }
 

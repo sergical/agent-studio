@@ -322,7 +322,7 @@ struct SplitWrites<'a> {
     links: &'a [PathBuf],
     scoped_links: &'a [crate::ports::ScopedPath],
     copies: &'a [SplitCopy],
-    files: &'a [(PathBuf, Vec<u8>)],
+    files: &'a [crate::fsops::StageFile],
     universal: &'a Path,
     quarantine_dir: &'a Path,
     quarantine_target: &'a Path,

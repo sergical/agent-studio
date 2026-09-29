@@ -4419,10 +4419,10 @@ enum RestorePlan {
     Write(Vec<u8>),
     /// A directory's files to write back, read from the original event's
     /// backup, paths relative to the directory itself. Applied through
-    /// [`fsops::stage`]/[`fsops::swap`] (see [`restore_event`]'s mutation
-    /// step) rather than [`ScopeFs::write_atomic`], which only ever writes
-    /// one file.
-    WriteDir(Vec<(PathBuf, Vec<u8>)>),
+    /// [`fsops::stage_files`]/[`fsops::swap`] (see [`restore_event`]'s
+    /// mutation step) rather than [`ScopeFs::write_atomic`], which only ever
+    /// writes one file.
+    WriteDir(Vec<fsops::StageFile>),
 }
 
 /// [`RestorePlan::WriteDir`]'s mutation step: stages `files` beside `path`
@@ -4436,7 +4436,7 @@ pub(crate) fn restore_write_dir(
     rt: &Runtime,
     guard: &ExclusiveGuard,
     path: &Path,
-    files: &[(PathBuf, Vec<u8>)],
+    files: &[fsops::StageFile],
 ) -> Result<(), CoreError> {
     let universal_root = path.parent().ok_or_else(|| {
         CoreError::new(ErrorCode::Io, "restore target has no parent directory").at(path)
@@ -4463,7 +4463,7 @@ pub(crate) fn restore_write_dir(
     )
     .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()))?;
 
-    let staged = fsops::stage(&root, &plan, files)
+    let staged = fsops::stage_files(&root, &plan, files)
         .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
     // Same directory the doctor prune and check sweep, not a
     // restore-specific name - see `ops_update`'s module doc for the same
