@@ -120,7 +120,7 @@ impl ProcessSpawner for FakeNpxUpdateSpawner {
                 if link.symlink_metadata().is_err() {
                     std::fs::create_dir_all(link.parent().unwrap()).unwrap();
                     #[cfg(unix)]
-                    std::os::unix::fs::symlink(&dir_of(&cwd, &skill), &link).unwrap();
+                    std::os::unix::fs::symlink(dir_of(&cwd, &skill), &link).unwrap();
                 }
             }
             for dir in &self.copies_into {

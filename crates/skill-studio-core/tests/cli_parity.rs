@@ -306,6 +306,20 @@ const KNOWN_DIVERGENCES: &[Divergence] = &[
     // Trace 04's `InstallOutcome` divergence (an unknown `cursor` id reported
     // as installed) was removed once `install` learned every harness it can
     // write for and passed one `--agent` token per requested harness.
+    Divergence {
+        trace: "06-update-newer-source",
+        field: "on-disk path",
+        cli_value: ".claude/skills/academy-guide -> ../../.agents/skills/academy-guide",
+        core_value: ".claude/skills",
+        reason: "`npx skills update` links the skill into Claude Code even when Claude Code had no copy; `ops::update` removes the links it added so an update never turns a harness on",
+    },
+    Divergence {
+        trace: "07-update-already-current",
+        field: "on-disk path",
+        cli_value: ".claude/skills/academy-guide -> ../../.agents/skills/academy-guide",
+        core_value: ".claude/skills",
+        reason: "same as 06: the update removes a harness link the CLI added for a harness that did not have the skill",
+    },
 ];
 
 fn divergence(trace: &str, field: &str) -> Option<&'static Divergence> {
