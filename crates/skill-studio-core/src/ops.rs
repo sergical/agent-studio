@@ -1261,7 +1261,13 @@ fn process_entries(
         };
 
         let disabled_by = cx.forced_disabled_by.or_else(|| {
-            native_disabled_by(cx.disable_sources, &cx.target.kind, &skill_dir, &entry.name)
+            native_disabled_by(
+                cx.fs,
+                cx.disable_sources,
+                &cx.target.kind,
+                &skill_dir,
+                &entry.name,
+            )
         });
 
         let source_kind = source_kind_from_owner(owner_kind);
@@ -1684,10 +1690,9 @@ fn walk_for_plugin_roots(
 /// Codex and `OpenCode`'s own per-skill disable switches, read once per
 /// `scan` call (they are global config files, not per-root).
 struct DisableSources {
-    /// Canonical `SKILL.md` paths Codex's `[[skills.config]] enabled =
-    /// false` rows name. Mirrors `codex_skill_config.rs`
-    /// `read_disabled_skill_md_paths`.
-    codex_disabled_skill_md: Vec<PathBuf>,
+    /// [`codex_disabled_skill_md_paths`]: the `SKILL.md` paths Codex treats
+    /// as off, in [`codex_path_form`].
+    codex_disabled_skill_md: std::collections::BTreeSet<PathBuf>,
     /// `permission.skill` (v1) and `permissions[]` (v2) skill rules
     /// `opencode.json` holds, from [`crate::opencode_config::read_skill_rules`]
     /// - the same read the write path and every adapter use, so a scan and
@@ -1708,7 +1713,7 @@ impl DisableSources {
         let opencode_config_dir = opencode_config_root
             .map_or_else(|| home.join(".config").join("opencode"), Path::to_path_buf);
         DisableSources {
-            codex_disabled_skill_md: read_codex_disabled_skill_md_paths(fs, codex_home),
+            codex_disabled_skill_md: codex_disabled_skill_md_paths(fs, codex_home),
             opencode_skill_rules: crate::opencode_config::read_skill_rules(
                 fs,
                 &opencode_config_dir,
@@ -1718,30 +1723,71 @@ impl DisableSources {
     }
 }
 
-fn read_codex_disabled_skill_md_paths(fs: &dyn ScopeFs, codex_home: &Path) -> Vec<PathBuf> {
-    let path = codex_home.join("config.toml");
-    let Ok(bytes) = fs.read_capped(&path, SKILL_MD_MAX_BYTES) else {
-        return Vec::new();
+/// Every `SKILL.md` path `<codex_home>/config.toml` turns off, in
+/// [`codex_path_form`]. Follows Codex's own rule (`codex-rs/config`
+/// `resolve_disabled_paths`): rows apply in order, `enabled = false` turns a
+/// path off, and a later `enabled = true` (also the default when the key is
+/// missing) turns it back on. A missing or unparsable file yields an empty
+/// set. The scan and the desktop overlay both read through here, so they
+/// agree with the switch writer on what "off" means.
+pub fn codex_disabled_skill_md_paths(
+    fs: &dyn ScopeFs,
+    codex_home: &Path,
+) -> std::collections::BTreeSet<PathBuf> {
+    let Ok(bytes) = fs.read_capped(&codex_config_path(codex_home), SKILL_MD_MAX_BYTES) else {
+        return Default::default();
     };
     let Ok(text) = String::from_utf8(bytes) else {
-        return Vec::new();
+        return Default::default();
     };
-    // `toml::Value::from_str` parses one value literal, not a document;
-    // `toml::Table` is the document-level parser.
-    let Ok(table) = text.parse::<toml::Table>() else {
-        return Vec::new();
+    let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else {
+        return Default::default();
     };
-    let value = toml::Value::Table(table);
-    value
-        .get("skills")
-        .and_then(|s| s.get("config"))
-        .and_then(|c| c.as_array())
-        .into_iter()
-        .flatten()
-        .filter(|row| row.get("enabled").and_then(toml::Value::as_bool) == Some(false))
-        .filter_map(|row| row.get("path").and_then(toml::Value::as_str))
-        .map(PathBuf::from)
-        .collect()
+    codex_disabled_forms(fs, &doc)
+}
+
+fn codex_disabled_forms(
+    fs: &dyn ScopeFs,
+    doc: &toml_edit::DocumentMut,
+) -> std::collections::BTreeSet<PathBuf> {
+    let mut disabled = std::collections::BTreeSet::new();
+    for row in codex_skills_config_rows(doc) {
+        let Some(path) = row.get("path").and_then(toml_edit::Item::as_str) else {
+            continue;
+        };
+        let form = codex_path_form(fs, Path::new(path));
+        if row.get("enabled").and_then(toml_edit::Item::as_bool) == Some(false) {
+            disabled.insert(form);
+        } else {
+            disabled.remove(&form);
+        }
+    }
+    disabled
+}
+
+/// The form Codex compares `[[skills.config]]` paths in: it canonicalizes
+/// both the row's path and the skill's `SKILL.md` before it matches them. A
+/// path that no longer exists (a park's old path, after the move) takes the
+/// canonical form of its nearest existing ancestor, so a row written
+/// through a symlinked parent still matches it.
+pub fn codex_path_form(fs: &dyn ScopeFs, path: &Path) -> PathBuf {
+    let mut missing_tail = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(canonical) = fs.canonicalize(current) {
+            return missing_tail
+                .iter()
+                .rev()
+                .fold(canonical, |acc, part| acc.join(part));
+        }
+        match (current.parent(), current.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing_tail.push(name.to_os_string());
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 /// `<codex_home>/config.toml`.
@@ -1792,12 +1838,23 @@ fn codex_skills_config_rows(
         .flatten()
 }
 
-/// Index of the `[[skills.config]]` row whose `path` matches `skill_md_path`,
-/// if any.
-fn codex_find_row_index(doc: &toml_edit::DocumentMut, skill_md_path: &Path) -> Option<usize> {
-    let target = skill_md_path.to_string_lossy();
+/// Indexes of every `[[skills.config]]` row whose `path` names
+/// `skill_md_path` once both are in [`codex_path_form`], in document order.
+fn codex_find_row_indices(
+    fs: &dyn ScopeFs,
+    doc: &toml_edit::DocumentMut,
+    skill_md_path: &Path,
+) -> Vec<usize> {
+    let target = codex_path_form(fs, skill_md_path);
     codex_skills_config_rows(doc)
-        .position(|row| row.get("path").and_then(toml_edit::Item::as_str) == Some(target.as_ref()))
+        .enumerate()
+        .filter(|(_, row)| {
+            row.get("path")
+                .and_then(toml_edit::Item::as_str)
+                .is_some_and(|path| codex_path_form(fs, Path::new(path)) == target)
+        })
+        .map(|(idx, _)| idx)
+        .collect()
 }
 
 /// Converts a removed table header's surrounding text into text that can sit
@@ -1946,7 +2003,7 @@ pub fn set_codex_skill_disabled_with(
     let fs = rt.ports.fs.as_ref();
     let codex_home = &rt.scope.codex_home;
     let mut doc = read_codex_config_document(fs, codex_home)?;
-    codex_write_disabled_row(&mut doc, skill_md_path, disabled)
+    codex_write_disabled_row(fs, &mut doc, skill_md_path, disabled)
         .map_err(|e| e.at(codex_config_path(codex_home)))?;
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
@@ -1958,34 +2015,36 @@ pub fn set_codex_skill_disabled_with(
 /// wrote there themselves - a string, an inline table, and so on - that a
 /// disable row can't be inserted into.
 fn codex_write_disabled_row(
+    fs: &dyn ScopeFs,
     doc: &mut toml_edit::DocumentMut,
     skill_md_path: &Path,
     disabled: bool,
 ) -> Result<(), CoreError> {
-    let existing = codex_find_row_index(doc, skill_md_path);
+    let existing = codex_find_row_indices(fs, doc, skill_md_path);
 
     if !disabled {
-        if let Some(idx) = existing {
+        if !existing.is_empty() {
             let (removed_decor, array_is_empty) = {
                 let Some(array) = doc["skills"]["config"].as_array_of_tables_mut() else {
-                    unreachable!(
-                        "codex_find_row_index only returns Some when this is an array of tables"
-                    );
+                    unreachable!("codex_find_row_indices only finds rows in an array of tables");
                 };
-                let removed = array.remove(idx);
-                let removed_decor = CodexOrphanedTableDecor {
-                    position: removed.position(),
-                    text: codex_table_decor_as_prefix(&removed),
-                };
-                if let Some(next_row) = array.get_mut(idx) {
-                    codex_prepend_table_decor(next_row, &removed_decor.text);
-                    (None, false)
-                } else {
-                    (Some(removed_decor), array.is_empty())
+                let mut removed_decor = Vec::new();
+                for &idx in existing.iter().rev() {
+                    let removed = array.remove(idx);
+                    let decor = CodexOrphanedTableDecor {
+                        position: removed.position(),
+                        text: codex_table_decor_as_prefix(&removed),
+                    };
+                    if let Some(next_row) = array.get_mut(idx) {
+                        codex_prepend_table_decor(next_row, &decor.text);
+                    } else {
+                        removed_decor.push(decor);
+                    }
                 }
+                (removed_decor, array.is_empty())
             };
 
-            let mut orphaned_decor = removed_decor.into_iter().collect::<Vec<_>>();
+            let mut orphaned_decor = removed_decor;
             let remove_skills = {
                 let Some(skills_table) = doc["skills"].as_table_mut() else {
                     unreachable!("skills is a table when config was");
@@ -2008,7 +2067,22 @@ fn codex_write_disabled_row(
             }
             codex_rehome_table_decor_blocks(doc, orphaned_decor);
         }
-    } else if existing.is_none() {
+    } else if !existing.is_empty() {
+        // A row the user (or Codex's own `/skills` toggle) wrote with
+        // `enabled = true` would otherwise keep the skill on; Codex applies
+        // rows in order, so every row naming this path must say false.
+        let Some(rows) = doc["skills"]["config"].as_array_of_tables_mut() else {
+            unreachable!("codex_find_row_indices only finds rows in an array of tables");
+        };
+        for idx in existing {
+            let Some(row) = rows.get_mut(idx) else {
+                unreachable!("codex_find_row_indices returned a valid index");
+            };
+            if row.get("enabled").and_then(toml_edit::Item::as_bool) != Some(false) {
+                row["enabled"] = toml_edit::value(false);
+            }
+        }
+    } else {
         let skills_item = doc
             .entry("skills")
             .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
@@ -2034,8 +2108,6 @@ fn codex_write_disabled_row(
         row["enabled"] = toml_edit::value(false);
         config_array.push(row);
     }
-    // `existing.is_some() && disabled`: already disabled, nothing to do -
-    // idempotent by construction.
     Ok(())
 }
 
@@ -2060,16 +2132,19 @@ pub(crate) fn codex_rewrite_skill_path(
     let fs = rt.ports.fs.as_ref();
     let codex_home = &rt.scope.codex_home;
     let mut doc = read_codex_config_document(fs, codex_home)?;
-    let Some(idx) = codex_find_row_index(&doc, old_skill_md) else {
+    let existing = codex_find_row_indices(fs, &doc, old_skill_md);
+    if existing.is_empty() {
         return Ok(());
-    };
+    }
     let Some(rows) = doc["skills"]["config"].as_array_of_tables_mut() else {
-        unreachable!("codex_find_row_index only returns Some when this is an array of tables");
+        unreachable!("codex_find_row_indices only finds rows in an array of tables");
     };
-    let Some(row) = rows.get_mut(idx) else {
-        unreachable!("codex_find_row_index returned a valid index");
-    };
-    row["path"] = toml_edit::value(new_skill_md.to_string_lossy().to_string());
+    for idx in existing {
+        let Some(row) = rows.get_mut(idx) else {
+            unreachable!("codex_find_row_indices returned a valid index");
+        };
+        row["path"] = toml_edit::value(new_skill_md.to_string_lossy().to_string());
+    }
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
@@ -2128,17 +2203,16 @@ fn claude_plugin_enabled(
 }
 
 fn native_disabled_by(
+    fs: &dyn ScopeFs,
     sources: &DisableSources,
     kind: &RootKind,
     skill_dir: &Path,
     name: &str,
 ) -> Option<DisabledBy> {
-    let skill_md = skill_dir.join("SKILL.md");
     match kind {
         RootKind::Harness(id) if id.as_str() == AgentId::CODEX => sources
             .codex_disabled_skill_md
-            .iter()
-            .any(|p| p == &skill_md)
+            .contains(&codex_path_form(fs, &skill_dir.join("SKILL.md")))
             .then_some(DisabledBy::CodexConfig),
         RootKind::Harness(id) | RootKind::Legacy(id) if id.as_str() == AgentId::OPEN_CODE => {
             sources
@@ -5495,28 +5569,26 @@ fn is_codex_visible_root(kind: &RootKind) -> bool {
     }
 }
 
-/// Every canonical `SKILL.md` path Codex sees for `skill`, sorted for a
-/// deterministic write order.
-fn codex_skill_md_paths(skill: &InstalledSkillDto) -> Vec<PathBuf> {
-    // `LinkedTo` deployments point at another deployment's bytes and have no
-    // `SKILL.md` of their own to toggle; `Canonical` and `Independent` both
-    // hold real bytes on disk, so both need their own row. `scan` groups
-    // every harness's copy of a skill under one `InstalledSkillDto`, so
-    // without the `is_codex_visible_root` filter this also picked up
-    // deployments at roots Codex never reads - a Claude Code copy, a parked
-    // root, and so on - writing a `[[skills.config]]` row for a path Codex
-    // never resolves, one a later enable would remove as if it were Codex's
-    // own.
+/// One `SKILL.md` path per distinct file Codex loads for `skill`, sorted for
+/// a deterministic write order.
+fn codex_skill_md_paths(fs: &dyn ScopeFs, skill: &InstalledSkillDto) -> Vec<PathBuf> {
+    // `scan` groups every harness's copy of a skill under one
+    // `InstalledSkillDto`, so without the `is_codex_visible_root` filter
+    // this also picked up deployments at roots Codex never reads - a Claude
+    // Code copy, a parked root, and so on - writing a `[[skills.config]]` row
+    // for a path Codex never resolves. A `LinkedTo` deployment stays in: when
+    // `.codex/skills` links into a folder the scan does not list on its own,
+    // it is the only path to the file. Deduplicating by [`codex_path_form`]
+    // folds a link and its target into the one row Codex matches for both.
     let mut paths: Vec<PathBuf> = skill
         .deployments
         .iter()
-        .filter(|d| {
-            d.backing != BackingRelationship::LinkedTo && is_codex_visible_root(&d.root.kind)
-        })
+        .filter(|d| is_codex_visible_root(&d.root.kind))
         .map(|d| d.path.join("SKILL.md"))
         .collect();
     paths.sort();
-    paths.dedup();
+    let mut seen_forms = HashSet::new();
+    paths.retain(|path| seen_forms.insert(codex_path_form(fs, path)));
     paths
 }
 
@@ -5536,7 +5608,7 @@ fn set_codex_switch(
     (id, kind): (&EventId, crate::events::EventKind),
     enabled: bool,
 ) -> Result<(u32, u32), CoreError> {
-    let paths = codex_skill_md_paths(skill);
+    let paths = codex_skill_md_paths(fs, skill);
     let total = u32::try_from(paths.len()).unwrap_or(u32::MAX);
     if paths.is_empty() {
         return Err(CoreError::new(
@@ -5568,9 +5640,10 @@ fn set_codex_switch(
     // it instead of reaching that.
     let already_matches = {
         let doc = read_codex_config_document(fs, &rt.scope.codex_home)?;
+        let disabled = codex_disabled_forms(fs, &doc);
         paths
             .iter()
-            .all(|path| codex_find_row_index(&doc, path).is_some() != enabled)
+            .all(|path| disabled.contains(&codex_path_form(fs, path)) != enabled)
     };
     if already_matches {
         let draft = crate::events::EventDraft {
@@ -5637,7 +5710,8 @@ fn set_codex_switch(
                     CoreError::new(ErrorCode::Io, format!("config.toml is not valid TOML: {e}"))
                         .at(&config_path)
                 })?;
-            codex_write_disabled_row(&mut doc, path, !enabled).map_err(|e| e.at(&config_path))?;
+            codex_write_disabled_row(fs, &mut doc, path, !enabled)
+                .map_err(|e| e.at(&config_path))?;
             let new_text = doc.to_string();
             fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes())
                 .map_err(|e| {

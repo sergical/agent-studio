@@ -1433,35 +1433,6 @@ pub(crate) fn opencode_config_root(home: &Path) -> PathBuf {
     }
 }
 
-/// Every canonical `SKILL.md` path Codex's own config disables, read from
-/// `<codex_home>/config.toml` `[[skills.config]]` rows with `enabled =
-/// false`. Honors `CODEX_HOME` like every other Codex path
-/// (`skill_studio_host::codex_home`). A missing or unparsable file yields an
-/// empty set - this overlay must not fail a refresh over a config Codex
-/// itself would presumably also reject. Once `skill_refresh` reads its
-/// snapshot from `ops::scan` directly rather than this legacy assembly
-/// path, this duplicate read goes away in favor of `ops::scan`'s own
-/// `DisabledBy::CodexConfig` (`docs/action-map/harnesses/codex.md`).
-fn read_codex_disabled_skill_md_paths(home: &Path) -> Vec<PathBuf> {
-    let path = skill_studio_host::codex_home(home).join("config.toml");
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-    let Ok(table) = content.parse::<toml::Table>() else {
-        return Vec::new();
-    };
-    toml::Value::Table(table)
-        .get("skills")
-        .and_then(|s| s.get("config"))
-        .and_then(|c| c.as_array())
-        .into_iter()
-        .flatten()
-        .filter(|row| row.get("enabled").and_then(toml::Value::as_bool) == Some(false))
-        .filter_map(|row| row.get("path").and_then(toml::Value::as_str))
-        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p)))
-        .collect()
-}
-
 /// Recompute registry, update, disable, and invocation fields on freshly
 /// assembled skills. Both full and targeted discovery use this same path.
 /// `pub(crate)` (rather than private) so a `commands.rs` test can rebuild
@@ -1602,13 +1573,20 @@ pub(crate) fn apply_skill_snapshot_overlays(
     // Per-harness disable: Codex and OpenCode read their own config, Claude
     // Code has no native switch so it's tracked in the registry instead -
     // see `skill_harness_disable`.
-    let codex_disabled_paths: BTreeSet<PathBuf> = read_codex_disabled_skill_md_paths(home)
-        .into_iter()
-        .collect();
-    let opencode_fs = skill_studio_host::RealFs::new();
+    let real_fs = skill_studio_host::RealFs::new();
+    let codex_disabled_paths = skill_studio_core::ops::codex_disabled_skill_md_paths(
+        &real_fs,
+        &skill_studio_host::codex_home(home),
+    );
+    let codex_disables = |deployment_path: &str| {
+        let skill_md = PathBuf::from(deployment_path).join("SKILL.md");
+        codex_disabled_paths.contains(&skill_studio_core::ops::codex_path_form(
+            &real_fs, &skill_md,
+        ))
+    };
     let opencode_config_dir = opencode_config_root(home);
     let opencode_rules =
-        skill_studio_core::opencode_config::read_skill_rules(&opencode_fs, &opencode_config_dir);
+        skill_studio_core::opencode_config::read_skill_rules(&real_fs, &opencode_config_dir);
     for skill in skills.iter_mut() {
         let open_code_deployment_count = skill
             .deployments
@@ -1622,9 +1600,7 @@ pub(crate) fn apply_skill_snapshot_overlays(
             .count();
         for deployment in &mut skill.deployments {
             if deployment.agent == "Codex" {
-                let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
-                let canonical = std::fs::canonicalize(&skill_md).unwrap_or(skill_md);
-                if codex_disabled_paths.contains(&canonical) {
+                if codex_disables(&deployment.path) {
                     deployment.disabled = true;
                     deployment.disabled_by = Some(super::skill_dto::DisabledBy::CodexConfig);
                 }
@@ -1648,9 +1624,7 @@ pub(crate) fn apply_skill_snapshot_overlays(
                 deployment.disabled = true;
                 deployment.disabled_by = Some(super::skill_dto::DisabledBy::ClaudeLinkRemoved);
             } else if deployment.agent == "shared" {
-                let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
-                let canonical = std::fs::canonicalize(&skill_md).unwrap_or(skill_md);
-                if codex_disabled_paths.contains(&canonical) {
+                if codex_disables(&deployment.path) {
                     deployment.disabled_readers.push("codex".to_string());
                 }
                 if opencode_rules.is_denied(&skill.name) {
