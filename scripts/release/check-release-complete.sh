@@ -47,6 +47,10 @@ if printf '%s\n' "$assets" | grep -qx 'latest.json'; then
   for platform in darwin-aarch64 darwin-x86_64; do
     if ! jq -e --arg p "$platform" '.platforms[$p].url and .platforms[$p].signature' "$tmp/latest.json" >/dev/null; then
       problems+=("latest.json has no url+signature entry for $platform")
+    elif ! jq -e --arg p "$platform" --arg t "/releases/download/$tag/" '.platforms[$p].url | contains($t)' "$tmp/latest.json" >/dev/null; then
+      # Draft assets carry untagged-... URLs; a manifest still naming one
+      # would point every installed app at a dead download once published.
+      problems+=("latest.json url for $platform does not point at /releases/download/$tag/")
     fi
   done
 else
