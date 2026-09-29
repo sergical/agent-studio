@@ -29,8 +29,12 @@ use super::SourceKind;
 pub enum DisabledBy {
     CodexConfig,
     OpencodePermission,
+    /// An older build's Claude Code off switch: it removed the per-skill link.
+    /// The switch now writes `skillOverrides` instead.
     ClaudeLinkRemoved,
     StudioMoved,
+    /// Claude Code `settings.json` `skillOverrides["<name>"]` set to `"off"`.
+    ClaudeSkillOverrides,
     /// Claude Code `settings.json` `enabledPlugins["<plugin>@<marketplace>"]`
     /// set to `false`.
     ClaudePluginDisabled,

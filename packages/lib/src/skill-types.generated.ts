@@ -15,7 +15,9 @@
  * skills root, for harnesses with no native switch.
  */
 export type DisabledBy =
-  | ("codex-config" | "opencode-permission" | "claude-link-removed" | "studio-moved")
+  | ("codex-config" | "opencode-permission" | "studio-moved")
+  | "claude-link-removed"
+  | "claude-skill-overrides"
   | "claude-plugin-disabled";
 /**
  * Which CLI a forked skill was originally managed by.

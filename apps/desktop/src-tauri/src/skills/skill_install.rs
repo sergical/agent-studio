@@ -1144,8 +1144,9 @@ mod tests {
     /// `disabled_harnesses` as a follow-up after `ops::install`'s own write
     /// succeeds, directly through `ops::set_harness_enabled`. Installs Claude
     /// Code linked, then disabled, and checks the disk state
-    /// `set_harness_enabled` itself mutates (the per-skill symlink under
-    /// `.claude/skills`), not just that the call returned without an error.
+    /// `set_harness_enabled` itself mutates (`skillOverrides` in
+    /// `~/.claude/settings.json`), not just that the call returned without an
+    /// error. The link stays: Claude Code's off switch no longer removes it.
     #[tokio::test]
     async fn add_skill_with_disabled_harnesses_ends_with_that_harness_switched_off_or_names_the_harness_still_enabled(
     ) {
@@ -1168,10 +1169,19 @@ mod tests {
             result.warning, None,
             "disabling claude-code right after install should not have failed"
         );
+        let settings: serde_json::Value =
+            std::fs::read_to_string(home.join(".claude/settings.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok())
+                .unwrap_or_default();
+        assert_eq!(
+            settings["skillOverrides"]["find-bugs"], "off",
+            "claude-code should end disabled in ~/.claude/settings.json, got {settings}"
+        );
         let link = home.join(".claude/skills/find-bugs");
         assert!(
-            !link.exists(),
-            "claude-code should end disabled, but {} still exists",
+            link.symlink_metadata().is_ok(),
+            "switching claude-code off must keep {}",
             link.display()
         );
     }

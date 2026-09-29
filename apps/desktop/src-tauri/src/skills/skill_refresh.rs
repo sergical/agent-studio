@@ -1599,27 +1599,34 @@ pub(crate) fn apply_skill_snapshot_overlays(
         }
     }
 
-    // Per-harness disable: Codex and OpenCode read their own config, Claude
-    // Code has no native switch so it's tracked in the registry instead -
-    // see `skill_harness_disable`.
+    // Per-harness disable: each harness's own config says whether it is off
+    // - Codex's `config.toml`, OpenCode's `opencode.json`, and Claude Code's
+    // `settings.json` `skillOverrides` (global, so it covers project rows
+    // too). Claude links an older build removed as its off switch leave no
+    // Claude Code row; the Universal row lists `claude-code` as a disabled
+    // reader instead, like any skill Claude Code cannot see.
     let codex_disabled_paths: BTreeSet<PathBuf> = read_codex_disabled_skill_md_paths(home)
         .into_iter()
         .collect();
-    let opencode_fs = skill_studio_host::RealFs::new();
+    let config_fs = skill_studio_host::RealFs::new();
     let opencode_config_dir = opencode_config_root(home);
     let opencode_rules =
-        skill_studio_core::opencode_config::read_skill_rules(&opencode_fs, &opencode_config_dir);
+        skill_studio_core::opencode_config::read_skill_rules(&config_fs, &opencode_config_dir);
+    let claude_overrides =
+        skill_studio_core::harness::read_claude_skill_overrides(&config_fs, home, None);
+    let claude_skills_dir = home.join(".claude").join("skills");
     for skill in skills.iter_mut() {
         let open_code_deployment_count = skill
             .deployments
             .iter()
             .filter(|deployment| deployment.agent == "OpenCode")
             .count();
-        let claude_deployment_count = skill
-            .deployments
-            .iter()
-            .filter(|deployment| deployment.agent == "Claude Code")
-            .count();
+        let claude_off = claude_overrides
+            .get(&skill.name)
+            .and_then(|value| value.as_str())
+            == Some("off");
+        let claude_cannot_see =
+            std::fs::symlink_metadata(claude_skills_dir.join(&skill.name)).is_err();
         for deployment in &mut skill.deployments {
             if deployment.agent == "Codex" {
                 let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
@@ -1635,19 +1642,16 @@ pub(crate) fn apply_skill_snapshot_overlays(
                     deployment.disabled = true;
                     deployment.disabled_by = Some(super::skill_dto::DisabledBy::OpencodePermission);
                 }
-            } else if deployment.agent == "Claude Code"
-                && fork_registry
-                    .harness_disabled
-                    .values()
-                    .filter_map(|by_harness| by_harness.get("claude-code"))
-                    .any(|record| {
-                        (record.deployment_id.is_empty() && claude_deployment_count == 1)
-                            || record.deployment_id == deployment.id
-                    })
-            {
-                deployment.disabled = true;
-                deployment.disabled_by = Some(super::skill_dto::DisabledBy::ClaudeLinkRemoved);
+            } else if deployment.agent == "Claude Code" {
+                if claude_off && deployment.plugin.is_none() {
+                    deployment.disabled = true;
+                    deployment.disabled_by =
+                        Some(super::skill_dto::DisabledBy::ClaudeSkillOverrides);
+                }
             } else if deployment.agent == "shared" {
+                if deployment.scope == "global" && claude_cannot_see {
+                    deployment.disabled_readers.push("claude-code".to_string());
+                }
                 let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
                 let canonical = std::fs::canonicalize(&skill_md).unwrap_or(skill_md);
                 if codex_disabled_paths.contains(&canonical) {
@@ -3812,6 +3816,173 @@ mod tests {
         assert_eq!(skill.deployments[0].disabled_by, None);
         assert!(skill.deployments[0].disabled_readers.is_empty());
         assert_eq!(skill.deployments[0].codex_implicit_invocation, None);
+    }
+
+    /// How `~/.claude/skills` reaches a skill in the Claude Code overlay
+    /// tests. Each is a shape the scanner meets on real machines.
+    #[derive(Debug, Clone, Copy)]
+    enum ClaudeLayout {
+        /// `~/.claude/skills/<name>` links to `~/.agents/skills/<name>`.
+        PerSkillLink,
+        /// `~/.claude/skills` itself links to `~/.agents/skills`.
+        WholeFolderLink,
+        /// `~/.claude/skills/<name>` is its own folder.
+        RealCopy,
+        /// `~/.claude/skills` is a real folder with no entry for the skill.
+        RealFolderNoEntry,
+        /// There is no `~/.claude` at all.
+        NoClaudeFolder,
+    }
+
+    fn write_skill_md(dir: &Path, name: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: test\n---\nbody"),
+        )
+        .unwrap();
+    }
+
+    fn install_claude_layout(home: &Path, name: &str, layout: ClaudeLayout) {
+        let universal = home.join(".agents/skills").join(name);
+        let claude_skills = home.join(".claude/skills");
+        match layout {
+            ClaudeLayout::PerSkillLink => {
+                write_skill_md(&universal, name);
+                fs::create_dir_all(&claude_skills).unwrap();
+                std::os::unix::fs::symlink(
+                    Path::new("../../.agents/skills").join(name),
+                    claude_skills.join(name),
+                )
+                .unwrap();
+            }
+            ClaudeLayout::WholeFolderLink => {
+                write_skill_md(&universal, name);
+                fs::create_dir_all(home.join(".claude")).unwrap();
+                std::os::unix::fs::symlink(home.join(".agents/skills"), &claude_skills).unwrap();
+            }
+            ClaudeLayout::RealCopy => write_skill_md(&claude_skills.join(name), name),
+            ClaudeLayout::RealFolderNoEntry => {
+                write_skill_md(&universal, name);
+                fs::create_dir_all(&claude_skills).unwrap();
+            }
+            ClaudeLayout::NoClaudeFolder => write_skill_md(&universal, name),
+        }
+    }
+
+    fn snapshot_for_home(tmp: &Path, home: &Path) -> SkillSnapshot {
+        let mut invocation_index = SkillInvocationIndex::default();
+        build_snapshot(
+            home,
+            &mut invocation_index,
+            BuildPaths {
+                cache_path: &tmp.join("cache.json"),
+                runs_root: tmp,
+                update_check_path: &tmp.join("update-check.json"),
+            },
+            Utc::now(),
+        )
+        .0
+    }
+
+    /// Flow: the Claude Code switch writes `skillOverrides["alpha"] = "off"`
+    /// to `~/.claude/settings.json`, then the app rebuilds its snapshot (a
+    /// rescan, or a restart, which reads the same files).
+    /// Expectation: in every layout that gives Claude Code a row, that row is
+    /// off with `disabled_by: claude-skill-overrides`, so the switch still
+    /// shows off.
+    #[test]
+    fn snapshot_shows_the_claude_code_row_off_from_skill_overrides_in_every_layout_or_names_the_layout_shown_on(
+    ) {
+        for layout in [
+            ClaudeLayout::PerSkillLink,
+            ClaudeLayout::WholeFolderLink,
+            ClaudeLayout::RealCopy,
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().join("home");
+            install_claude_layout(&home, "alpha", layout);
+            fs::write(
+                home.join(".claude/settings.json"),
+                r#"{"skillOverrides":{"alpha":"off","beta":"user-invocable-only"}}"#,
+            )
+            .unwrap();
+
+            let snapshot = snapshot_for_home(tmp.path(), &home);
+
+            let skill = snapshot
+                .skills
+                .iter()
+                .find(|skill| skill.name == "alpha")
+                .unwrap_or_else(|| panic!("{layout:?}: the scan lost the skill"));
+            let claude = skill
+                .deployments
+                .iter()
+                .find(|deployment| deployment.agent == "Claude Code")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{layout:?}: no Claude Code row; agents: {:?}",
+                        skill
+                            .deployments
+                            .iter()
+                            .map(|d| &d.agent)
+                            .collect::<Vec<_>>()
+                    )
+                });
+            assert!(
+                claude.disabled,
+                "{layout:?}: skillOverrides says off but the Claude Code row shows on"
+            );
+            assert_eq!(
+                claude.disabled_by,
+                Some(super::super::skill_dto::DisabledBy::ClaudeSkillOverrides),
+                "{layout:?}: the Claude Code row names the wrong off reason"
+            );
+        }
+    }
+
+    /// Flow: a global Universal skill that Claude Code cannot see, because
+    /// `~/.claude/skills` is a real folder with no entry for it or does not
+    /// exist.
+    /// Expectation: the Universal row lists `claude-code` as a disabled
+    /// reader (the frontend draws the "Not linked" Claude Code row from it).
+    /// Behind a whole-folder link Claude Code already sees the skill, so the
+    /// list stays without it.
+    #[test]
+    fn snapshot_lists_claude_code_as_a_disabled_reader_only_when_claude_cannot_see_the_universal_skill_or_names_the_layout(
+    ) {
+        for (layout, expect_reader) in [
+            (ClaudeLayout::RealFolderNoEntry, true),
+            (ClaudeLayout::NoClaudeFolder, true),
+            (ClaudeLayout::PerSkillLink, false),
+            (ClaudeLayout::WholeFolderLink, false),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().join("home");
+            install_claude_layout(&home, "alpha", layout);
+
+            let snapshot = snapshot_for_home(tmp.path(), &home);
+
+            let skill = snapshot
+                .skills
+                .iter()
+                .find(|skill| skill.name == "alpha")
+                .unwrap_or_else(|| panic!("{layout:?}: the scan lost the skill"));
+            let universal = skill
+                .deployments
+                .iter()
+                .find(|deployment| deployment.agent == "shared")
+                .unwrap_or_else(|| panic!("{layout:?}: no Universal row"));
+            assert_eq!(
+                universal
+                    .disabled_readers
+                    .iter()
+                    .any(|r| r == "claude-code"),
+                expect_reader,
+                "{layout:?}: disabled_readers is {:?}",
+                universal.disabled_readers
+            );
+        }
     }
 
     #[test]
