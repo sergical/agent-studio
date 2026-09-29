@@ -12,7 +12,8 @@
 // (`Deployment.codex_implicit_invocation`, set in skill_refresh.rs); setting
 // a Codex-deployed skill to "User only" here also writes that key so Codex's
 // own behavior matches what the frontmatter now says, and clears it (or
-// removes the file if it becomes empty) for "Both"/"Model only".
+// removes the file if it becomes empty) for "Both"/"Model only" on any row,
+// because a Codex link can share the edited folder.
 // ============================================================================
 
 use std::fs;
@@ -224,7 +225,11 @@ fn patch_codex_openai_yaml(skill_dir: &Path, user_only: bool) -> Result<(), Stri
         policy.insert(allow_key, serde_yaml::Value::Bool(false));
         root.insert(policy_key, serde_yaml::Value::Mapping(policy));
     } else {
-        policy.remove(&allow_key);
+        // A serde round trip drops comments and reformats, so a sidecar with
+        // nothing to clear (often one a skill ships for Codex's UI) stays as is.
+        if policy.remove(&allow_key).is_none() {
+            return Ok(());
+        }
         if policy.is_empty() {
             root.remove(&policy_key);
         } else {
@@ -255,7 +260,10 @@ fn patch_codex_openai_yaml(skill_dir: &Path, user_only: bool) -> Result<(), Stri
 
 /// `set_skill_invocation`'s logic, taking the canonical `SKILL.md` path
 /// directly so it's testable without a Tauri `AppHandle` or a snapshot.
-/// `is_codex_deployment` gates the `agents/openai.yaml` sidecar patch.
+/// `is_codex_deployment` gates writing the `agents/openai.yaml` sidecar.
+/// Clearing it for "Both"/"Model only" is not gated: a Codex link can
+/// share this folder with the edited row, and a stale "User only" in the
+/// sidecar would then contradict the frontmatter.
 pub fn set_skill_invocation_with(
     canonical_skill_md: &Path,
     policy: InvocationPolicy,
@@ -277,11 +285,12 @@ fn set_skill_invocation_with_read_hook(
     transaction.replace_text(canonical_skill_md, &updated)?;
     drop(transaction);
 
-    if is_codex_deployment {
-        let skill_dir = canonical_skill_md
-            .parent()
-            .ok_or("SKILL.md has no parent directory")?;
-        patch_codex_openai_yaml(skill_dir, policy == InvocationPolicy::UserOnly)?;
+    let skill_dir = canonical_skill_md
+        .parent()
+        .ok_or("SKILL.md has no parent directory")?;
+    let user_only = policy == InvocationPolicy::UserOnly;
+    if is_codex_deployment || (!user_only && codex_openai_yaml_path(skill_dir).is_file()) {
+        patch_codex_openai_yaml(skill_dir, user_only)?;
     }
     Ok(())
 }
@@ -724,6 +733,92 @@ mod tests {
         .unwrap();
 
         assert!(!codex_openai_yaml_path(&universal_dir).exists());
+    }
+
+    /// Runs one invocation edit the way `set_skill_invocation` does: the
+    /// exact snapshot row picks the Codex gate, and the write goes to the
+    /// canonical `SKILL.md` behind the row's path.
+    fn edit_row(snapshot: &SkillSnapshot, skill_dir: &Path, policy: InvocationPolicy) {
+        let requested = skill_dir.join("SKILL.md");
+        let deployment =
+            exact_snapshot_invocation_deployment(snapshot, "find-bugs", &requested).unwrap();
+        let canonical = canonicalize_skill_md(&requested, &requested.to_string_lossy()).unwrap();
+        set_skill_invocation_with(&canonical, policy, deployment.agent == "Codex").unwrap();
+    }
+
+    /// #65: the Codex row is a whole-folder link to the universal folder, so
+    /// a "User only" edit on the Codex row writes the sidecar into the shared
+    /// folder. A later "Both" or "Model only" edit on the universal row must
+    /// clear it, or Codex keeps "User only" while the frontmatter says
+    /// otherwise.
+    #[test]
+    fn universal_row_both_or_model_only_edit_clears_the_shared_codex_sidecar_or_names_the_stale_user_only(
+    ) {
+        use super::super::skill_deployment::{BackingRelationship, SkillDestination};
+
+        for policy in [InvocationPolicy::Both, InvocationPolicy::ModelOnly] {
+            let tmp = tempfile::tempdir().unwrap();
+            let universal_dir = tmp.path().join(".agents/skills/find-bugs");
+            let codex_dir = tmp.path().join(".codex/skills/find-bugs");
+            write_invocation_skill(&universal_dir);
+            fs::create_dir_all(codex_dir.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&universal_dir, &codex_dir).unwrap();
+            let universal = invocation_deployment(
+                &universal_dir,
+                "shared",
+                "universal",
+                SkillDestination::Universal,
+            );
+            let mut codex_link =
+                invocation_deployment(&codex_dir, "Codex", "codex", SkillDestination::Universal);
+            codex_link.is_symlink = true;
+            codex_link.backing = BackingRelationship::LinkedTo {
+                deployment_id: universal.id.clone(),
+            };
+            let snapshot = invocation_snapshot(vec![universal, codex_link]);
+
+            edit_row(&snapshot, &codex_dir, InvocationPolicy::UserOnly);
+            assert!(
+                codex_openai_yaml_path(&universal_dir).is_file(),
+                "setup: the Codex row's User only edit must write the shared sidecar"
+            );
+            edit_row(&snapshot, &universal_dir, policy);
+
+            assert!(
+                !codex_openai_yaml_path(&universal_dir).exists(),
+                "{policy:?} on the universal row left agents/openai.yaml with \
+                 allow_implicit_invocation: false, so Codex still reads User only"
+            );
+        }
+    }
+
+    /// A skill can ship its own `agents/openai.yaml` for Codex's UI. With no
+    /// `allow_implicit_invocation` key to clear, a "Both" edit on any row
+    /// must leave that file byte-identical, comments included.
+    #[test]
+    fn both_edit_leaves_a_sidecar_without_the_policy_key_byte_identical_or_names_the_rewrite() {
+        use super::super::skill_deployment::SkillDestination;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let universal_dir = tmp.path().join(".agents/skills/find-bugs");
+        write_invocation_skill(&universal_dir);
+        fs::create_dir_all(universal_dir.join("agents")).unwrap();
+        let shipped = "# shipped by the skill\ninterface:\n  display_name: Find Bugs\n";
+        fs::write(codex_openai_yaml_path(&universal_dir), shipped).unwrap();
+        let snapshot = invocation_snapshot(vec![invocation_deployment(
+            &universal_dir,
+            "shared",
+            "universal",
+            SkillDestination::Universal,
+        )]);
+
+        edit_row(&snapshot, &universal_dir, InvocationPolicy::Both);
+
+        assert_eq!(
+            fs::read_to_string(codex_openai_yaml_path(&universal_dir)).unwrap(),
+            shipped,
+            "a Both edit rewrote a sidecar that had no invocation key to clear"
+        );
     }
 
     #[test]
