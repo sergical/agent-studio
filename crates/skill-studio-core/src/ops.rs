@@ -4906,8 +4906,8 @@ pub(crate) fn resolve_skill<'a>(
         })
 }
 
-/// Finds the Claude Code per-skill link deployment pointing at
-/// `target_path`, among `skill`'s other deployments.
+/// Finds every per-harness link deployment pointing at `target_path`, among
+/// `skill`'s other deployments, for any harness root.
 ///
 /// `target_path` is canonicalized here rather than compared lexically: scan
 /// records a link's target already canonical (`link_target`), but a
@@ -4915,21 +4915,6 @@ pub(crate) fn resolve_skill<'a>(
 /// both sides go through the same filesystem, and not, for example, when
 /// `target_path`'s ancestry crosses a symlink the test host (or the user's
 /// `$HOME`) happens to have, like macOS's `/tmp` -> `/private/tmp`.
-pub(crate) fn find_claude_link<'a>(
-    skill: &'a InstalledSkillDto,
-    target_path: &Path,
-    fs: &dyn ScopeFs,
-) -> Option<&'a DeploymentDto> {
-    find_all_links(skill, target_path, fs)
-        .into_iter()
-        .find(|d| d.harness.as_ref().map(AgentId::as_str) == Some(AgentId::CLAUDE_CODE))
-}
-
-/// Finds every per-harness link deployment pointing at `target_path`, among
-/// `skill`'s other deployments - the same canonicalized comparison
-/// [`find_claude_link`] uses, generalized to every harness rather than just
-/// Claude Code, for `ops::remove`'s own link cleanup (every harness a skill
-/// was ever linked into must lose that link, not just Claude Code's).
 pub(crate) fn find_all_links<'a>(
     skill: &'a InstalledSkillDto,
     target_path: &Path,
@@ -4962,9 +4947,9 @@ pub use crate::ops_update::{update, update_all};
 /// it ([`ErrorCode::Unsupported`]); use `unpark` instead.
 ///
 /// Sequence, matching `docs/action-map/primitives-and-call-stack.md`'s Park
-/// row: the journal row is recorded before any filesystem step, the Claude
-/// Code link (if any) is removed first, then the directory is renamed into
-/// `.agents/skills-parked`.
+/// row: the journal row is recorded before any filesystem step, every
+/// per-skill link into the folder (any harness) is removed first, then the
+/// directory is renamed into `.agents/skills-parked`.
 pub fn park(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOutcome, CoreError> {
     rt.run(Operation::Park, ctx, || park_body(rt, ctx, req))
 }
@@ -4995,7 +4980,14 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
     }
     let skill = resolve_skill(&session.fresh, &deployment.id)?.clone();
     let fs = rt.ports.fs.as_ref();
-    let claude_link = find_claude_link(&skill, &deployment.path, fs).cloned();
+    let links: Vec<PathBuf> = find_all_links(&skill, &deployment.path, fs)
+        .into_iter()
+        .map(|d| d.path.clone())
+        .collect();
+    let scoped_links = links
+        .iter()
+        .map(|link| crate::ports::confine(&rt.scope, fs, link))
+        .collect::<Result<Vec<_>, _>>()?;
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
 
     let step_start = clock.monotonic();
@@ -5029,7 +5021,7 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
             "deployment_id": deployment.id.as_str(),
             "from": deployment.path,
             "to": parked_dir,
-            "claude_link": claude_link.as_ref().map(|l| &l.path),
+            "links": links,
         }),
         // Undo of a directory move is out of this build's scope: `Park`
         // deliberately carries no inverse.
@@ -5038,10 +5030,9 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
     };
     session.store.record(&session.guard, &id, &draft)?;
 
-    if let Some(link) = &claude_link {
-        let scoped_link = crate::ports::confine(&rt.scope, fs, &link.path)?;
-        fs.remove_file(&session.guard, &scoped_link)
-            .map_err(|e| CoreError::io(&link.path, e))?;
+    for (link, scoped_link) in links.iter().zip(&scoped_links) {
+        fs.remove_file(&session.guard, scoped_link)
+            .map_err(|e| CoreError::io(link, e))?;
     }
     let parent = parked_dir.parent().unwrap_or(&parked_dir).to_path_buf();
     let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
@@ -5082,7 +5073,7 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
 }
 
 /// Moves a parked deployment's directory back to the universal root and
-/// recreates the Claude Code link it had, if any.
+/// recreates every per-skill link `park` removed.
 ///
 /// Preconditions: exclusive lease; the deployment must resolve exactly once,
 /// live at the parked root ([`RootKind::Parked`]); nothing may already
@@ -5092,8 +5083,7 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
 /// skill (matched by `payload.to` naming this deployment's path), per
 /// `primitives-and-call-stack.md`'s "the reverse, from the journal entry".
 /// A parked directory with no matching `park` row (never parked by this
-/// build, or the row aged out) still unparks: the Claude Code link is then
-/// simply not recreated.
+/// build, or the row aged out) still unparks: no link is then recreated.
 pub fn unpark(
     rt: &Runtime,
     ctx: &OpContext,
@@ -5143,11 +5133,10 @@ fn unpark_body(
                     .map(Path::new)
                     == Some(deployment.path.as_path())
         });
-    let claude_link_path = park_row
+    let links = park_row
         .as_ref()
-        .and_then(|row| row.payload.get("claude_link"))
-        .and_then(|v| v.as_str())
-        .map(PathBuf::from);
+        .map(|row| park_row_links(&row.payload))
+        .unwrap_or_default();
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
 
     let step_start = clock.monotonic();
@@ -5182,7 +5171,7 @@ fn unpark_body(
             "deployment_id": deployment.id.as_str(),
             "from": deployment.path,
             "to": restored_dir,
-            "claude_link": claude_link_path,
+            "links": links,
         }),
         inverse: None,
         backup_dir: None,
@@ -5197,7 +5186,7 @@ fn unpark_body(
     let scoped_to = crate::ports::confine(&rt.scope, fs, &restored_dir)?;
     fs.rename(&session.guard, &scoped_from, &scoped_to)
         .map_err(|e| CoreError::io(&deployment.path, e))?;
-    if let Some(link_path) = &claude_link_path {
+    for link_path in &links {
         let scoped_target = crate::ports::confine(&rt.scope, fs, &restored_dir)?;
         let scoped_link = crate::ports::confine(&rt.scope, fs, link_path)?;
         fs.symlink(&session.guard, &scoped_target, &scoped_link)
@@ -5230,6 +5219,23 @@ fn unpark_body(
         deployment_id: deployment.id,
         restored_path: restored_dir,
     })
+}
+
+/// The link paths a `park` row removed. Rows written before `links` existed
+/// carry only the Claude Code link, as `claude_link`.
+fn park_row_links(payload: &serde_json::Value) -> Vec<PathBuf> {
+    if let Some(links) = payload.get("links").and_then(|v| v.as_array()) {
+        return links
+            .iter()
+            .filter_map(|v| v.as_str().map(PathBuf::from))
+            .collect();
+    }
+    payload
+        .get("claude_link")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .into_iter()
+        .collect()
 }
 
 /// Turns a skill's native per-harness switch on or off.
