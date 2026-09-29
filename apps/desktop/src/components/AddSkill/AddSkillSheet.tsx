@@ -1146,6 +1146,7 @@ function deriveMethodAndVisibility(
   pickedLinkMode: InstallLinkMode,
   keptHarnesses: string[],
   defaults: AddMethodDefaults | null,
+  scope: InstallScope,
 ) {
   const parsed = parseSkillSource(source);
   const methods = availableAddSkillMethods(parsed, defaults);
@@ -1172,9 +1173,12 @@ function deriveMethodAndVisibility(
     offeredHarnesses,
     dotagents ? null : pickedHarnesses,
     claudeReadsShared,
+    scope,
   );
   const linkMode: InstallLinkMode = dotagents ? "link" : pickedLinkMode;
-  const disabledHarnesses = dotagents ? [] : installDisabledHarnesses(detected, chosenHarnesses);
+  const disabledHarnesses = dotagents
+    ? []
+    : installDisabledHarnesses(detected, chosenHarnesses, scope);
 
   return {
     parsed,
@@ -1306,6 +1310,7 @@ export function AddSkillSheet() {
     pickedLinkMode,
     keptHarnesses,
     defaults,
+    scope,
   );
 
   // A plain git URL has no repo listing to name itself from - fold the

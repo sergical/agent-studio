@@ -86,31 +86,61 @@ describe("Destination selector", () => {
   });
 
   it("add skill: locks Cursor, and Claude Code when it reads the shared folder, else an unchecked box would hide nothing", () => {
-    expect(installHarnessLocked("cursor", false)).toBe(true);
-    expect(installHarnessLocked("claude-code", true)).toBe(true);
-    expect(installHarnessLocked("claude-code", false)).toBe(false);
-    expect(installHarnessLocked("codex", false)).toBe(false);
-    expect(installHarnessLocked("pi", false)).toBe(false);
+    expect(installHarnessLocked("cursor", false, "global")).toBe(true);
+    expect(installHarnessLocked("claude-code", true, "global")).toBe(true);
+    expect(installHarnessLocked("claude-code", false, "global")).toBe(false);
+    expect(installHarnessLocked("codex", false, "global")).toBe(false);
+    expect(installHarnessLocked("pi", false, "global")).toBe(false);
+  });
+
+  it("add skill at project scope: locks Codex and OpenCode, else an unchecked box offers a per-project off that only exists globally", () => {
+    expect(installHarnessLocked("codex", false, "project")).toBe(true);
+    expect(installHarnessLocked("open-code", false, "project")).toBe(true);
+    expect(installHarnessLocked("pi", false, "project")).toBe(false);
+    expect(installHarnessLocked("claude-code", false, "project")).toBe(false);
   });
 
   it("add skill: keeps locked harnesses in the request after a pick, else Cursor drops out of the harness list", () => {
     const offered = ["claude-code", "codex", "cursor"] as const;
-    expect(chosenInstallHarnesses(offered, null, false)).toEqual([
+    expect(chosenInstallHarnesses(offered, null, false, "global")).toEqual([
       "claude-code",
       "codex",
       "cursor",
     ]);
-    expect(chosenInstallHarnesses(offered, ["codex"], true)).toEqual([
+    expect(chosenInstallHarnesses(offered, ["codex"], true, "global")).toEqual([
       "claude-code",
       "codex",
       "cursor",
+    ]);
+  });
+
+  it("add skill at project scope: keeps Codex in the request after the user unpicks it, else the install turns it off globally", () => {
+    const offered = ["claude-code", "codex", "open-code"] as const;
+    expect(chosenInstallHarnesses(offered, ["claude-code"], false, "project")).toEqual([
+      "claude-code",
+      "codex",
+      "open-code",
     ]);
   });
 
   it("add skill: turns the skill off only for detected harnesses with an off switch, else unchecking Codex does nothing", () => {
     expect(
-      installDisabledHarnesses(["claude-code", "codex", "open-code", "pi"], ["claude-code"]),
+      installDisabledHarnesses(
+        ["claude-code", "codex", "open-code", "pi"],
+        ["claude-code"],
+        "global",
+      ),
     ).toEqual(["codex", "open-code"]);
+  });
+
+  it("add skill at project scope: turns nothing off, else a project install writes Codex and OpenCode's global off switch", () => {
+    expect(
+      installDisabledHarnesses(
+        ["claude-code", "codex", "open-code", "pi"],
+        ["claude-code"],
+        "project",
+      ),
+    ).toEqual([]);
   });
 
   it("add skill: a toggle keeps the offered order, else the request order depends on click order", () => {

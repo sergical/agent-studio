@@ -149,6 +149,7 @@ export function SkillStoreInstallFlow({
     offeredHarnesses,
     pickedHarnesses,
     claudeReadsUniversal,
+    installScope,
   );
 
   const handleInstallScopeChange = (scope: InstallScope) => {
@@ -218,7 +219,7 @@ export function SkillStoreInstallFlow({
           scope: installScope,
           destination: "universal",
           agents: chosenHarnesses,
-          disabled_harnesses: installDisabledHarnesses(detected, chosenHarnesses),
+          disabled_harnesses: installDisabledHarnesses(detected, chosenHarnesses, installScope),
           link_mode: linkMode,
           project_path: installScope === "project" ? (selectedProject ?? null) : null,
         },
