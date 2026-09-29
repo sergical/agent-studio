@@ -193,6 +193,12 @@ const EXPECTED_WRAPPER_COMMANDS = {
   },
   parkSkill: { kind: "command", command: "park_skill", registeredInLibRs: true },
   unparkSkill: { kind: "command", command: "unpark_skill", registeredInLibRs: true },
+  splitSkill: { kind: "command", command: "split_skill", registeredInLibRs: true },
+  splitSkillTargets: {
+    kind: "command",
+    command: "split_skill_targets",
+    registeredInLibRs: true,
+  },
   setHarnessEnabled: { kind: "command", command: "set_harness_enabled", registeredInLibRs: true },
   restoreMovedDeployment: {
     kind: "command",

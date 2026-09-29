@@ -39,6 +39,8 @@ import type {
   SkillDetails,
   SkillEvent,
   SkillSnapshot,
+  SplitCopy,
+  SplitOutcome,
   TrackedProjects,
   UpdateAllOutcome,
   UpdateOutcome,
@@ -567,6 +569,31 @@ export async function parkSkill(target: LifecycleTarget): Promise<void> {
  */
 export async function unparkSkill(target: LifecycleTarget): Promise<void> {
   return callCommand("unpark_skill", { target });
+}
+
+/**
+ * Split one Universal deployment into a real copy per chosen harness, then
+ * remove the Universal folder and every per-skill link into it. Harnesses not
+ * in `harnesses` lose the skill. Refused for a whole-folder link or a name
+ * clash before anything is written; Activity holds the undo.
+ */
+export async function splitSkill(
+  target: LifecycleTarget,
+  harnesses: AgentId[],
+): Promise<SplitOutcome> {
+  return callCommand("split_skill", { target, harnesses });
+}
+
+/**
+ * The folders `splitSkill` would write for `harnesses` in one scope, with
+ * `CODEX_HOME` and the OpenCode config root already applied. Reads no files.
+ */
+export async function splitSkillTargets(
+  skillName: string,
+  projectPath: string | null,
+  harnesses: AgentId[],
+): Promise<SplitCopy[]> {
+  return callCommand("split_skill_targets", { skillName, projectPath, harnesses });
 }
 
 /**

@@ -1298,6 +1298,57 @@ export interface UnparkOutcome {
   restored_path: string;
 }
 /**
+ * Result of `split`.
+ */
+export interface SplitOutcome {
+  /**
+   * The `split` event.
+   */
+  event_id: string;
+  /**
+   * The Universal deployment that was split.
+   */
+  deployment_id: string;
+  /**
+   * The skill's name.
+   */
+  skill: string;
+  /**
+   * One entry per chosen harness.
+   */
+  copies: SplitCopy[];
+  /**
+   * Links into the Universal folder that were removed.
+   */
+  removed_links: string[];
+  /**
+   * Where the Universal folder was moved (quarantine), kept for undo.
+   */
+  quarantine_path: string;
+  /**
+   * Plain-language note: `npx skills update` updates only a Universal
+   * copy, so these copies no longer get updates from it.
+   */
+  update_note: string;
+}
+/**
+ * One folder `split` wrote.
+ */
+export interface SplitCopy {
+  /**
+   * Kebab-case harness identifier, for example `claude-code` or `open-code`.
+   *
+   * Invariant: the string is the serde wire name used by the desktop app
+   * today. `open-code` is canonical; `opencode` is only a CLI binary name and
+   * is never stored in an `AgentId`.
+   */
+  harness: string;
+  /**
+   * The copy's folder.
+   */
+  path: string;
+}
+/**
  * Result of `remove`.
  */
 export interface RemoveOutcome {

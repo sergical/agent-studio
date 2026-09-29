@@ -11,7 +11,7 @@ import type { InvokeArgs } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { z } from "zod";
-import { isProjectPattern } from "@skill-studio/lib";
+import { deploymentLabelFromAgentId, isProjectPattern } from "@skill-studio/lib";
 import type {
   AddSkillOperationEvent,
   Deployment,
@@ -31,6 +31,20 @@ import {
   harnessSkillContent,
   skill,
 } from "./skill-fixture";
+
+/** Mirrors the core's `split_target_root` with default `CODEX_HOME` and OpenCode config root. */
+function splitCopyPath(harness: string, skillName: string, projectPath: string | null): string {
+  const global = projectPath === null;
+  const root: Record<string, string> = {
+    "claude-code": ".claude/skills",
+    codex: ".codex/skills",
+    "open-code": global ? ".config/opencode/skills" : ".opencode/skills",
+    pi: global ? ".pi/agent/skills" : ".pi/skills",
+    "grok-build": ".grok/skills",
+    cursor: ".cursor/skills",
+  };
+  return `${projectPath ?? HARNESS_HOME}/${root[harness] ?? `.${harness}/skills`}/${skillName}`;
+}
 
 /** What the harness exposes on `window.__harness` for an agent driving the app. */
 export interface HarnessControl {
@@ -513,6 +527,61 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
             deployments: item.deployments.map((d) => ({ ...d, disabled: false })),
           }));
           return undefined;
+        }
+
+        case "split_skill_targets": {
+          const { skillName, projectPath, harnesses } = z
+            .object({
+              skillName: z.string(),
+              projectPath: z.string().nullish(),
+              harnesses: z.array(z.string()),
+            })
+            .parse(payload);
+          return harnesses.map((harness) => ({
+            harness,
+            path: splitCopyPath(harness, skillName, projectPath ?? null),
+          }));
+        }
+        case "split_skill": {
+          const { deployment_id } = z
+            .object({ deployment_id: z.string() })
+            .parse(payload.target);
+          const harnesses = z.array(z.string()).parse(payload.harnesses);
+          const name = skillNameForTarget({ deployment_id });
+          const universal = currentSnapshot.skills
+            .flatMap((item) => item.deployments)
+            .find((d) => d.id === deployment_id);
+          if (!universal) throw new Error(`harness: no deployment ${deployment_id}`);
+          const copies = harnesses.map((harness) => ({
+            harness,
+            path: splitCopyPath(harness, name, universal.project_path ?? null),
+          }));
+          await updateSkill(name, (item) => {
+            const kept = item.deployments.filter(
+              (d) =>
+                d.id !== deployment_id &&
+                !(d.backing.kind === "linked-to" && d.backing.deployment_id === deployment_id),
+            );
+            const written = copies.map((copy) =>
+              deployment({
+                agent: deploymentLabelFromAgentId(copy.harness),
+                scope: universal.scope,
+                path: copy.path,
+                project_path: universal.project_path,
+              }),
+            );
+            return { ...item, deployments: [...kept, ...written] };
+          });
+          return {
+            event_id: `harness-split-${name}`,
+            deployment_id,
+            skill: name,
+            copies,
+            removed_links: [],
+            quarantine_path: `${HARNESS_HOME}/.agents/skills/.skill-studio-quarantine/${name}`,
+            update_note:
+              "npx skills update only updates the Universal copy, so these copies no longer get its updates.",
+          };
         }
 
         case "set_harness_enabled": {

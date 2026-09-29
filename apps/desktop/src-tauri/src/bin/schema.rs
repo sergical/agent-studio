@@ -75,6 +75,8 @@ struct WireTypes {
     fix_skill_outcome: FixSkillOutcome,
     park_outcome: ParkOutcome,
     unpark_outcome: UnparkOutcome,
+    split_outcome: skill_studio_core::dto::SplitOutcome,
+    split_copy: skill_studio_core::dto::SplitCopy,
     remove_outcome: RemoveOutcome,
     update_outcome: UpdateOutcome,
     update_all_outcome: UpdateAllOutcome,

@@ -39,6 +39,7 @@ pub mod skill_md_write;
 pub mod skill_ownership;
 pub mod skill_pack;
 pub mod skill_park;
+pub mod skill_split;
 pub mod skill_plugin_lifecycle;
 pub mod skill_process;
 pub mod skill_project_folders;

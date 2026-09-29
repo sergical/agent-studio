@@ -54,6 +54,8 @@ export type {
   SkillSearchResult,
   PullResult,
   RemoveOutcome,
+  SplitCopy,
+  SplitOutcome,
   SkillDetails,
   SkillEventDto,
   SkillEventDto as SkillEvent,
