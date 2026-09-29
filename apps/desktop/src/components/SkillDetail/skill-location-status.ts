@@ -621,7 +621,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
       for (const agent of AGENTS_READING_SHARED_ROOT_ORDER) {
         if (covered.has(agent)) continue;
         const disabledForReader = disabledReaders.has(agent);
-        const hasSwitch = READERS_WITH_A_SWITCH.includes(agent);
+        const hasSwitch = isGlobal && READERS_WITH_A_SWITCH.includes(agent);
         const conditions: Condition[] = parkedScope
           ? [offBecauseParked(readerLabel(agent), live)]
           : disabledForReader && hasSwitch

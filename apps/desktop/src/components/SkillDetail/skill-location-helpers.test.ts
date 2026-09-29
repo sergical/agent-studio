@@ -272,4 +272,27 @@ describe("per-harness reader switches", () => {
       ).toContain("Park the skill to turn it off for every harness");
     }
   });
+
+  it("a project reader row hides the Codex and OpenCode switches and the Global reader row keeps them", () => {
+    const projectShared = sharedDeployment({
+      id: "dep:v1/project/universal/find-bugs",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.agents/skills/find-bugs",
+    });
+    const groups = buildScopeGroups(skillWithDeployments([sharedDeployment(), projectShared]));
+    const global = groups.find((g) => g.isGlobal)!;
+    const project = groups.find((g) => !g.isGlobal)!;
+    for (const harness of ["codex", "open-code"] as const) {
+      const globalRow = global.rows.find((r) => r.harness === harness);
+      const projectRow = project.rows.find((r) => r.harness === harness);
+      expect(globalRow?.kind).toBe("reader");
+      expect(projectRow?.kind).toBe("reader");
+      expect(globalRow?.hasSwitch, `the Global ${harness} reader row lost its switch`).toBe(true);
+      expect(
+        projectRow?.hasSwitch,
+        `the project ${harness} reader row offers a switch that writes the Global config`,
+      ).toBe(false);
+    }
+  });
 });
