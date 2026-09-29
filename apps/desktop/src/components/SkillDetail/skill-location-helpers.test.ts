@@ -255,3 +255,21 @@ describe("harness rail switch (canOfferHarnessSwitchForRow + NO_OFF_SWITCH_TITLE
     expect(markup).toContain("disabled=");
   });
 });
+
+describe("per-harness reader switches", () => {
+  it("pi, Cursor and Grok Build reader rows show a disabled switch whose title says to Park", () => {
+    const [global] = buildScopeGroups(skillWithDeployments([sharedDeployment()]));
+    for (const harness of ["pi", "cursor", "grok-build"] as const) {
+      const row = global.rows.find((r): r is AgentLocationRow => r.harness === harness);
+      expect(row, `the Global group lost the ${harness} reader row`).toBeDefined();
+      expect(
+        canOfferHarnessSwitchForRow(row!),
+        `${harness} has no per-skill switch, but its row offers one`,
+      ).toBe(false);
+      expect(
+        harnessSwitchOffTitle(row!),
+        `the ${harness} switch title does not point at Park as the off path`,
+      ).toContain("Park the skill to turn it off for every harness");
+    }
+  });
+});

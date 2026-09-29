@@ -58,6 +58,17 @@ function offSwitchReason(deployment: Deployment, hasGlobalUniversal: boolean): s
 /** The two readers with a per-skill off switch in their own config - see `skill_harness_disable.rs`. */
 const READERS_WITH_A_SWITCH: AgentId[] = ["codex", "open-code"];
 
+/** Why a synthesized reader row's switch is disabled: the harness has no per-skill switch, or its switch covers the Global Universal folder only. */
+function readerNoSwitchReason(agent: AgentId, isGlobal: boolean): string {
+  const label = readerLabel(agent);
+  if (READERS_WITH_A_SWITCH.includes(agent)) {
+    return `${label} can be turned off only for the Global Universal folder`;
+  }
+  return isGlobal
+    ? `${label} has no per-skill switch. Park the skill to turn it off for every harness.`
+    : `${label} has no per-skill switch`;
+}
+
 /** Every action a Locations row's ⋯ menu (or switch) can trigger - handled by `useLocationActions`. */
 export type LocationAction =
   | { kind: "relink"; deployment: Deployment }
@@ -628,6 +639,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
           lifecycleTarget: shared.lifecycleTarget,
           hasSwitch,
           switchOn: !disabledForReader && !parkedScope,
+          switchDisabledReason: hasSwitch ? undefined : readerNoSwitchReason(agent, isGlobal),
           invocation: null,
         });
       }

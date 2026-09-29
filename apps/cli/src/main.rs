@@ -197,7 +197,8 @@ enum Command {
         json: bool,
     },
     /// Turn a skill's native per-harness switch on or off (Claude Code,
-    /// Codex, `OpenCode`, pi).
+    /// Codex, `OpenCode`). pi, Cursor, and Grok Build have none: `park`
+    /// turns a skill off for every harness.
     SetHarnessEnabled {
         #[command(flatten)]
         scope: ScopeArgs,

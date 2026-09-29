@@ -490,7 +490,8 @@ pub fn set_harness_enabled_with(
         }
         "claude-code" => Err("Claude Code visibility needs an exact deployment target".to_string()),
         "pi" | "cursor" | "grok-build" => Err(format!(
-            "{agent} has no per-skill disable - it reads the Universal folder directly"
+            "{agent} has no per-skill disable - it reads the Universal folder directly; \
+             Park the skill to turn it off for every harness"
         )),
         other => Err(format!("Unknown harness: {other}")),
     }

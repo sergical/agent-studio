@@ -17,8 +17,9 @@ export const NO_OFF_SWITCH_TITLE =
 export const REGISTRY_COPY_NO_SWITCH_TITLE =
   "This copy is tracked by the fork registry; restore it by hand or wait for the .skill-studio-disabled/ migration";
 
-/** The Harnesses rail's disabled-switch title for `row` - `REGISTRY_COPY_NO_SWITCH_TITLE` for a Copy-owned studio-moved row, `NO_OFF_SWITCH_TITLE` otherwise. */
+/** The Harnesses rail's disabled-switch title for `row` - a reader row's own reason, `REGISTRY_COPY_NO_SWITCH_TITLE` for a Copy-owned studio-moved row, `NO_OFF_SWITCH_TITLE` otherwise. */
 export function harnessSwitchOffTitle(row: AgentLocationRow): string {
+  if (row.kind === "reader" && row.switchDisabledReason) return row.switchDisabledReason;
   if (row.deployment?.disabled_by === "studio-moved" && row.deployment.owner_kind === "copy") {
     return REGISTRY_COPY_NO_SWITCH_TITLE;
   }

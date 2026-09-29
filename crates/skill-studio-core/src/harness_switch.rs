@@ -1,22 +1,11 @@
-//! Content transforms for each harness's native per-skill switch.
+//! Shared pieces of the native per-skill switches that
+//! [`crate::ops::set_harness_enabled`] writes, kept free of `std::fs`.
 //!
-//! Every function here is a pure string-in, string-out transform: it never
-//! touches a filesystem. [`crate::ops::set_harness_enabled`] reads the
-//! current bytes through [`crate::ports::ScopeFs`], calls the transform for
-//! the target harness, and writes the result back - the same split
-//! `codex_skill_config.rs`/`opencode_skill_permission.rs` drew on the
-//! desktop, kept here so the transform itself is testable with plain
-//! strings and the core stays free of `std::fs` (see `docs/action-map/
-//! definition-of-done.md`'s primitive checklist).
-//!
-//! Codex has no transform here: `crate::ops::set_codex_switch` shares
-//! `crate::ops::codex_write_disabled_row`, the decor-preserving
-//! `[[skills.config]]` row writer, with `set_codex_skill_disabled_with` rather
-//! than duplicating it as a plain-string transform - a second writer for
-//! the same file only invites the two to drift. OpenCode's edit is
-//! `crate::opencode_config::skill_denied_text` for the same reason.
-
-use serde_json::{Map, Value};
+//! The edits themselves live beside their readers so one writer owns each
+//! file: Codex's `[[skills.config]]` row is `crate::ops::codex_write_disabled_row`
+//! and OpenCode's `permission.skill` deny is
+//! `crate::opencode_config::skill_denied_text`. pi, Cursor, and Grok Build
+//! have no switch Skill Studio writes; Park is their off path.
 
 use crate::error::{CoreError, ErrorCode};
 
@@ -41,66 +30,6 @@ pub(crate) fn opencode_refuses_jsonc(
     Ok(())
 }
 
-/// pi has no native per-skill switch (`docs/action-map/enable-and-links.md`
-/// names none), so this build stands one up: an exclusion list under a
-/// `skill-studio` key in pi's own `settings.json`, left alone by pi itself.
-/// Adds or removes `name` from `skill-studio.disabledSkills`, given the
-/// file's current text (`None` for a missing file).
-pub(crate) fn pi_toggle(
-    existing: Option<&str>,
-    name: &str,
-    disabled: bool,
-) -> Result<String, CoreError> {
-    let mut root: Map<String, Value> = match existing {
-        Some(text) => serde_json::from_str(text).map_err(|e| {
-            CoreError::new(
-                ErrorCode::Io,
-                format!("settings.json is not valid JSON: {e}"),
-            )
-        })?,
-        None => Map::new(),
-    };
-    let studio = root
-        .entry("skill-studio")
-        .or_insert_with(|| Value::Object(Map::new()));
-    let Value::Object(studio) = studio else {
-        return Err(CoreError::new(
-            ErrorCode::Io,
-            "settings.json has a non-object `skill-studio` key",
-        ));
-    };
-    let mut disabled_skills: Vec<String> = studio
-        .get("disabledSkills")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|v| v.as_str().map(str::to_string))
-        .collect();
-    disabled_skills.retain(|n| n != name);
-    if disabled {
-        disabled_skills.push(name.to_string());
-    }
-    disabled_skills.sort();
-    if disabled_skills.is_empty() {
-        studio.remove("disabledSkills");
-        if studio.is_empty() {
-            root.remove("skill-studio");
-        }
-    } else {
-        studio.insert(
-            "disabledSkills".to_string(),
-            Value::Array(disabled_skills.into_iter().map(Value::String).collect()),
-        );
-    }
-
-    serde_json::to_string_pretty(&Value::Object(root)).map_err(|e| {
-        CoreError::new(
-            ErrorCode::Io,
-            format!("failed to serialize settings.json: {e}"),
-        )
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,15 +39,5 @@ mod tests {
         assert!(opencode_refuses_jsonc(false, true).is_err());
         assert!(opencode_refuses_jsonc(true, true).is_ok());
         assert!(opencode_refuses_jsonc(false, false).is_ok());
-    }
-
-    #[test]
-    fn pi_add_then_remove_round_trips_and_cleans_up_the_empty_key() {
-        let disabled = pi_toggle(None, "find-bugs", true).unwrap();
-        let value: Value = serde_json::from_str(&disabled).unwrap();
-        assert_eq!(value["skill-studio"]["disabledSkills"][0], "find-bugs");
-        let enabled = pi_toggle(Some(&disabled), "find-bugs", false).unwrap();
-        let value: Value = serde_json::from_str(&enabled).unwrap();
-        assert!(value.get("skill-studio").is_none());
     }
 }

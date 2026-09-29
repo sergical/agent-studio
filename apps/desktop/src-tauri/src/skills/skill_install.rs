@@ -1177,13 +1177,10 @@ mod tests {
     }
 
     /// `a_harness_that_cannot_be_disabled_becomes_a_warning_not_a_failed_install`
-    /// (review item 5): re-added from the deleted `skill_add.rs`, adapted to
-    /// `ops::set_harness_enabled`'s own refusal - unlike the legacy
-    /// `skill_harness_disable.rs` dispatch this crate's `disable_harness`
-    /// now goes through, `pi` has a native switch here (`set_pi_switch`), so
-    /// `cursor` (no native per-skill switch at all, `ops.rs`'s `other =>`
-    /// arm) is the one that still names the refusal. Asking to disable it is
-    /// a `finish_install` follow-up failure, not an install failure.
+    /// (review item 5): pi and Cursor have no per-skill switch
+    /// (`ops::set_harness_enabled` refuses them), so asking to disable either
+    /// at install time is a `finish_install` warning that points at Park, not
+    /// an install failure and not a silent success.
     #[tokio::test]
     async fn a_harness_that_cannot_be_disabled_becomes_a_warning_not_a_failed_install() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1194,15 +1191,26 @@ mod tests {
 
         let rt = test_runtime(&home);
         let mut request = copy_request(&source_dir, "find-bugs");
-        request.disabled_harnesses = vec![AgentId::Cursor];
+        request.disabled_harnesses = vec![AgentId::Cursor, AgentId::Pi];
 
         let result = add_skill_with_runtime(move || Ok(rt), request, never_github())
             .await
             .unwrap();
 
         assert!(home.join(".agents/skills/find-bugs").exists());
-        let warning = result.warning.expect("expected a disable warning");
-        assert!(warning.contains("no native per-skill switch"), "{warning}");
+        let warning = result
+            .warning
+            .expect("the install reported pi and Cursor as disabled, but neither has a switch");
+        for harness in ["cursor:", "pi:"] {
+            assert!(
+                warning.contains(harness),
+                "the warning does not name {harness} as not disabled: {warning}"
+            );
+        }
+        assert!(
+            warning.contains("Park the skill"),
+            "the warning does not point at Park as the off path: {warning}"
+        );
     }
 
     // Review item 1: the deleted `skill_add.rs`'s four local-Copy-source

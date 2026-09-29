@@ -5328,11 +5328,12 @@ fn set_harness_enabled_body(
         AgentId::OPEN_CODE => {
             set_opencode_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?
         }
-        AgentId::PI => set_pi_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?,
         other => {
             return Err(CoreError::new(
                 ErrorCode::Unsupported,
-                format!("{other} has no native per-skill switch"),
+                format!(
+                    "{other} has no native per-skill switch; Park the skill to turn it off for every harness"
+                ),
             ))
         }
     };
@@ -5878,87 +5879,6 @@ fn set_opencode_switch(
         ensure_dir_all(rt, session, fs, &config_parent)?;
         let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
         fs.write_atomic(&session.guard, &scoped_config, &new_text)
-            .map_err(|e| CoreError::io(&config_path, e))?;
-        crate::events::fingerprint_path(fs, &config_path)
-    })();
-
-    match mutate {
-        Ok(post_fingerprint) => {
-            session.store.finish(
-                &session.guard,
-                id,
-                crate::events::EventStatus::Done,
-                post_fingerprint,
-            )?;
-            Ok((1, 1))
-        }
-        Err(e) => {
-            let _ =
-                session
-                    .store
-                    .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
-            Err(e)
-        }
-    }
-}
-
-/// pi has no native per-skill switch; this build stands one up as a
-/// `disabledSkills` exclusion list under a `skill-studio` key in pi's own
-/// `~/.pi/agent/settings.json` (`PiAdapter::config_relative_path`), left
-/// alone by pi itself.
-#[allow(clippy::too_many_arguments)]
-fn set_pi_switch(
-    rt: &Runtime,
-    session: &mut crate::ports::MutationSession,
-    fs: &dyn ScopeFs,
-    home: &Path,
-    skill: &InstalledSkillDto,
-    id: &EventId,
-    kind: crate::events::EventKind,
-    enabled: bool,
-) -> Result<(u32, u32), CoreError> {
-    let config_path = home.join(".pi/agent/settings.json");
-
-    let manifest =
-        session
-            .store
-            .backup_paths(&session.guard, id, std::slice::from_ref(&config_path))?;
-    let pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.clone());
-    let inverse =
-        crate::events::restore_backup_inverse(&config_path, pre_fingerprint.as_ref(), None);
-    let draft = crate::events::EventDraft {
-        kind,
-        skill: skill.name.clone(),
-        harness: Some(AgentId::from(AgentId::PI)),
-        scope: Some("global".to_string()),
-        project_path: None,
-        payload: serde_json::json!({ "skill": skill.name.0, "harness": AgentId::PI }),
-        inverse: Some(inverse),
-        backup_dir: Some(manifest.backup_dir.clone()),
-    };
-    session.store.record(&session.guard, id, &draft)?;
-
-    // See `set_claude_code_switch`'s matching comment: every fallible step
-    // after `record` runs inside this closure so it reaches `finish(Failed)`
-    // below, not just the final `write_atomic` call.
-    let mutate: Result<Option<Fingerprint>, CoreError> = (|| {
-        let existing = match fs.read_capped(
-            &config_path,
-            crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
-        ) {
-            Ok(bytes) => Some(
-                String::from_utf8(bytes)
-                    .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path))?,
-            ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(CoreError::io(&config_path, e)),
-        };
-        let new_text =
-            crate::harness_switch::pi_toggle(existing.as_deref(), &skill.name.0, !enabled)?;
-        let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
-        ensure_dir_all(rt, session, fs, &config_parent)?;
-        let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
-        fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes())
             .map_err(|e| CoreError::io(&config_path, e))?;
         crate::events::fingerprint_path(fs, &config_path)
     })();
