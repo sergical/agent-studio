@@ -310,6 +310,9 @@ fn dotagents_currency(
     let Some(entry) = ledger.iter().find(|skill| skill.name == name) else {
         return OutdatedRecord::bare(Currency::Unknown);
     };
+    if entry.is_local_path() {
+        return OutdatedRecord::bare(Currency::NotTracked);
+    }
     let (Some(repo), Some(installed)) = (&entry.github_repo, &entry.installed_commit) else {
         return OutdatedRecord::bare(Currency::Unknown);
     };

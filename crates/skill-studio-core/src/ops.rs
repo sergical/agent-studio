@@ -2489,9 +2489,17 @@ fn classify_owner(cx: &OwnerClassifyContext) -> (LifecycleOwnerKind, Option<Owne
         unreachable!("scan_inner populates a ledger for every scope it classifies")
     };
 
-    let dotagents_entry = ledger.dotagents.iter().find(|d| d.name == cx.skill_name);
     let skills_sh_entry = lock_file::is_skill_installed(&ledger.lock, cx.skill_name)
         || ledger.project_lock_skills.contains(cx.skill_name);
+    // `dotagents sync` adopts any undeclared folder in the universal root as
+    // a `path:` row - a local folder with no upstream. That row must not
+    // outrank (or make ambiguous) a ledger that does have an upstream for
+    // the same name; it only owns the skill when nothing else claims it.
+    let dotagents_entry = ledger
+        .dotagents
+        .iter()
+        .find(|d| d.name == cx.skill_name)
+        .filter(|d| !(d.is_local_path && skills_sh_entry));
 
     if dotagents_entry.is_some() && skills_sh_entry {
         return (LifecycleOwnerKind::Ambiguous, None);

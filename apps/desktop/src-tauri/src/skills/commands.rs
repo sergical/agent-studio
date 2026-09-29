@@ -902,7 +902,7 @@ mod tests {
         let _home_guard = super::super::test_support::HomeGuard::new(&home);
 
         let agents_dir = home.join(".agents");
-        for name in ["declared", "wildcard", "pinned"] {
+        for name in ["declared", "wildcard", "pinned", "adopted"] {
             std::fs::create_dir_all(agents_dir.join("skills").join(name)).unwrap();
             std::fs::write(
                 agents_dir.join("skills").join(name).join("SKILL.md"),
@@ -915,14 +915,15 @@ mod tests {
         // (needs a `latest_commit` from "Check now" before it can update).
         std::fs::write(
             agents_dir.join("agents.toml"),
-            "[[skills]]\nname = \"declared\"\nsource = \"o/r\"\n\n[[skills]]\nname = \"pinned\"\nsource = \"o/r\"\nref = \"deadbeef\"\n",
+            "[[skills]]\nname = \"declared\"\nsource = \"o/r\"\n\n[[skills]]\nname = \"pinned\"\nsource = \"o/r\"\nref = \"deadbeef\"\n\n[[skills]]\nname = \"adopted\"\nsource = \"path:skills/adopted\"\n",
         )
         .unwrap();
         std::fs::write(
             agents_dir.join("agents.lock"),
             "[skills.declared]\nsource = \"o/r\"\nresolved_path = \"skills/declared\"\nresolved_commit = \"aaa\"\n\
              [skills.wildcard]\nsource = \"o/r\"\nresolved_path = \"skills/wildcard\"\nresolved_commit = \"bbb\"\n\
-             [skills.pinned]\nsource = \"o/r\"\nresolved_path = \"skills/pinned\"\nresolved_commit = \"ccc\"\n",
+             [skills.pinned]\nsource = \"o/r\"\nresolved_path = \"skills/pinned\"\nresolved_commit = \"ccc\"\n\
+             [skills.adopted]\nsource = \"path:skills/adopted\"\nresolved_path = \"skills/adopted\"\n",
         )
         .unwrap();
 
@@ -983,6 +984,18 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("wildcard dotagents entry"), "{err}");
+
+        // 2b. A `path:` entry `dotagents sync` adopted: the folder is the
+        // only copy, so there is nothing upstream to update from.
+        let adopted = installed_skill_fixture("adopted");
+        let err = build_update_request(
+            &app_data,
+            &snapshot,
+            &adopted,
+            &dotagents_deployment_for("adopted"),
+        )
+        .unwrap_err();
+        assert!(err.contains("local folder"), "{err}");
 
         // 3. Pinned entry needs "Check now": no update-check store entry
         // yet, so there is no `latest_commit` to pin the update to.
@@ -1824,6 +1837,12 @@ fn build_update_request(
                     "Update is not available: {} is a wildcard dotagents entry",
                     skill.name
                 ));
+            }
+            if entry.is_local_path() {
+                return Err(
+                    "Update is not available: dotagents tracks this as a local folder; there is nothing upstream to update from"
+                        .to_string(),
+                );
             }
             let ref_pin = if entry.declared_ref.is_some() {
                 let store = skill_update_check::read_update_check_store(app_data);

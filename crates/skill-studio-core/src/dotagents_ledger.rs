@@ -74,10 +74,27 @@ struct ManifestSkill {
     r#ref: Option<String>,
 }
 
+/// True for a `path:` source, the one `dotagents sync` gives an undeclared
+/// folder it adopts (`source = "path:skills/<name>"`): the folder is the
+/// only copy, so there is no upstream to update from.
+pub fn is_local_path_source(source: &str) -> bool {
+    source.starts_with("path:")
+}
+
+impl DotagentsSkill {
+    /// See [`is_local_path_source`].
+    pub fn is_local_path(&self) -> bool {
+        is_local_path_source(&self.source)
+    }
+}
+
 /// "owner/repo" -> `Some("owner/repo")`; `"git:https://github.com/o/r.git"` ->
 /// `Some("o/r")`; any other host (or a source shape that isn't a plain repo
-/// slug) -> `None`.
+/// slug, such as a `path:` source) -> `None`.
 pub fn github_repo_from_source(source: &str) -> Option<String> {
+    if is_local_path_source(source) {
+        return None;
+    }
     if let Some(url) = source.strip_prefix("git:") {
         let url = url.trim_end_matches(".git");
         let after_host = url.split("github.com/").nth(1)?;
