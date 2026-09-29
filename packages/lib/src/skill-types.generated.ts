@@ -646,9 +646,10 @@ export interface AddMethodDefaults {
    */
   installed_harnesses: AgentId[];
   /**
-   * Whether `~/.claude/skills` is a symlink into the shared folder -
-   * true when Claude Code already reads `.agents/skills` on its own,
-   * false when it's a real directory (or doesn't exist yet).
+   * Whether the install scope's `.claude/skills` is a symlink that resolves
+   * to the same scope's `.agents/skills` - true when Claude Code already
+   * reads the shared folder on its own, false when it's a real directory,
+   * a link to any other folder, or doesn't exist yet.
    */
   claude_reads_shared_folder: boolean;
 }

@@ -530,11 +530,14 @@ export async function listGithubSkills(
 
 /**
  * Whether dotagents can run, whether skills.sh has been used before, and
- * which first-class agents are installed - fetched once when the Add Skill
- * sheet opens to pick its Method and Harnesses defaults.
+ * which first-class agents are installed - fetched when an install form opens
+ * and again when its scope changes. `projectPath` picks the scope whose
+ * `.claude/skills` link `claude_reads_shared_folder` describes; `null` is global.
  */
-export async function getAddMethodDefaults(): Promise<AddMethodDefaults> {
-  return callCommand("get_add_method_defaults");
+export async function getAddMethodDefaults(
+  projectPath: string | null = null,
+): Promise<AddMethodDefaults> {
+  return callCommand("get_add_method_defaults", { projectPath });
 }
 
 /**

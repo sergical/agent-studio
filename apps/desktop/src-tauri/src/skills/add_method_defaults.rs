@@ -63,17 +63,47 @@ pub struct AddMethodDefaults {
     /// Every first-class agent whose own config directory exists on this
     /// machine, in `AgentId`'s declaration order - see `harness_config_dirs`.
     pub installed_harnesses: Vec<AgentId>,
-    /// Whether `~/.claude/skills` is a symlink into the shared folder -
-    /// true when Claude Code already reads `.agents/skills` on its own,
-    /// false when it's a real directory (or doesn't exist yet).
+    /// Whether the install scope's `.claude/skills` is a symlink that resolves
+    /// to the same scope's `.agents/skills` - true when Claude Code already
+    /// reads the shared folder on its own, false when it's a real directory,
+    /// a link to any other folder, or doesn't exist yet.
     pub claude_reads_shared_folder: bool,
 }
 
-/// Whether `path` is a symlink - used for `claude_reads_shared_folder`,
-/// which cares whether Claude Code's skills dir was linked into the shared
-/// folder rather than left as its own real directory.
-fn is_symlink(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+/// `path` with `.` and `..` folded away, without touching the disk.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Whether `root/.claude/skills` is a link to `root/.agents/skills`. A link
+/// whose target does not exist yet is compared by its written target, the
+/// same way the core install plan decides it.
+fn claude_reads_shared_folder(root: &Path) -> bool {
+    let claude = root.join(".claude").join("skills");
+    let shared = root.join(".agents").join("skills");
+    let is_link =
+        std::fs::symlink_metadata(&claude).is_ok_and(|meta| meta.file_type().is_symlink());
+    if !is_link {
+        return false;
+    }
+    match (
+        std::fs::canonicalize(&claude),
+        std::fs::canonicalize(&shared),
+    ) {
+        (Ok(resolved), Ok(shared)) => resolved == shared,
+        _ => std::fs::read_link(&claude)
+            .is_ok_and(|target| lexical(&root.join(".claude").join(target)) == lexical(&shared)),
+    }
 }
 
 /// Whether `binary` resolves to an executable file on `path_var` (a `PATH`-
@@ -88,7 +118,9 @@ fn resolves_on_path(binary: &str, path_var: &str) -> bool {
 
 /// `get_add_method_defaults`'s logic against an arbitrary home dir and `PATH`
 /// value, so tests don't need to touch the real `~/.agents` or `PATH`.
-fn add_method_defaults(home: &Path, path_var: &str) -> AddMethodDefaults {
+/// `project` picks the install scope for `claude_reads_shared_folder`: that
+/// project's folders, or the home folders when it is `None`.
+fn add_method_defaults(home: &Path, project: Option<&Path>, path_var: &str) -> AddMethodDefaults {
     AddMethodDefaults {
         dotagents_installed: resolves_on_path(DOTAGENTS_BINARY, path_var),
         has_skill_lock: lock_file::lock_file_path(home).exists(),
@@ -101,20 +133,28 @@ fn add_method_defaults(home: &Path, path_var: &str) -> AddMethodDefaults {
                     .any(|dir| dir.exists())
             })
             .collect(),
-        claude_reads_shared_folder: is_symlink(&home.join(".claude").join("skills")),
+        claude_reads_shared_folder: claude_reads_shared_folder(project.unwrap_or(home)),
     }
 }
 
 /// Whether dotagents can run, whether skills.sh has been used before, and
 /// which first-class agents are installed - the Add Skill sheet fetches this
-/// once when it opens to pick its Method and Harnesses defaults.
+/// when it opens, and again when the install scope or project changes, to
+/// pick its Method and Harnesses defaults.
 #[tauri::command]
-pub async fn get_add_method_defaults(app: tauri::AppHandle) -> Result<AddMethodDefaults, String> {
+pub async fn get_add_method_defaults(
+    app: tauri::AppHandle,
+    project_path: Option<String>,
+) -> Result<AddMethodDefaults, String> {
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "get_add_method_defaults", move || {
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
         let path_var = std::env::var("PATH").unwrap_or_default();
-        Ok(add_method_defaults(&home, &path_var))
+        Ok(add_method_defaults(
+            &home,
+            project_path.as_deref().map(Path::new),
+            &path_var,
+        ))
     })
     .await
 }
@@ -137,7 +177,7 @@ mod tests {
     #[test]
     fn dotagents_installed_is_false_when_npx_is_not_on_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let defaults = add_method_defaults(tmp.path(), tmp.path().to_str().unwrap());
+        let defaults = add_method_defaults(tmp.path(), None, tmp.path().to_str().unwrap());
         assert!(!defaults.dotagents_installed);
     }
 
@@ -148,14 +188,14 @@ mod tests {
         std::fs::create_dir_all(&bin_dir).unwrap();
         make_executable(&bin_dir.join("npx"));
 
-        let defaults = add_method_defaults(tmp.path(), bin_dir.to_str().unwrap());
+        let defaults = add_method_defaults(tmp.path(), None, bin_dir.to_str().unwrap());
         assert!(defaults.dotagents_installed);
     }
 
     #[test]
     fn has_skill_lock_is_false_when_the_lock_file_is_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let defaults = add_method_defaults(tmp.path(), "");
+        let defaults = add_method_defaults(tmp.path(), None, "");
         assert!(!defaults.has_skill_lock);
     }
 
@@ -166,14 +206,14 @@ mod tests {
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(agents_dir.join(".skill-lock.json"), "{}").unwrap();
 
-        let defaults = add_method_defaults(tmp.path(), "");
+        let defaults = add_method_defaults(tmp.path(), None, "");
         assert!(defaults.has_skill_lock);
     }
 
     #[test]
     fn installed_harnesses_is_empty_on_a_fresh_home() {
         let tmp = tempfile::tempdir().unwrap();
-        let defaults = add_method_defaults(tmp.path(), "");
+        let defaults = add_method_defaults(tmp.path(), None, "");
         assert!(defaults.installed_harnesses.is_empty());
     }
 
@@ -183,7 +223,7 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
         std::fs::create_dir_all(tmp.path().join(".opencode")).unwrap();
 
-        let defaults = add_method_defaults(tmp.path(), "");
+        let defaults = add_method_defaults(tmp.path(), None, "");
         assert_eq!(
             defaults.installed_harnesses,
             vec![AgentId::ClaudeCode, AgentId::OpenCode]
@@ -193,7 +233,7 @@ mod tests {
     #[test]
     fn claude_reads_shared_folder_is_false_when_claude_skills_is_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let defaults = add_method_defaults(tmp.path(), "");
+        let defaults = add_method_defaults(tmp.path(), None, "");
         assert!(!defaults.claude_reads_shared_folder);
     }
 
@@ -202,7 +242,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".claude").join("skills")).unwrap();
 
-        let defaults = add_method_defaults(tmp.path(), "");
+        let defaults = add_method_defaults(tmp.path(), None, "");
         assert!(!defaults.claude_reads_shared_folder);
     }
 
@@ -215,7 +255,58 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
         std::os::unix::fs::symlink(&shared, tmp.path().join(".claude").join("skills")).unwrap();
 
-        let defaults = add_method_defaults(tmp.path(), "");
+        let defaults = add_method_defaults(tmp.path(), None, "");
         assert!(defaults.claude_reads_shared_folder);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn claude_skills_linked_to_a_dotfiles_folder_is_not_read_as_the_shared_folder_or_the_ui_hides_its_own_folder(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".agents").join("skills")).unwrap();
+        let dotfiles = tmp.path().join("dotfiles").join("claude-skills");
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, tmp.path().join(".claude").join("skills")).unwrap();
+
+        let defaults = add_method_defaults(tmp.path(), None, "");
+        assert!(
+            !defaults.claude_reads_shared_folder,
+            "a link to {} was reported as the shared folder",
+            dotfiles.display()
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn project_scope_reads_the_projects_claude_link_not_the_homes_or_the_ui_locks_the_wrong_scope()
+    {
+        let home = tempfile::tempdir().unwrap();
+        let home_shared = home.path().join(".agents").join("skills");
+        std::fs::create_dir_all(&home_shared).unwrap();
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::os::unix::fs::symlink(&home_shared, home.path().join(".claude").join("skills"))
+            .unwrap();
+        let plain_project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(plain_project.path().join(".claude").join("skills")).unwrap();
+        let linked_project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(linked_project.path().join(".claude")).unwrap();
+        std::os::unix::fs::symlink(
+            "../.agents/skills",
+            linked_project.path().join(".claude").join("skills"),
+        )
+        .unwrap();
+
+        let plain = add_method_defaults(home.path(), Some(plain_project.path()), "");
+        let linked = add_method_defaults(home.path(), Some(linked_project.path()), "");
+        assert!(
+            !plain.claude_reads_shared_folder,
+            "a project with a real .claude/skills took the home link's answer"
+        );
+        assert!(
+            linked.claude_reads_shared_folder,
+            "a project .claude/skills linked to its own .agents/skills (not made yet) was missed"
+        );
     }
 }

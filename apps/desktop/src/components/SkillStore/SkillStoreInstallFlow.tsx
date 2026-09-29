@@ -78,9 +78,10 @@ export function SkillStoreInstallFlow({
   const setTrackedProjects = useAppStore((state) => state.setTrackedProjects);
   const addToast = useAppStore((state) => state.addToast);
 
+  const defaultsProject = installScope === "project" ? selectedProject : null;
   useEffect(() => {
     let cancelled = false;
-    getAddMethodDefaults()
+    getAddMethodDefaults(defaultsProject)
       .then((defaults) => {
         if (cancelled) return;
         setDetected(defaults.installed_harnesses);
@@ -90,7 +91,7 @@ export function SkillStoreInstallFlow({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [defaultsProject]);
 
   useEffect(() => {
     return () => {

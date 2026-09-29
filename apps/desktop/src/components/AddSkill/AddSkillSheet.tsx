@@ -1260,8 +1260,9 @@ export function AddSkillSheet() {
   const sourceInputRef = useRef<HTMLInputElement>(null);
 
   // What dotagents/skills.sh/the Universal folder look like on this machine -
-  // fetched once when the sheet opens, so the Method and Harnesses defaults
-  // below reflect this machine instead of a generic guess.
+  // fetched when the sheet opens and again when the install scope changes, so
+  // the Method and Harnesses defaults below reflect this machine instead of a
+  // generic guess.
   const [defaults, setDefaults] = useState<AddMethodDefaults | null>(null);
   const keptHarnesses = useKeptHarnesses();
 
@@ -1283,10 +1284,23 @@ export function AddSkillSheet() {
       prefill: prefill ?? "",
       projectPath: userAddedProjectsRef.current[0] ?? null,
     });
-    getAddMethodDefaults()
-      .then(setDefaults)
-      .catch(() => setDefaults(null));
   }, [isOpen, prefill]);
+
+  const defaultsProject = scope === "project" ? projectPath : null;
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    getAddMethodDefaults(defaultsProject)
+      .then((next) => {
+        if (!cancelled) setDefaults(next);
+      })
+      .catch(() => {
+        if (!cancelled) setDefaults(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, defaultsProject]);
 
   const closeSheet = () => {
     closeAddSkillSheet();
