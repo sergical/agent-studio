@@ -8,7 +8,7 @@ import type { AgentId, InstalledSkill } from "@skill-studio/lib";
 import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
 import type { AgentLocationRow, LocationAction, ScopeGroup } from "./skill-location-status";
 
-export interface RailHarnessEntry {
+interface RailHarnessEntry {
   harness: AgentId;
   label: string;
   row: AgentLocationRow | null;

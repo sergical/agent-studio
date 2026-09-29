@@ -31,7 +31,7 @@ export function splitReaders(group: ScopeGroup): AgentId[] {
   return SPLIT_HARNESSES.filter((harness) => reading.has(harness));
 }
 
-export interface SplitFolderRow {
+interface SplitFolderRow {
   harness: AgentId;
   label: string;
   path: string;

@@ -23,10 +23,10 @@ const SLOT_FOR_ROOT_LABEL = new Map([
 ]);
 
 /** A harness root label, as the scanner writes it into `Deployment.agent`. */
-export type HarnessLabel = "Claude Code" | "Codex" | "OpenCode" | "pi" | "Cursor" | "Grok Build";
+type HarnessLabel = "Claude Code" | "Codex" | "OpenCode" | "pi" | "Cursor" | "Grok Build";
 
 /** The identity inputs of one scanned entry - `DeploymentCandidate` in Rust. */
-export interface DeploymentCandidate {
+interface DeploymentCandidate {
   name: string;
   agent: string;
   scope: string;
@@ -62,7 +62,7 @@ function deploymentId(
 }
 
 /** `id_for_candidate`, line for line. */
-export function candidateIdentity(candidate: DeploymentCandidate): CandidateIdentity {
+function candidateIdentity(candidate: DeploymentCandidate): CandidateIdentity {
   const { name, agent, scope, path, project_path } = candidate;
   if (agent === "shared" || agent === "universal" || scope === "parked") {
     return {

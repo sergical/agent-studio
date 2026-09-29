@@ -67,7 +67,7 @@ interface UseLocationActionsResult {
   closeSplitRequest: () => void;
 }
 
-export type SplitLocationRequest = Omit<Extract<LocationAction, { kind: "split" }>, "kind">;
+type SplitLocationRequest = Omit<Extract<LocationAction, { kind: "split" }>, "kind">;
 
 export interface MaterializeLocationRequest {
   target: LifecycleTarget;
