@@ -558,15 +558,21 @@ impl TraceCtx {
         let actual = walk_allowed(self.root(), &self.home, self.project.as_deref());
         let expected = load_tree(&self.dir.join("after"));
         assert_tree_matches(trace_name, &actual, &expected);
-        self.assert_symlinks_resolve(&expected);
+        self.assert_symlinks_resolve(trace_name, &expected);
     }
 
     /// For every symlink `after/tree.json` names, asserts it actually
     /// resolves on disk (`std::fs::metadata` follows the link) - the
     /// functional property that matters, independent of whatever exact
-    /// string form the target happens to be stored in.
-    fn assert_symlinks_resolve(&self, expected: &[TreeEntry]) {
-        for entry in expected.iter().filter(|e| e.kind == "symlink") {
+    /// string form the target happens to be stored in. Links under a path a
+    /// `KNOWN_DIVERGENCES` entry skips are not expected to exist.
+    fn assert_symlinks_resolve(&self, trace_name: &str, expected: &[TreeEntry]) {
+        let skip_prefix = divergence(trace_name, "on-disk path");
+        for entry in expected
+            .iter()
+            .filter(|e| e.kind == "symlink")
+            .filter(|e| skip_prefix.is_none_or(|d| !e.path.starts_with(d.core_value)))
+        {
             let dest = self.root().join(&entry.path);
             std::fs::metadata(&dest).unwrap_or_else(|e| {
                 panic!(
