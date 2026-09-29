@@ -434,7 +434,12 @@ pub(crate) fn scan_inner(
     let mut scope_ledgers: HashMap<RootScope, ownership::ScopeLedgers> = HashMap::new();
     scope_ledgers.insert(
         RootScope::Global,
-        ownership::read_scope_ledgers(fs, &home.join(".agents"), None),
+        ownership::read_scope_ledgers(
+            fs,
+            &home.join(".agents"),
+            &crate::dotagents_ledger::dotagents_dir(home, None),
+            None,
+        ),
     );
     for project in &rt.scope.projects {
         let project_lock_path = lock_file::project_lock_file_path(&project.lexical);
@@ -443,6 +448,7 @@ pub(crate) fn scan_inner(
             ownership::read_scope_ledgers(
                 fs,
                 &project.lexical.join(".agents"),
+                &crate::dotagents_ledger::dotagents_dir(home, Some(&project.lexical)),
                 Some(&project_lock_path),
             ),
         );
@@ -3601,7 +3607,9 @@ fn outdated_target(skill: &InstalledSkillDto) -> Option<crate::skill_update_chec
         .as_ref()
         .map(|p| (p.marketplace.clone(), p.plugin.clone(), p.version.clone()));
     let project_path = match (deployment.source_kind, &deployment.root.scope) {
-        (SourceKind::SkillsSh, RootScope::Project(project)) => Some(project.0.clone()),
+        (SourceKind::SkillsSh | SourceKind::Dotagents, RootScope::Project(project)) => {
+            Some(project.0.clone())
+        }
         _ => None,
     };
     Some(crate::skill_update_check::OutdatedTarget {

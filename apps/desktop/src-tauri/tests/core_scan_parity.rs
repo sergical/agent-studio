@@ -434,7 +434,7 @@ fn write_skills_sh_lock(home: &Path, name: &str) {
 }
 
 /// Writes a dotagents ledger pair (`agents.lock` + `agents.toml`) claiming
-/// `name` under `root` (`<home>/.agents` or `<project>/.agents`), matching
+/// `name` under `root` (`<home>/.agents` or the project root), matching
 /// the deleted tests' `write_dual_ledger`/inline literals.
 fn write_dotagents_ledger(root: &Path, name: &str) {
     std::fs::create_dir_all(root).unwrap();
@@ -986,7 +986,7 @@ fn exact_project_dual_ledger_owner_is_ambiguous_and_read_only() {
     let project = home.join("project");
 
     let skill_dir = write_universal_skill(&project, "find-bugs");
-    write_dotagents_ledger(&project.join(".agents"), "find-bugs");
+    write_dotagents_ledger(&project, "find-bugs");
     write_skills_sh_lock(&project, "find-bugs");
 
     let inventory = core_scan(&home, std::slice::from_ref(&project), None);

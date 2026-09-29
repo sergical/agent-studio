@@ -63,8 +63,9 @@ pub(crate) struct ScopeLedgers {
     pub project_lock_skills: HashSet<String>,
 }
 
-/// Reads both ledgers under `agents_dir` (normally `<scope root>/.agents`),
-/// plus `project_lock_path`'s skill names when the scope is a project (see
+/// Reads the skills.sh lock under `agents_dir` (normally
+/// `<scope root>/.agents`) and the dotagents ledger under `dotagents_dir`
+/// (see [`crate::dotagents_ledger::dotagents_dir`]), plus `project_lock_path`'s skill names when the scope is a project (see
 /// [`ScopeLedgers::project_lock_skills`]). A missing or unreadable file
 /// yields an empty ledger rather than an error: most scopes have no
 /// dotagents or skills.sh install at all, and a scan must still report
@@ -72,6 +73,7 @@ pub(crate) struct ScopeLedgers {
 pub(crate) fn read_scope_ledgers(
     fs: &dyn ScopeFs,
     agents_dir: &Path,
+    dotagents_dir: &Path,
     project_lock_path: Option<&Path>,
 ) -> ScopeLedgers {
     let lock =
@@ -86,9 +88,13 @@ pub(crate) fn read_scope_ledgers(
         .unwrap_or_default();
     ScopeLedgers {
         lock,
-        dotagents: read_dotagents_ledger(fs, agents_dir),
-        has_dotagents_files: fs.symlink_metadata(&agents_dir.join("agents.toml")).is_ok()
-            || fs.symlink_metadata(&agents_dir.join("agents.lock")).is_ok(),
+        dotagents: read_dotagents_ledger(fs, dotagents_dir),
+        has_dotagents_files: fs
+            .symlink_metadata(&dotagents_dir.join("agents.toml"))
+            .is_ok()
+            || fs
+                .symlink_metadata(&dotagents_dir.join("agents.lock"))
+                .is_ok(),
         project_lock_skills,
     }
 }
