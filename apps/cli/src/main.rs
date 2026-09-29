@@ -974,6 +974,22 @@ struct AddArgs {
     trust: bool,
 }
 
+/// The permission bits of a file read from disk, for `InstallFile::mode`;
+/// `None` off Unix.
+#[allow(clippy::unnecessary_wraps)] // `None` off Unix
+fn unix_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Some(metadata.permissions().mode() & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
 /// Reads `dir` into the `InstallFile` list `InstallMethod::Copy` stages,
 /// walking every subdirectory; each entry's `relative_path` is relative to
 /// `dir` itself. `Dotagents`/`SkillsSh` never call this - their bytes come
@@ -1000,6 +1016,7 @@ fn read_skill_files(dir: &std::path::Path) -> std::io::Result<Vec<InstallFile>> 
                 out.push(InstallFile {
                     relative_path,
                     contents,
+                    mode: unix_mode(&metadata),
                 });
             }
         }
@@ -1228,6 +1245,7 @@ fn read_install_files(
                 out.push(InstallFile {
                     relative_path,
                     contents,
+                    mode: unix_mode(&meta),
                 });
             }
         }

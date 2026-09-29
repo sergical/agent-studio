@@ -355,11 +355,15 @@ fn update_copy(
     )
     .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()))?;
 
-    let contents: Vec<(PathBuf, Vec<u8>)> = files
+    let contents: Vec<fsops::StageFile> = files
         .iter()
-        .map(|f| (f.relative_path.clone(), f.contents.clone()))
+        .map(|f| fsops::StageFile {
+            relative: f.relative_path.clone(),
+            bytes: f.contents.clone(),
+            mode: f.mode,
+        })
         .collect();
-    let staged = fsops::stage(&root, &plan, &contents)
+    let staged = fsops::stage_files(&root, &plan, &contents)
         .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
     let final_name = Path::new(&skill.0);
     // Same directory the doctor prune and check sweep, not a

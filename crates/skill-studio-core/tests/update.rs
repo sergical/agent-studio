@@ -222,10 +222,12 @@ fn copy_request_two_files(skill: &str, revision: &str) -> UpdateRequest {
                     "---\nname: {skill}\ndescription: a copied skill\n---\nBody at {revision}.\n"
                 )
                 .into_bytes(),
+                mode: None,
             },
             InstallFile {
                 relative_path: PathBuf::from("reference.md"),
                 contents: format!("Reference at {revision}.\n").into_bytes(),
+                mode: None,
             },
         ],
         source: None,
@@ -255,6 +257,7 @@ fn copy_request(skill: &str, revision: &str) -> UpdateRequest {
                 "---\nname: {skill}\ndescription: a copied skill\n---\nBody at {revision}.\n"
             )
             .into_bytes(),
+            mode: None,
         }],
         source: None,
         ref_pin: None,
@@ -1027,6 +1030,44 @@ fn project_dotagents_update_edits_the_project_root_agents_toml_runs_project_inst
         std::fs::read_to_string(project.join("agents.lock")).unwrap(),
         LOCK_BEFORE
     );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `copy_update_keeps_each_source_files_mode_or_names_the_file_that_lost_its_bits`:
+/// Flow: a Copy update swaps in a tree whose `scripts/run.sh` is 0o755 and
+/// whose `SKILL.md` is 0o640. Expectation: the deployed script is still 0o755
+/// and `SKILL.md` keeps 0o640. A failure here means the update wrote bytes
+/// with the process default mode, so an updated script is no longer
+/// executable.
+#[cfg(unix)]
+#[test]
+fn copy_update_keeps_each_source_files_mode_or_names_the_file_that_lost_its_bits() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = unique_temp_dir("update_copy_keeps_modes");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "alpha", "v1");
+    let rt = runtime_for(&home, "v2");
+    let mut req = copy_request("alpha", "v2");
+    req.files[0].mode = Some(0o640);
+    req.files.push(InstallFile {
+        relative_path: PathBuf::from("scripts/run.sh"),
+        contents: b"#!/bin/sh\necho hi\n".to_vec(),
+        mode: Some(0o755),
+    });
+
+    let outcome = ops::update(&rt, &ctx(), &req).unwrap();
+
+    let mode_of = |relative: &str| {
+        std::fs::metadata(outcome.deployment_path.join(relative))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode_of("scripts/run.sh"), 0o755, "the script lost its bits");
+    assert_eq!(mode_of("SKILL.md"), 0o640, "a plain file lost its own mode");
 
     std::fs::remove_dir_all(&home).ok();
 }

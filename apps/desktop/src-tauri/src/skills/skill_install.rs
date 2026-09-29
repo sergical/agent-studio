@@ -168,6 +168,22 @@ fn guard_local_copy_source(
     Ok(canonical_source)
 }
 
+/// The permission bits of a file read from disk, for `InstallFile::mode`;
+/// `None` off Unix.
+#[allow(clippy::unnecessary_wraps)] // `None` off Unix
+fn unix_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Some(metadata.permissions().mode() & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
 /// Reads `dir` into the `InstallFile` list `InstallMethod::Copy` stages -
 /// same walk as the CLI's own `read_skill_files` (`apps/cli/src/main.rs`),
 /// duplicated rather than shared across the crate boundary the CLI binary
@@ -181,11 +197,13 @@ fn read_skill_files(dir: &Path) -> Result<Vec<InstallFile>, String> {
             if file_type.is_dir() {
                 walk(root, &path, out)?;
             } else if file_type.is_file() {
+                let mode = unix_mode(&entry.metadata()?);
                 let contents = std::fs::read(&path)?;
                 let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
                 out.push(InstallFile {
                     relative_path,
                     contents,
+                    mode,
                 });
             }
         }
@@ -466,7 +484,14 @@ pub(crate) fn finish_install(
         }
     }
 
-    for agent in &request.disabled_harnesses {
+    // Only global scope has a per-harness switch-off (Claude's
+    // `skillOverrides`, the Codex/OpenCode split): a project install turns
+    // nothing off, whatever the request lists.
+    let disabled_harnesses: &[AgentId] = match request.scope {
+        InstallScope::Global => &request.disabled_harnesses,
+        InstallScope::Project => &[],
+    };
+    for agent in disabled_harnesses {
         if let Err(e) = disable_harness(rt, &skill.0, *agent, request.project_path.as_deref()) {
             warnings.push(format!("{}: {e}", agent.cli_name()));
         }
@@ -1201,6 +1226,49 @@ mod tests {
             link.symlink_metadata().is_ok(),
             "switching claude-code off must keep {}",
             link.display()
+        );
+    }
+
+    /// `project_install_ignores_disabled_harnesses_or_names_the_global_switch_it_wrote`:
+    /// Flow: a project-scope Copy install asks for `claude-code` in
+    /// `disabled_harnesses`, which only global scope supports (its switch is
+    /// `skillOverrides` in `~/.claude/settings.json`). Expectation: the install
+    /// succeeds with no warning, `~/.claude/settings.json` is never written,
+    /// and the skill stays on for every harness. A failure here means a
+    /// project install switched a skill off for the whole machine.
+    #[tokio::test]
+    async fn project_install_ignores_disabled_harnesses_or_names_the_global_switch_it_wrote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = home.join("work/app");
+        let source_dir = tmp.path().join("source");
+        std::fs::create_dir_all(&project).unwrap();
+        super::super::test_support::write_skill(&source_dir, "find-bugs");
+
+        let rt = test_runtime(&home);
+        let mut request = copy_request(&source_dir, "find-bugs");
+        request.scope = InstallScope::Project;
+        request.project_path = Some(project.to_string_lossy().into_owned());
+        request.agents = vec![AgentId::ClaudeCode];
+        request.disabled_harnesses = vec![AgentId::ClaudeCode];
+
+        let result = add_skill_with_runtime(move || Ok(rt), request, never_github())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.warning, None,
+            "a project install has no switch-off to warn about"
+        );
+        assert!(
+            project.join(".agents/skills/find-bugs").exists(),
+            "the project install must still land"
+        );
+        let settings = home.join(".claude/settings.json");
+        assert!(
+            !settings.exists(),
+            "a project install must not write the global switch-off: {}",
+            std::fs::read_to_string(&settings).unwrap_or_default()
         );
     }
 

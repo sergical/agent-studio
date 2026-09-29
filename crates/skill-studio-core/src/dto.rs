@@ -786,6 +786,11 @@ pub struct InstallFile {
     pub relative_path: PathBuf,
     /// The file's bytes.
     pub contents: Vec<u8>,
+    /// The `0o777` permission bits the source file had, so a copied
+    /// `scripts/run.sh` stays executable. `None` gives the process default;
+    /// ignored off Unix.
+    #[serde(default)]
+    pub mode: Option<u32>,
 }
 
 /// Request to install one skill by [`InstallMethod::Copy`], `Dotagents`, or

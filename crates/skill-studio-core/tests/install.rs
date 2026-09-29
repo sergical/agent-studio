@@ -196,6 +196,7 @@ fn copy_request(skill: &str) -> InstallRequest {
             relative_path: PathBuf::from("SKILL.md"),
             contents: format!("---\nname: {skill}\ndescription: a copied skill\n---\nBody.\n")
                 .into_bytes(),
+            mode: None,
         }],
         source: None,
         trust_identity: None,
@@ -1770,4 +1771,109 @@ fn install_falls_back_to_a_copy_when_the_link_fails_and_reports_it_or_names_the_
     );
 
     std::fs::remove_dir_all(&home).ok();
+}
+
+/// `copy_install_keeps_each_source_files_mode_or_names_the_file_that_lost_its_bits`:
+/// Flow: a global Copy install carries `scripts/run.sh` (0o755) and
+/// `SKILL.md` (0o640). Expectation: the deployed script is still 0o755 and
+/// `SKILL.md` keeps 0o640. A failure here means the copy wrote bytes with the
+/// process default mode, so an installed script is no longer executable.
+#[cfg(unix)]
+#[test]
+fn copy_install_keeps_each_source_files_mode_or_names_the_file_that_lost_its_bits() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = unique_temp_dir("install_copy_keeps_modes");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let mut req = copy_request("modes");
+    req.files[0].mode = Some(0o640);
+    req.files.push(InstallFile {
+        relative_path: PathBuf::from("scripts/run.sh"),
+        contents: b"#!/bin/sh\necho hi\n".to_vec(),
+        mode: Some(0o755),
+    });
+
+    ops::install(&rt, &ctx(), &req).unwrap();
+
+    let deployed = home.join(UNIVERSAL_ROOT_RELATIVE).join("modes");
+    let mode_of = |relative: &str| {
+        std::fs::metadata(deployed.join(relative))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode_of("scripts/run.sh"), 0o755, "the script lost its bits");
+    assert_eq!(mode_of("SKILL.md"), 0o640, "a plain file lost its own mode");
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `undo_of_a_copy_install_restores_the_registry_and_preferences_or_names_the_key_left_behind`:
+/// Flow: `skill-studio.json` already holds an unrelated `copies` entry and a
+/// saved `preferred_method`/`preferred_harnesses`; a global Copy install with
+/// `save_as_preference` changes both and adds its own `copies` entries; the
+/// install is then undone. Expectation: the registry equals its state before
+/// the install (the other copy and the earlier preferences come back
+/// unchanged, none of the install's copies stay) and a scan finds no
+/// deployment of the skill. A failure here means undo removed the folders
+/// but left the install's registry writes behind.
+#[test]
+fn undo_of_a_copy_install_restores_the_registry_and_preferences_or_names_the_key_left_behind() {
+    let home = unique_temp_dir("install_undo_registry");
+    std::fs::create_dir_all(home.join(".agents")).unwrap();
+    let registry_path = home.join(".agents").join("skill-studio.json");
+    let before = serde_json::json!({
+        "preferred_method": "skills-sh",
+        "preferred_harnesses": ["codex"],
+        "copies": { "other-id": { "deployment_id": "other-id", "name": "other" } },
+        "added_folders": ["/somewhere"],
+    });
+    std::fs::write(&registry_path, serde_json::to_vec(&before).unwrap()).unwrap();
+    let rt = runtime_for(&home);
+
+    let req = copy_request("undone");
+    let InstallOutcome::Installed { event_id, .. } = ops::install(&rt, &ctx(), &req).unwrap()
+    else {
+        panic!("expected Installed");
+    };
+    assert_ne!(
+        read_registry(&registry_path),
+        before,
+        "the install must write"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        read_registry(&registry_path),
+        before,
+        "undo must put copies and preferences back"
+    );
+    let inventory =
+        ops::scan(&rt, &ctx(), &skill_studio_core::dto::ScanRequest::default()).unwrap();
+    assert!(
+        !inventory.skills.iter().any(|s| s.name.0 == "undone"),
+        "a scan must show no deployment after undo"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// The registry file without its `write_version` counter, which every write
+/// bumps and undo cannot rewind.
+fn read_registry(path: &std::path::Path) -> serde_json::Value {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    doc.as_object_mut().unwrap().remove("write_version");
+    doc
 }

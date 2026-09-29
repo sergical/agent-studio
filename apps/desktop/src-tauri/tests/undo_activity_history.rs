@@ -335,6 +335,7 @@ fn park_unpark_harness_toggle_and_install_each_appear_in_history_and_park_undo_r
                 relative_path: PathBuf::from("SKILL.md"),
                 contents: b"---\nname: delta-copy\ndescription: a copied skill\n---\nBody.\n"
                     .to_vec(),
+                mode: None,
             }],
             source: None,
             trust_identity: None,

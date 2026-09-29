@@ -169,6 +169,16 @@
             "minimum": 0,
             "maximum": 255
           }
+        },
+        "mode": {
+          "description": "The `0o777` permission bits the source file had, so a copied\n`scripts/run.sh` stays executable. `None` gives the process default;\nignored off Unix.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
         }
       },
       "required": [
