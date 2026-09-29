@@ -7,8 +7,19 @@
 
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@skill-studio/ui";
-import { isBlockingSpecViolation } from "@skill-studio/lib";
-import type { Deployment, FrontmatterRepairPreview, InstalledSkill } from "@skill-studio/lib";
+import {
+  describeFrontmatterErrorLine,
+  describeFrontmatterRepair,
+  isBlockingSpecViolation,
+  parseYamlFrontmatterError,
+  proposeFrontmatterQuoteRepair,
+} from "@skill-studio/lib";
+import type {
+  Deployment,
+  FrontmatterQuoteRepair,
+  FrontmatterRepairPreview,
+  InstalledSkill,
+} from "@skill-studio/lib";
 import { TooltipControl } from "../ui/TooltipControl";
 
 interface InstalledSkillHeaderProps {
@@ -16,6 +27,10 @@ interface InstalledSkillHeaderProps {
   /** The deployment whose SKILL.md the page renders - the header's violation line follows it. */
   deployment?: Deployment;
   frontmatterRepair?: FrontmatterRepairPreview | null;
+  /** The rendered copy's SKILL.md text; the quote repair and the line hint are derived from it. */
+  skillMdContent?: string | null;
+  /** Omitted when the rendered copy cannot be edited in place (plugin-managed). */
+  onQuoteRepair?: (repair: FrontmatterQuoteRepair) => void;
   onFixYaml: () => void;
   onEditManually: () => void;
 }
@@ -37,6 +52,8 @@ export function InstalledSkillHeader({
   skill,
   deployment,
   frontmatterRepair,
+  skillMdContent,
+  onQuoteRepair,
   onFixYaml,
   onEditManually,
 }: InstalledSkillHeaderProps) {
@@ -51,9 +68,23 @@ export function InstalledSkillHeader({
   const blockingViolations = (renderedDeployment?.spec_violations ?? []).filter(
     isBlockingSpecViolation,
   );
-  const hasMalformedYaml = blockingViolations.some((violation) =>
+  const yamlViolation = blockingViolations.find((violation) =>
     violation.startsWith("invalid YAML frontmatter at line "),
   );
+  const hasMalformedYaml = yamlViolation !== undefined;
+  const yamlLocation = yamlViolation ? parseYamlFrontmatterError(yamlViolation) : null;
+  // A backend "Fix" preview wins; the local quote repair covers what it declines.
+  const quoteRepair =
+    yamlLocation && skillMdContent && !frontmatterRepair && onQuoteRepair
+      ? proposeFrontmatterQuoteRepair(skillMdContent, yamlLocation.line)
+      : null;
+  const lineHint =
+    yamlLocation && skillMdContent && !frontmatterRepair
+      ? describeFrontmatterErrorLine(skillMdContent, yamlLocation.line)
+      : null;
+  const violationText = quoteRepair
+    ? describeFrontmatterRepair(quoteRepair, yamlLocation?.column)
+    : (lineHint ?? blockingViolations.join("; "));
 
   return (
     <header className="flex flex-col gap-4">
@@ -93,7 +124,12 @@ export function InstalledSkillHeader({
       {blockingViolations.length > 0 && (
         <div className="flex items-center gap-2 text-small text-error">
           <AlertTriangle size={13} />
-          <span>{blockingViolations.join("; ")}</span>
+          <span>{violationText}</span>
+          {quoteRepair && (
+            <Button size="sm" onClick={() => onQuoteRepair?.(quoteRepair)}>
+              Quote the {quoteRepair.key}
+            </Button>
+          )}
           {hasMalformedYaml && (
             <Button
               size="sm"
