@@ -529,7 +529,7 @@ fn claude_code() -> HarnessFacts {
         native_disable: Some(NativeDisableSpec {
             mechanism: DisableMechanism::ClaudeSkillOverrides,
             scopes: vec![ScopeLevel::Global, ScopeLevel::Project],
-            writable: Support::Unknown,
+            writable: Support::Yes(ev()),
             disabled_by: DisabledBy::ClaudeSkillOverrides,
             evidence: ev(),
         }),

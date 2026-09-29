@@ -1696,6 +1696,9 @@ struct DisableSources {
     /// Claude Code `settings.json` `enabledPlugins["<plugin>@<marketplace>"]`,
     /// keyed by that same `<plugin>@<marketplace>` id.
     claude_enabled_plugins: HashMap<String, bool>,
+    /// Skill names whose Claude Code `settings.json` `skillOverrides` value
+    /// is `"off"`.
+    claude_skill_overrides_off: HashSet<String>,
 }
 
 impl DisableSources {
@@ -1714,6 +1717,13 @@ impl DisableSources {
                 &opencode_config_dir,
             ),
             claude_enabled_plugins: read_claude_enabled_plugins(fs, home),
+            claude_skill_overrides_off: crate::harness::read_claude_skill_overrides(fs, home, None)
+                .into_iter()
+                .filter(|(_, v)| {
+                    v.as_str() == Some(crate::harness_switch::CLAUDE_SKILL_OVERRIDE_OFF)
+                })
+                .map(|(name, _)| name)
+                .collect(),
         }
     }
 }
@@ -2146,6 +2156,10 @@ fn native_disabled_by(
                 .is_denied(name)
                 .then_some(DisabledBy::OpencodePermission)
         }
+        RootKind::Harness(id) if id.as_str() == AgentId::CLAUDE_CODE => sources
+            .claude_skill_overrides_off
+            .contains(name)
+            .then_some(DisabledBy::ClaudeSkillOverrides),
         _ => None,
     }
 }
@@ -5309,12 +5323,20 @@ pub(crate) fn ensure_dir_all(
     Ok(())
 }
 
-/// Removes or recreates Claude Code's per-skill link under
-/// `<project>/.claude/skills/<name>` for a project-scoped row, or
-/// `<home>/.claude/skills/<name>` for a global one. One step, so
-/// `toggled`/`total` are always `1`/`1` on success. Idempotent: if the link
-/// is already in the requested state, the journal row still records a usable
-/// inverse but no filesystem call runs.
+/// Claude Code's per-skill switch: `skillOverrides.<name>` in
+/// `~/.claude/settings.json`. Off writes `"off"`; on restores the value the
+/// entry held before the last off (read back from that event's payload), or
+/// removes the key when there was none. The same switch works for every
+/// layout the scanner produces - a per-skill link, a whole-folder link, a
+/// real copy - because nothing under `.claude/skills` changes. The file is
+/// global and applies in every project, so a project-scoped off is refused;
+/// a project-scoped on still clears the global entry.
+///
+/// Enable has a second job: when nothing sits at `.claude/skills/<name>`
+/// (Claude Code cannot see the skill at all, e.g. a link an older build
+/// removed), it creates the per-skill link to the Universal folder. One
+/// event covers both steps; its inverse restores `settings.json` when that
+/// changed, otherwise it removes the link.
 #[allow(clippy::too_many_arguments)]
 fn set_claude_code_switch(
     rt: &Runtime,
@@ -5327,111 +5349,86 @@ fn set_claude_code_switch(
     kind: crate::events::EventKind,
     enabled: bool,
 ) -> Result<(u32, u32), CoreError> {
+    use crate::harness_switch::CLAUDE_SKILL_OVERRIDE_OFF;
+
+    if project_path.is_some() && !enabled {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            "Claude Code's skillOverrides live in ~/.claude/settings.json and apply in every project; turn the skill off from its Global row",
+        ));
+    }
     let target_scope = match project_path {
         Some(project) => RootScope::Project(ProjectRef(project.to_path_buf())),
         None => RootScope::Global,
     };
-    let canonical_dir = skill
-        .deployments
-        .iter()
-        .find(|d| {
-            d.root.kind == RootKind::Universal
-                && d.backing == BackingRelationship::Canonical
-                && d.root.scope == target_scope
-        })
-        .map(|d| d.path.clone())
-        .ok_or_else(|| {
-            CoreError::new(
-                ErrorCode::Unsupported,
-                "no universal deployment to link Claude Code to",
-            )
-        })?;
+    let settings_path = home.join(".claude/settings.json");
+    let existing_settings = read_optional_text(fs, &settings_path)?;
+    let current = match existing_settings.as_deref() {
+        Some(text) => {
+            crate::harness_switch::claude_skill_override_set(Some(text), &skill.name.0, None)?.1
+        }
+        None => None,
+    };
+    let is_off =
+        current.as_ref().and_then(serde_json::Value::as_str) == Some(CLAUDE_SKILL_OVERRIDE_OFF);
+
     let claude_skills_dir = match project_path {
         Some(project) => project.join(".claude/skills"),
         None => home.join(".claude/skills"),
     };
     let link_path = claude_skills_dir.join(&skill.name.0);
-
-    // `~/.claude/skills` itself can be a whole-directory symlink into the
-    // shared root; that covers every skill at once and has no per-skill slot
-    // to toggle. And the per-skill slot can be a real directory (a plain
-    // copy) rather than a link. `symlink_metadata` succeeds on both, so only
-    // `FileKind::Symlink` counts as "already linked" - anything else at that
-    // path is refused rather than torn down by `remove_file`.
-    if fs
-        .symlink_metadata(&claude_skills_dir)
-        .is_ok_and(|f| f.kind == FileKind::Symlink)
-    {
-        return Err(CoreError::new(
-            ErrorCode::InvalidRequest,
-            format!(
-                "{} is a whole-directory link; Claude Code reads every skill through it, so \"{}\" has no per-skill switch",
-                claude_skills_dir.display(),
-                skill.name
-            ),
-        )
-        .at(&claude_skills_dir));
-    }
-    let link_kind = fs.symlink_metadata(&link_path).ok().map(|f| f.kind);
-    if let Some(kind @ (FileKind::Dir | FileKind::File | FileKind::Other)) = link_kind {
-        let kind_name = match kind {
-            FileKind::Dir => "a real directory",
-            FileKind::File => "a plain file",
-            _ => "not a symlink",
-        };
-        return Err(CoreError::new(
-            ErrorCode::InvalidRequest,
-            format!(
-                "{} is {kind_name}, not a per-skill link; removing it would delete Claude Code's copy",
-                link_path.display()
-            ),
-        )
-        .at(&link_path));
-    }
-    let already_linked = link_kind == Some(FileKind::Symlink);
-
-    // A no-op toggle (enable when already linked, disable when already
-    // absent) touches no bytes, so it must carry no inverse: an inverse here
-    // would undo a mutation that never happened, deleting a link the
-    // *previous* state left in place or recreating one that was never
-    // removed.
-    let no_op = enabled == already_linked;
-    let inverse = if no_op {
+    let link_target = if enabled && fs.symlink_metadata(&link_path).is_err() {
+        let canonical_dir = skill
+            .deployments
+            .iter()
+            .find(|d| {
+                d.root.kind == RootKind::Universal
+                    && d.backing == BackingRelationship::Canonical
+                    && d.root.scope == target_scope
+            })
+            .map(|d| d.path.clone())
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::Unsupported,
+                    "Claude Code cannot see this skill and there is no Universal folder to link it to",
+                )
+            })?;
+        Some(canonical_dir)
+    } else {
         None
-    } else if enabled {
-        Some(crate::events::remove_symlink_inverse(
-            &link_path,
-            Some(&canonical_dir),
+    };
+
+    // `Some(None)` removes the entry; `None` leaves the file alone.
+    let new_override: Option<Option<serde_json::Value>> = match (enabled, is_off) {
+        (true, true) => Some(claude_override_before_last_off(session, &skill.name)),
+        (false, false) => Some(Some(serde_json::Value::String(
+            CLAUDE_SKILL_OVERRIDE_OFF.to_string(),
+        ))),
+        _ => None,
+    };
+
+    let mut backup_dir = None;
+    let inverse = if new_override.is_some() {
+        let manifest =
+            session
+                .store
+                .backup_paths(&session.guard, id, std::slice::from_ref(&settings_path))?;
+        let pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.clone());
+        backup_dir = Some(manifest.backup_dir.clone());
+        Some(crate::events::restore_backup_inverse(
+            &settings_path,
+            pre_fingerprint.as_ref(),
+            None,
         ))
     } else {
-        // Recreates whatever `link_path` actually pointed at, not the
-        // current canonical deployment: a link retargeted by hand (or left
-        // over from a moved skill) must undo back to its own real target,
-        // not silently point the undo at wherever the universal directory
-        // happens to be now. `read_link` returns the raw on-disk text,
-        // which a Claude Code link written as `../../.agents/skills/<name>`
-        // (the shape the scanner resolves and the desktop relinker writes)
-        // leaves relative; `confine` refuses anything not absolute, so it
-        // is resolved against the link's own parent and lexically
-        // collapsed the same way the scanner resolves a link target,
-        // before `confine` refuses a target outside the runtime's scope
-        // the same way every other cross-boundary link does. The recorded
-        // inverse always carries this resolved absolute form, not the raw
-        // relative text: `ScopeFs::symlink` only accepts a `ScopedPath`,
-        // which `confine` only produces from an absolute path, so there is
-        // no port through which undo could recreate the original relative
-        // spelling even if it wanted to.
-        let raw_target = fs
-            .read_link(&link_path)
-            .map_err(|e| CoreError::io(&link_path, e))?;
-        let real_target =
-            crate::fsops::join_lexical(link_path.parent().unwrap_or(&link_path), &raw_target);
-        crate::ports::confine(&rt.scope, fs, &real_target)?;
-        Some(crate::events::recreate_symlink_inverse(
-            &link_path,
-            &real_target,
-        ))
+        link_target
+            .as_deref()
+            .map(|target| crate::events::remove_symlink_inverse(&link_path, Some(target)))
     };
+    let mut payload = serde_json::json!({ "skill": skill.name.0, "harness": AgentId::CLAUDE_CODE });
+    if new_override.is_some() {
+        payload[CLAUDE_OVERRIDE_BEFORE_KEY] = current.clone().unwrap_or(serde_json::Value::Null);
+    }
     let draft = crate::events::EventDraft {
         kind,
         skill: skill.name.clone(),
@@ -5445,43 +5442,116 @@ fn set_claude_code_switch(
             .to_string(),
         ),
         project_path: project_path.map(Path::to_path_buf),
-        payload: serde_json::json!({ "skill": skill.name.0, "harness": AgentId::CLAUDE_CODE }),
+        payload,
         inverse,
-        backup_dir: None,
+        backup_dir,
     };
     session.store.record(&session.guard, id, &draft)?;
 
     // Every fallible step after `record` runs inside this closure so a
-    // failure anywhere in it - not just the final `symlink`/`remove_file`
-    // call - reaches the `finish(Failed)` below. `?` on a step before this
-    // closure existed (e.g. `ensure_dir_all`, `confine`) would return
-    // straight out of the function and leave the row `pending` forever,
-    // which `recover_interrupted` would later treat as an interrupted crash
-    // rather than a plain, retryable failure.
-    let mutate: Result<(), CoreError> = (|| {
-        if enabled && !already_linked {
+    // failure anywhere in it reaches the `finish(Failed)` below; a `?`
+    // outside it would leave the row `pending`, which `recover_interrupted`
+    // would later read as a crash rather than a plain, retryable failure.
+    let mutate: Result<Option<Fingerprint>, CoreError> = (|| {
+        let mut post_fingerprint = None;
+        if let Some(value) = new_override {
+            let (text, _) = crate::harness_switch::claude_skill_override_set(
+                existing_settings.as_deref(),
+                &skill.name.0,
+                value,
+            )?;
+            let settings_dir = settings_path
+                .parent()
+                .unwrap_or(&settings_path)
+                .to_path_buf();
+            ensure_dir_all(rt, session, fs, &settings_dir)?;
+            let scoped_settings = crate::ports::confine(&rt.scope, fs, &settings_path)?;
+            fs.write_atomic(&session.guard, &scoped_settings, text.as_bytes())
+                .map_err(|e| CoreError::io(&settings_path, e))?;
+            post_fingerprint = crate::events::fingerprint_path(fs, &settings_path)?;
+        }
+        if let Some(target) = &link_target {
             ensure_dir_all(rt, session, fs, &claude_skills_dir)?;
-            let scoped_target = crate::ports::confine(&rt.scope, fs, &canonical_dir)?;
+            let scoped_target = crate::ports::confine(&rt.scope, fs, target)?;
             let scoped_link = crate::ports::confine(&rt.scope, fs, &link_path)?;
             fs.symlink(&session.guard, &scoped_target, &scoped_link)
                 .map_err(|e| CoreError::io(&link_path, e))?;
-        } else if !enabled && already_linked {
-            let scoped_link = crate::ports::confine(&rt.scope, fs, &link_path)?;
-            fs.remove_file(&session.guard, &scoped_link)
-                .map_err(|e| CoreError::io(&link_path, e))?;
         }
-        Ok(())
+        Ok(post_fingerprint)
     })();
-    if let Err(e) = mutate {
-        let _ = session
-            .store
-            .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
-        return Err(e);
+    match mutate {
+        Ok(post_fingerprint) => {
+            session.store.finish(
+                &session.guard,
+                id,
+                crate::events::EventStatus::Done,
+                post_fingerprint,
+            )?;
+            Ok((1, 1))
+        }
+        Err(e) => {
+            let _ =
+                session
+                    .store
+                    .finish(&session.guard, id, crate::events::EventStatus::Failed, None);
+            Err(e)
+        }
     }
-    session
+}
+
+/// Payload key a Claude Code switch event stores the entry's earlier
+/// `skillOverrides` value under (`null` for no entry).
+const CLAUDE_OVERRIDE_BEFORE_KEY: &str = "skill_override_before";
+
+/// How many of a skill's newest events an enable reads back to find the
+/// value its last off replaced.
+const CLAUDE_OVERRIDE_HISTORY_LIMIT: u32 = 200;
+
+/// The `skillOverrides` value the newest completed Claude Code off replaced,
+/// so an on puts it back (`"user-invocable-only"`, say) instead of dropping
+/// it. `None` - remove the key - when there was no entry, when the newest
+/// settings write for this skill was itself an on, or when no event records
+/// one (an `"off"` the user wrote by hand).
+fn claude_override_before_last_off(
+    session: &crate::ports::MutationSession,
+    skill: &SkillName,
+) -> Option<serde_json::Value> {
+    let events = session
         .store
-        .finish(&session.guard, id, crate::events::EventStatus::Done, None)?;
-    Ok((1, 1))
+        .list(&crate::events::EventFilter {
+            skill: Some(skill.clone()),
+            limit: CLAUDE_OVERRIDE_HISTORY_LIMIT,
+            after: None,
+        })
+        .ok()?;
+    let last_write = events.iter().find(|e| {
+        e.status == crate::events::EventStatus::Done
+            && e.harness
+                .as_ref()
+                .is_some_and(|h| h.as_str() == AgentId::CLAUDE_CODE)
+            && e.payload.get(CLAUDE_OVERRIDE_BEFORE_KEY).is_some()
+    })?;
+    if last_write.kind() != Some(crate::events::EventKind::HarnessDisable) {
+        return None;
+    }
+    last_write
+        .payload
+        .get(CLAUDE_OVERRIDE_BEFORE_KEY)
+        .filter(|v| {
+            !v.is_null() && v.as_str() != Some(crate::harness_switch::CLAUDE_SKILL_OVERRIDE_OFF)
+        })
+        .cloned()
+}
+
+/// The file's text, or `None` when it does not exist.
+fn read_optional_text(fs: &dyn ScopeFs, path: &Path) -> Result<Option<String>, CoreError> {
+    match fs.read_capped(path, crate::harness_switch::HARNESS_CONFIG_MAX_BYTES) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(path)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(CoreError::io(path, e)),
+    }
 }
 
 /// True when `kind` is a root Codex reads: the shared universal root, or its
