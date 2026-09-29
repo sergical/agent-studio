@@ -31,9 +31,9 @@ import { buildInstalledSkillSourceLedgerModel } from "./installed-skill-source-l
 import { setInvocationForFile } from "./skill-location-actions";
 import { canOfferHarnessSwitchForRow, harnessSwitchOffTitle } from "./skill-location-helpers";
 import {
-  buildInvocationFiles,
   buildScopeGroups,
   INVOCATION_POLICY_OPTIONS,
+  invocationFilesForSkill,
   scopeGroupsHaveDrift,
 } from "./skill-location-status";
 import type { AgentLocationRow } from "./skill-location-status";
@@ -86,7 +86,7 @@ export function SkillPropertiesRail({ skill }: SkillPropertiesRailProps) {
   const [isSavingInvocation, setIsSavingInvocation] = useState(false);
 
   const groups = buildScopeGroups(skill);
-  const files = buildInvocationFiles(groups, skill);
+  const files = invocationFilesForSkill(skill);
   const ledger = buildInstalledSkillSourceLedgerModel(skill);
   const hasDrift = scopeGroupsHaveDrift(groups);
 
