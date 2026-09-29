@@ -4823,8 +4823,13 @@ fn restore_event_body(
 
     // Every fallible, non-mutating step runs before the claim below: a
     // failure here must leave the target event revertible, not stuck behind
-    // a claim nothing ever undoes.
-    let scoped = crate::ports::confine(&rt.scope, fs, &path)?;
+    // a claim nothing ever undoes. A path to write back goes through a
+    // linked config file; a path to remove is the link itself.
+    let scoped = if pre.is_some() {
+        crate::ports::confine_write_through(&rt.scope, fs, &path)?
+    } else {
+        crate::ports::confine(&rt.scope, fs, &path)?
+    };
     // Every manifest entry besides `path` itself - e.g. `remove`'s own
     // registry.json backup, next to its deployment tree - restores
     // best-effort alongside the primary path below, keyed by its own
@@ -4949,7 +4954,7 @@ fn restore_event_body(
     // reporting only `path`, rather than failing a restore that otherwise
     // succeeded. See `extra_plans`' own comment above.
     for (other_path, other_plan) in &extra_plans {
-        if let Ok(other_scoped) = crate::ports::confine(&rt.scope, fs, other_path) {
+        if let Ok(other_scoped) = crate::ports::confine_write_through(&rt.scope, fs, other_path) {
             // `extra_plans` only ever receives `Write`/`WriteDir` (see the
             // loop that builds it above, in the `Some(_pre_fingerprint)` arm
             // of `match &pre`) - a secondary manifest entry is always a
@@ -5615,7 +5620,7 @@ fn set_claude_code_switch(
         Some(project) => RootScope::Project(ProjectRef(project.to_path_buf())),
         None => RootScope::Global,
     };
-    let settings_path = home.join(".claude/settings.json");
+    let settings_path = crate::ports::resolve_config_link(fs, &home.join(".claude/settings.json"))?;
     let existing_settings = read_optional_text(fs, &settings_path)?;
     let current = match existing_settings.as_deref() {
         Some(text) => {
@@ -5719,7 +5724,8 @@ fn set_claude_code_switch(
                 .unwrap_or(&settings_path)
                 .to_path_buf();
             ensure_dir_all(rt, session, fs, &settings_dir)?;
-            let scoped_settings = crate::ports::confine(&rt.scope, fs, &settings_path)?;
+            let scoped_settings =
+                crate::ports::confine_write_through(&rt.scope, fs, &settings_path)?;
             fs.write_atomic(&session.guard, &scoped_settings, text.as_bytes())
                 .map_err(|e| CoreError::io(&settings_path, e))?;
             post_fingerprint = crate::events::fingerprint_path(fs, &settings_path)?;
@@ -5866,7 +5872,8 @@ fn set_codex_switch(
             "no Codex-visible SKILL.md paths for this skill",
         ));
     }
-    let config_path = codex_config_path(&rt.scope.codex_home);
+    let config_path =
+        crate::ports::resolve_config_link(fs, &codex_config_path(&rt.scope.codex_home))?;
     let scope = Some(
         if project_path.is_some() {
             "project"
@@ -5941,7 +5948,7 @@ fn set_codex_switch(
     let mutate: Result<(u32, Option<Fingerprint>), CoreError> = (|| {
         let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
         ensure_dir_all(rt, session, fs, &config_parent)?;
-        let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
+        let scoped_config = crate::ports::confine_write_through(&rt.scope, fs, &config_path)?;
         let mut toggled: u32 = 0;
         for path in &paths {
             let existing =
@@ -6077,7 +6084,10 @@ fn set_opencode_switch(
         .opencode_config_root
         .clone()
         .unwrap_or_else(|| home.join(".config").join("opencode"));
-    let config_path = crate::opencode_config::opencode_json_path(&config_dir);
+    let config_path = crate::ports::resolve_config_link(
+        fs,
+        &crate::opencode_config::opencode_json_path(&config_dir),
+    )?;
     let jsonc_path = crate::opencode_config::opencode_jsonc_path(&config_dir);
     crate::harness_switch::opencode_refuses_jsonc(
         fs.symlink_metadata(&config_path).is_ok(),
@@ -6126,7 +6136,7 @@ fn set_opencode_switch(
     let mutate: Result<Option<Fingerprint>, CoreError> = (|| {
         let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
         ensure_dir_all(rt, session, fs, &config_parent)?;
-        let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
+        let scoped_config = crate::ports::confine_write_through(&rt.scope, fs, &config_path)?;
         fs.write_atomic(&session.guard, &scoped_config, &new_text)
             .map_err(|e| CoreError::io(&config_path, e))?;
         crate::events::fingerprint_path(fs, &config_path)

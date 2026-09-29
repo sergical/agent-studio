@@ -133,7 +133,7 @@ impl ScopeFs for RealFs {
             .to_string_lossy();
         let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp_path = dir.join(format!(".{file_name}.tmp-{}-{counter}", std::process::id()));
-        let existing_mode = fs::symlink_metadata(path).ok().map(|m| m.mode());
+        let existing_mode = fs::metadata(path).ok().map(|m| m.mode());
         fs::write(&tmp_path, bytes)?;
         if let Some(mode) = existing_mode {
             fs::set_permissions(&tmp_path, fs::Permissions::from_mode(mode))?;

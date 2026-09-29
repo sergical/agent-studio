@@ -1959,3 +1959,86 @@ fn undo_of_a_claude_code_off_restores_settings_json_byte_for_byte_or_names_the_b
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// Flow: `~/.claude/settings.json` is a link into a dotfiles folder, and
+/// the user turns a skill off in Claude Code, then undoes it. Expect the
+/// write and the undo to land in the dotfiles file, the link to stay a link,
+/// and the file to keep its 0600 mode. Catches a rename that replaces the
+/// link with a regular file (0755, copied from the link), which cuts the
+/// settings off from the user's dotfiles.
+#[test]
+fn claude_code_off_writes_through_a_linked_settings_json_and_keeps_the_link_and_its_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = unique_temp_dir("claude_linked_settings");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    let dotfiles = home.join("dotfiles/claude-settings.json");
+    std::fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
+    let before = "{\"permissions\":{\"allow\":[\"Bash(ls)\"]}}";
+    std::fs::write(&dotfiles, before).unwrap();
+    std::fs::set_permissions(&dotfiles, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&dotfiles, claude_settings_path(&home)).unwrap();
+    let rt = runtime_for(&home);
+
+    let off = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap();
+
+    let settings = claude_settings_path(&home);
+    assert!(
+        std::fs::symlink_metadata(&settings)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "settings.json must still be a link"
+    );
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dotfiles).unwrap()).unwrap();
+    assert_eq!(written["skillOverrides"]["gamma"], "off");
+    assert_eq!(
+        std::fs::metadata(&dotfiles).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "the linked file must keep its own mode"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: off.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+    assert!(std::fs::symlink_metadata(&settings)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&dotfiles).unwrap(), before);
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: `~/.claude/settings.json` is a link to a file that no longer
+/// exists, and the user turns a skill off. Expect a refusal that names the
+/// dangling link, with the link left in place. Catches a write that turns
+/// the dangling link into a new regular file.
+#[test]
+fn claude_code_off_refuses_a_dangling_settings_json_link_and_leaves_it() {
+    let home = unique_temp_dir("claude_dangling_settings");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    let missing = home.join("dotfiles/missing.json");
+    std::os::unix::fs::symlink(&missing, claude_settings_path(&home)).unwrap();
+    let rt = runtime_for(&home);
+
+    let err = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap_err();
+
+    assert!(err.message.contains("does not exist"), "{}", err.message);
+    assert_eq!(
+        std::fs::read_link(claude_settings_path(&home)).unwrap(),
+        missing
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}

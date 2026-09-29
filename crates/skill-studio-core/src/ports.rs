@@ -114,6 +114,43 @@ pub fn confine(
     }
 }
 
+/// [`confine`] for a file about to be rewritten in place: when `path` is a
+/// link (a dotfiles repo linking `~/.claude/settings.json`), the link's
+/// resolved file is confined and returned instead, so the write goes
+/// through the link and the link survives. A dangling link is refused
+/// rather than replaced by a regular file.
+pub fn confine_write_through(
+    scope: &NormalizedScope,
+    fs: &dyn ScopeFs,
+    path: &Path,
+) -> Result<ScopedPath, CoreError> {
+    confine(scope, fs, &resolve_config_link(fs, path)?)
+}
+
+/// The file a config path really names: `path` itself, or the file its
+/// leaf link resolves to. An op that edits a config file reads, backs up,
+/// writes, and fingerprints this path, so its undo restores the real file
+/// rather than the link (whose backup would read back the edited bytes).
+/// A dangling link is an [`ErrorCode::InvalidRequest`] error.
+pub fn resolve_config_link(fs: &dyn ScopeFs, path: &Path) -> Result<PathBuf, CoreError> {
+    let is_link = fs
+        .symlink_metadata(path)
+        .is_ok_and(|facts| facts.kind == FileKind::Symlink);
+    if !is_link {
+        return Ok(path.to_path_buf());
+    }
+    fs.canonicalize(path).map_err(|_| {
+        CoreError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "{} is a link to a file that does not exist; fix or remove the link first",
+                path.display()
+            ),
+        )
+        .at(path)
+    })
+}
+
 /// Shared body for every [`ScopeFs::ancestor_holds`] implementation: walk
 /// `start` and its ancestors via `fs.symlink_metadata`, one directory at a
 /// time, stopping as soon as `dir.join(name)` resolves or the walk runs out
