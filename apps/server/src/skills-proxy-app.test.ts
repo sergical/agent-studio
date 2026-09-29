@@ -6,6 +6,7 @@
 // ============================================================================
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { HTTPException } from "hono/http-exception";
 import {
   createSkillsProxyApp,
   proxyGet,
@@ -273,6 +274,110 @@ describe("edge cache middleware", () => {
     await app.request("http://localhost/api/v1/skills?per_page=20&page=0&view=all-time");
 
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("reportServerError", () => {
+  it.each(["/api/v1/skills", "/api/v1/skills/search?q=x", "/api/v1/skills/owner/repo/slug"])(
+    "an upstream fetch failure on %s is reported as upstream before the 502",
+    async (path) => {
+      const upstreamError = new Error("getaddrinfo ENOTFOUND skills.sh");
+      const fetchMock = vi.fn().mockRejectedValue(upstreamError);
+      const reportServerError = vi.fn();
+
+      const response = await createSkillsProxyApp({
+        apiKey: "sk-secret",
+        fetch: fetchMock,
+        reportServerError,
+      }).request(`http://localhost${path}`);
+
+      expect(response.status).toBe(502);
+      expect(reportServerError).toHaveBeenCalledOnce();
+      expect(reportServerError).toHaveBeenCalledWith(upstreamError, { kind: "upstream" });
+    },
+  );
+
+  it("an upstream 500 answer is reported as upstream with the status, not the URL, in the message", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ error: "boom" }), { status: 500 }));
+    const reportServerError = vi.fn();
+
+    const response = await createSkillsProxyApp({
+      apiKey: "sk-secret",
+      fetch: fetchMock,
+      reportServerError,
+    }).request("http://localhost/api/v1/skills");
+
+    expect(response.status).toBe(500);
+    expect(reportServerError).toHaveBeenCalledWith(expect.any(Error), { kind: "upstream" });
+    // SAFETY: the previous assertion just confirmed the sole call's second argument is an Error.
+    const [error] = reportServerError.mock.calls[0] as [Error];
+    expect(error.message).not.toContain("skills.sh/api");
+    expect(error.message).not.toContain("?");
+  });
+
+  it("an upstream 200 with a non-JSON body is reported as upstream, naming the status", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("not json", { status: 200 }));
+    const reportServerError = vi.fn();
+
+    const response = await createSkillsProxyApp({
+      apiKey: "sk-secret",
+      fetch: fetchMock,
+      reportServerError,
+    }).request("http://localhost/api/v1/skills");
+
+    expect(response.status).toBe(200);
+    expect(reportServerError).toHaveBeenCalledWith(expect.any(Error), { kind: "upstream" });
+    // SAFETY: the previous assertion just confirmed the sole call's second argument is an Error.
+    const [error] = reportServerError.mock.calls[0] as [Error];
+    expect(error.message).toContain("200");
+  });
+
+  it("a route that throws returns a 500 without the message, reports it as unhandled, and logs it once", async () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const reportServerError = vi.fn();
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", reportServerError });
+    app.get("/boom", () => {
+      throw new Error("secret detail");
+    });
+
+    const response = await app.request("http://localhost/boom");
+
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body).toEqual({ error: "Skill Studio server error" });
+    expect(JSON.stringify(body)).not.toContain("secret detail");
+    expect(reportServerError).toHaveBeenCalledWith(expect.any(Error), { kind: "unhandled" });
+    expect(stderrSpy).toHaveBeenCalledOnce();
+    stderrSpy.mockRestore();
+  });
+
+  it("a route that throws an HTTPException answers with its status and never reports it", async () => {
+    const reportServerError = vi.fn();
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", reportServerError });
+    app.get("/boom-418", () => {
+      throw new HTTPException(418, { message: "teapot" });
+    });
+
+    const response = await app.request("http://localhost/boom-418");
+
+    expect(response.status).toBe(418);
+    expect(reportServerError).not.toHaveBeenCalled();
+  });
+
+  it("a missing error sink never breaks a failing request", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("getaddrinfo ENOTFOUND skills.sh"));
+    const app = createSkillsProxyApp({ apiKey: "sk-secret", fetch: fetchMock });
+    app.get("/boom", () => {
+      throw new Error("secret detail");
+    });
+
+    const upstreamResponse = await app.request("http://localhost/api/v1/skills");
+    const thrownResponse = await app.request("http://localhost/boom");
+
+    expect(upstreamResponse.status).toBe(502);
+    expect(thrownResponse.status).toBe(500);
   });
 });
 

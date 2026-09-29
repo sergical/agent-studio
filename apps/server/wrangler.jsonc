@@ -3,6 +3,7 @@
   "name": "skill-studio-server",
   "main": "src/worker.ts",
   "compatibility_date": "2026-09-18",
+  "compatibility_flags": ["nodejs_compat"],
   "account_id": "a6221d3398c2e695ab8e1a2f1237bd1b",
   "workers_dev": true,
   "routes": [{ "pattern": "api.useskillstudio.com", "custom_domain": true }],

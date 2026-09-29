@@ -10,6 +10,8 @@
 // ============================================================================
 
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
+
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 const UPSTREAM_BASE = "https://skills.sh/api/v1";
@@ -38,6 +40,7 @@ export async function proxyGet(
   path: string,
   search: string,
   fetchImpl: typeof fetch = fetch,
+  reportServerError?: (cause: unknown, context: { kind: "upstream" | "unhandled" }) => void,
 ): Promise<ProxyResult> {
   let response: Response;
   try {
@@ -45,14 +48,24 @@ export async function proxyGet(
       headers: { Authorization: `Bearer ${apiKey}` },
     });
   } catch (e) {
+    reportServerError?.(e, { kind: "upstream" });
     return {
       status: 502,
       body: { error: e instanceof Error ? e.message : "Failed to reach skills.sh" },
     };
   }
-  const body = await response
-    .json()
-    .catch(() => ({ error: "skills.sh returned a non-JSON response" }));
+  if (response.status >= 500) {
+    reportServerError?.(new Error(`skills.sh answered ${response.status}`), { kind: "upstream" });
+  }
+  const body = await response.json().catch(() => {
+    // A 5xx was reported above; its HTML error page must not count a second time.
+    if (response.status < 500) {
+      reportServerError?.(new Error(`skills.sh answered ${response.status} with a non-JSON body`), {
+        kind: "upstream",
+      });
+    }
+    return { error: "skills.sh returned a non-JSON response" };
+  });
   return { status: response.status, body };
 }
 
@@ -126,6 +139,9 @@ interface CreateSkillsProxyAppOptions {
   /** Schedules work past the response, e.g. Workers' `ExecutionContext.waitUntil` -
    * when absent, the cache write is awaited inline instead. */
   waitUntil?: (promise: Promise<unknown>) => void;
+  /** Receives a skills.sh network failure, a skills.sh 5xx or non-JSON answer (`kind: "upstream"`),
+   *  or a route that threw (`kind: "unhandled"`). Absent in the Node dev server; the Worker forwards it to Sentry. */
+  reportServerError?: (cause: unknown, context: { kind: "upstream" | "unhandled" }) => void;
 }
 
 const RATE_LIMIT_WINDOW_SECONDS = 60;
@@ -170,8 +186,24 @@ export function createSkillsProxyApp({
   limiter,
   cache,
   waitUntil,
+  reportServerError,
 }: CreateSkillsProxyAppOptions): Hono {
   const app = new Hono();
+
+  // An `HTTPException` is Hono's own control-flow, not a bug, so it's never reported.
+  app.onError((error, c) => {
+    if (error instanceof HTTPException) {
+      const res = error.getResponse();
+      return c.newResponse(res.body, res);
+    }
+    // `no-console` bans `console.error` repo-wide, so this reaches the terminal and
+    // Workers Logs the same way the request-logging middleware below does.
+    process.stderr.write(
+      `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+    );
+    reportServerError?.(error, { kind: "unhandled" });
+    return c.json({ error: "Skill Studio server error" }, 500);
+  });
 
   app.use("*", async (c, next) => {
     const start = Date.now();
@@ -243,6 +275,7 @@ export function createSkillsProxyApp({
       "/skills",
       normalizedSearch(c.req.path, c.req.url),
       fetchImpl,
+      reportServerError,
     );
     // SAFETY: `status` is skills.sh's own response status, always a valid
     // HTTP status code - Hono's `ContentfulStatusCode` union just doesn't
@@ -256,6 +289,7 @@ export function createSkillsProxyApp({
       "/skills/search",
       normalizedSearch(c.req.path, c.req.url),
       fetchImpl,
+      reportServerError,
     );
     // SAFETY: see the /api/v1/skills handler above.
     return c.json(body, status as ContentfulStatusCode);
@@ -274,6 +308,7 @@ export function createSkillsProxyApp({
       // but forwarded to skills.sh too.
       normalizedSearch(c.req.path, c.req.url),
       fetchImpl,
+      reportServerError,
     );
     // SAFETY: see the /api/v1/skills handler above.
     return c.json(body, status as ContentfulStatusCode);
