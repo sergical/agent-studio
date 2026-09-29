@@ -409,7 +409,7 @@ impl SkillStudioServer {
     }
 
     #[tool(
-        description = "Install one skill by copy, dotagents, or skills.sh. Returns NeedsTrust, not an error, when an untrusted dotagents source needs trust_confirmed on a retry."
+        description = "Install one skill by copy, dotagents, or skills.sh, for a set of harnesses (the skills CLI --agent set: universal, claude-code, codex, open-code, cursor, pi, grok-build; empty means universal). link_mode copy writes a real folder per harness instead of links. Returns NeedsTrust, not an error, when an untrusted dotagents source needs trust_confirmed on a retry."
     )]
     async fn add(
         &self,
@@ -417,27 +417,6 @@ impl SkillStudioServer {
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
         run_op(Operation::Install, true, &context, |rt, ctx| {
-            if let Some(unknown) = req
-                .harnesses
-                .iter()
-                .find(|h| rt.ports.catalog.get(h).is_none())
-            {
-                let accepted = rt
-                    .ports
-                    .catalog
-                    .facts
-                    .iter()
-                    .map(|f| f.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(CoreError::new(
-                    skill_studio_core::ErrorCode::InvalidRequest,
-                    format!(
-                        "`{unknown}` is not a known harness; accepted values: {accepted}",
-                        unknown = unknown.as_str()
-                    ),
-                ));
-            }
             ops::install(rt, ctx, &req)
         })
         .await

@@ -23,9 +23,10 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use skill_studio_core::dto::{
-    CapabilitiesRequest, HarnessesRequest, InstallFile, InstallMethod, InstallPreferencesRequest,
-    InstallRequest, Inventory, ListEventsRequest, ParkRequest, RepairApplyMode, RepairApplyRequest,
-    RepairPreviewRequest, RestoreRequest, ScanRequest, UnparkRequest, UpdateRequest,
+    CapabilitiesRequest, HarnessesRequest, InstallFile, InstallLinkMode, InstallMethod,
+    InstallPreferencesRequest, InstallRequest, Inventory, ListEventsRequest, ParkRequest,
+    RepairApplyMode, RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
+    UnparkRequest, UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::health::{self, Outcome, TimingRow};
@@ -239,11 +240,16 @@ enum Command {
         /// Which method writes the bytes.
         #[arg(long, value_enum, default_value_t = AddMethod::SkillsSh)]
         method: AddMethod,
-        /// Harnesses to link the new skill into right after install
-        /// (repeatable). Only Claude Code gets a per-skill link this build
-        /// writes.
+        /// Harnesses to install for (repeatable), the same set as the
+        /// `skills` CLI's `--agent`: `universal`, `claude-code`, `codex`,
+        /// `open-code`, `cursor`, `pi`, `grok-build`. None means
+        /// `universal` alone.
         #[arg(long = "harness")]
         harnesses: Vec<String>,
+        /// Write a real folder for each harness instead of linking it to
+        /// the shared copy. One chosen folder always gets a copy.
+        #[arg(long)]
+        copy: bool,
         /// Install under the scope home. Default when neither this nor
         /// `--project-path` is given.
         #[arg(long, conflicts_with = "project_path")]
@@ -507,6 +513,7 @@ fn main() -> ExitCode {
             source,
             method,
             harnesses,
+            copy,
             global,
             project_path,
             name,
@@ -524,6 +531,7 @@ fn main() -> ExitCode {
                     source,
                     method,
                     harnesses,
+                    copy,
                     project: project_path,
                     name,
                     trust,
@@ -960,6 +968,7 @@ struct AddArgs {
     source: String,
     method: AddMethod,
     harnesses: Vec<String>,
+    copy: bool,
     project: Option<PathBuf>,
     name: Option<String>,
     trust: bool,
@@ -999,32 +1008,6 @@ fn read_skill_files(dir: &std::path::Path) -> std::io::Result<Vec<InstallFile>> 
     let mut out = Vec::new();
     walk(dir, dir, &mut out)?;
     Ok(out)
-}
-
-/// Parses one `--harness` value, rejecting anything `catalog` does not
-/// recognize. `AgentId::parse` alone only checks the kebab-case shape, so a
-/// well-formed but unknown id (a typo, or a harness this build never
-/// shipped) would otherwise reach `ops::install` and fail there with a less
-/// specific error.
-fn parse_known_harness(
-    raw: &str,
-    catalog: &HarnessCatalog,
-) -> Result<AgentId, skill_studio_core::CoreError> {
-    let id = AgentId::parse(raw)?;
-    if catalog.get(&id).is_some() {
-        Ok(id)
-    } else {
-        let accepted = catalog
-            .facts
-            .iter()
-            .map(|f| f.id.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        Err(skill_studio_core::CoreError::new(
-            skill_studio_core::ErrorCode::InvalidRequest,
-            format!("`{raw}` is not a known harness; accepted values: {accepted}"),
-        ))
-    }
 }
 
 /// Installs one skill via `ops::install`, by `Copy`, `Dotagents`, or
@@ -1070,7 +1053,7 @@ fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode
     let harnesses = match args
         .harnesses
         .iter()
-        .map(|h| parse_known_harness(h, &rt.ports.catalog))
+        .map(|h| AgentId::parse(h))
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(harnesses) => harnesses,
@@ -1119,6 +1102,11 @@ fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode
         trust_identity: None,
         trust_confirmed: args.trust,
         save_as_preference: true,
+        link_mode: if args.copy {
+            InstallLinkMode::Copy
+        } else {
+            InstallLinkMode::Link
+        },
     };
     let result = ops::install(&rt, &ctx, &req);
     let envelope = ResultEnvelope::from_result(Operation::Install, &rt.scope, &ctx, result);

@@ -1,19 +1,14 @@
 // ============================================================================
-// SkillStoreInstallFlow - scope, destination, and Universal visibility for a
-// skills.sh installation
+// SkillStoreInstallFlow - scope and destination harnesses for a skills.sh
+// installation
 // ============================================================================
 
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { InstallHarnessSelector } from "./InstallHarnessSelector";
 import { ProjectDirectoryField } from "./ProjectDirectoryField";
 import { ScopeToggleGroup } from "./ScopeToggleGroup";
-import { SkillDestinationSelector } from "./SkillDestinationSelector";
 import { StoreInstallFooter } from "./StoreInstallFooter";
-import { UniversalVisibilitySelector } from "./UniversalVisibilitySelector";
-import {
-  universalDisabledHarnesses,
-  universalInstallHarnesses,
-} from "./universal-install-visibility";
 import { parentProgressForPhase, startStoreInstall } from "./store-install-flow";
 import { useStoreTrustStep } from "./use-store-trust-step";
 import {
@@ -30,16 +25,21 @@ import {
   applyAddSkillOperationEvent,
   listenForAddSkillOperation,
 } from "../../hooks/useAddSkillOperation";
+import { useKeptHarnesses } from "../../hooks/useKeptHarnesses";
 import { useAppStore } from "../../store/appStore";
 import type { SkillInstallCompletion } from "./InstallControls";
 import {
   addSkillFinishAction,
+  chosenInstallHarnesses,
+  installDisabledHarnesses,
+  offeredInstallHarnesses,
   shouldConsumeAddSkillOperation,
   toWireParsedSkillSource,
 } from "@skill-studio/lib";
 import type {
   AddSkillOperationEvent,
   AgentId,
+  InstallLinkMode,
   InstallScope,
   SkillWithStatus,
 } from "@skill-studio/lib";
@@ -60,10 +60,12 @@ export function SkillStoreInstallFlow({
   onInstallPaused,
   onInstallComplete,
 }: SkillStoreInstallFlowProps) {
-  const [readers, setReaders] = useState<AgentId[]>([]);
-  const [enabledReaders, setEnabledReaders] = useState<AgentId[]>([]);
+  const [detected, setDetected] = useState<AgentId[]>([]);
   const [claudeReadsUniversal, setClaudeReadsUniversal] = useState(true);
-  const [claudeLink, setClaudeLink] = useState(true);
+  // `null` until the user changes one, so the default follows `detected`.
+  const [pickedHarnesses, setPickedHarnesses] = useState<AgentId[] | null>(null);
+  const [linkMode, setLinkMode] = useState<InstallLinkMode>("link");
+  const keptHarnesses = useKeptHarnesses();
   const [installScope, setInstallScope] = useState<InstallScope>("global");
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [isInstalling, setIsInstalling] = useState(false);
@@ -81,9 +83,7 @@ export function SkillStoreInstallFlow({
     getAddMethodDefaults()
       .then((defaults) => {
         if (cancelled) return;
-        const installedReaders = defaults.installed_harnesses.filter((id) => id !== "claude-code");
-        setReaders(installedReaders);
-        setEnabledReaders(installedReaders);
+        setDetected(defaults.installed_harnesses);
         setClaudeReadsUniversal(defaults.claude_reads_shared_folder);
       })
       .catch(() => {});
@@ -144,13 +144,12 @@ export function SkillStoreInstallFlow({
     finishOperation(incoming);
   };
 
-  const handleReaderEnabledChange = (agent: AgentId, enabled: boolean) => {
-    setEnabledReaders((current) => {
-      if (!enabled) return current.filter((id) => id !== agent);
-      const enabledReaderSet = new Set(current);
-      return readers.filter((id) => id === agent || enabledReaderSet.has(id));
-    });
-  };
+  const offeredHarnesses = offeredInstallHarnesses(detected, keptHarnesses);
+  const chosenHarnesses = chosenInstallHarnesses(
+    offeredHarnesses,
+    pickedHarnesses,
+    claudeReadsUniversal,
+  );
 
   const handleInstallScopeChange = (scope: InstallScope) => {
     setInstallScope(scope);
@@ -218,13 +217,9 @@ export function SkillStoreInstallFlow({
           method: "skills-sh",
           scope: installScope,
           destination: "universal",
-          agents: universalInstallHarnesses(enabledReaders, claudeLink),
-          disabled_harnesses: universalDisabledHarnesses(
-            readers,
-            enabledReaders,
-            claudeReadsUniversal,
-            claudeLink,
-          ),
+          agents: chosenHarnesses,
+          disabled_harnesses: installDisabledHarnesses(detected, chosenHarnesses),
+          link_mode: linkMode,
           project_path: installScope === "project" ? (selectedProject ?? null) : null,
         },
         { start: startAddSkillOperation, getOperation: getAddSkillOperation },
@@ -270,9 +265,6 @@ export function SkillStoreInstallFlow({
           Scope
         </h4>
         <ScopeToggleGroup scope={installScope} onScopeChange={handleInstallScopeChange} />
-        <div className="mt-3">
-          <SkillDestinationSelector scope={installScope} />
-        </div>
 
         {installScope === "project" && (
           <ProjectDirectoryField
@@ -285,13 +277,13 @@ export function SkillStoreInstallFlow({
       </div>
 
       <div className="p-5">
-        <UniversalVisibilitySelector
-          readers={readers}
-          enabledReaders={enabledReaders}
-          onReaderEnabledChange={handleReaderEnabledChange}
+        <InstallHarnessSelector
+          offered={offeredHarnesses}
+          chosen={chosenHarnesses}
+          onChosenChange={setPickedHarnesses}
+          linkMode={linkMode}
+          onLinkModeChange={setLinkMode}
           claudeReadsShared={claudeReadsUniversal}
-          claudeLink={claudeLink}
-          onClaudeLinkChange={setClaudeLink}
           scope={installScope}
           disabled={isInstalling}
         />

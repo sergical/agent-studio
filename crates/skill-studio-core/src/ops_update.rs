@@ -263,7 +263,13 @@ fn write_copy_registry(
     mut read: CopyRegistryRead,
     content_hash: String,
 ) -> Result<(), CoreError> {
-    let deployment_id = ops_install::copy_deployment_id(&req.scope, &req.skill, destination);
+    let deployment_id = ops_install::copy_deployment_id(
+        &req.scope,
+        &req.skill,
+        destination,
+        crate::identity::SkillDestination::Universal,
+        "universal",
+    );
     let home_doc = read.home_document.as_mut().unwrap_or(&mut read.document);
     if let Some(serde_json::Value::Object(copies)) = home_doc.get_mut("copies") {
         if let Some(entry) = copies.get_mut(&deployment_id) {

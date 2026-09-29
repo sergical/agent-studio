@@ -1189,6 +1189,19 @@ impl ScopeFs for FailingFs {
         }
         self.inner.symlink(guard, target, link)
     }
+    fn symlink_relative(
+        &self,
+        guard: &ExclusiveGuard,
+        target: &ScopedPath,
+        relative_target: &Path,
+        link: &ScopedPath,
+    ) -> std::io::Result<()> {
+        if self.fail_next_symlink.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other("FailingFs: injected symlink failure"));
+        }
+        self.inner
+            .symlink_relative(guard, target, relative_target, link)
+    }
     fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)> {
         if self
             .fail_next_fsops_device_inode

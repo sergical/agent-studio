@@ -6,9 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::dto::{InstallMethod, InstallRequest};
+use crate::dto::{InstallLinkMode, InstallMethod, InstallRequest};
 use crate::error::{CoreError, ErrorCode};
 use crate::identity::{AgentId, RootScope, SkillName, UNIVERSAL_ROOT_RELATIVE};
+use crate::install_targets;
 use crate::ports::{FileKind, OpContext, ProcessSpec, Runtime};
 
 /// The `npx` package an [`InstallMethod`] shells out to, or `None` for
@@ -26,8 +27,9 @@ fn cli_package(method: InstallMethod) -> Option<&'static str> {
 /// Builds the argv `install_via_cli` hands the spawner, and the process cwd
 /// to run it in - ported from the desktop's own builders: skills.sh from
 /// `skill_install_plan.rs`'s `skills_sh_universal_add_args` (`npx skills add
-/// <source> --yes --global [--skill <n>] --agent universal [--agent
-/// claude-code]`, per the request's chosen harnesses; `skills@1.7.0` has no
+/// <source> --yes --global [--skill <n>] --agent <id>... [--copy]`, one
+/// `--agent` per requested harness in the CLI's own spelling, `universal`
+/// when none is named; `skills@1.7.0` has no
 /// `--cwd` flag, so a project scope runs the process itself with its cwd set
 /// to the project path instead - PR #101's fix, ported here), and dotagents
 /// from `skill_add.rs`'s `add_via_dotagents` (`npx -y @sentry/dotagents
@@ -39,6 +41,7 @@ fn cli_args_and_cwd(
     skill: &SkillName,
     scope: &RootScope,
     harnesses: &[AgentId],
+    link_mode: InstallLinkMode,
 ) -> (Vec<String>, Option<PathBuf>) {
     match method {
         InstallMethod::SkillsSh => {
@@ -57,11 +60,12 @@ fn cli_args_and_cwd(
             };
             args.push("--skill".to_string());
             args.push(skill.0.clone());
-            args.push("--agent".to_string());
-            args.push("universal".to_string());
-            if harnesses.iter().any(|h| h.as_str() == AgentId::CLAUDE_CODE) {
+            for harness in install_targets::requested_harnesses(harnesses) {
                 args.push("--agent".to_string());
-                args.push("claude-code".to_string());
+                args.push(install_targets::cli_agent_id(&harness).to_string());
+            }
+            if link_mode == InstallLinkMode::Copy {
+                args.push("--copy".to_string());
             }
             (args, cwd)
         }
@@ -150,7 +154,14 @@ pub(crate) fn install_via_cli(
             "this host build has no process spawner; dotagents/skills.sh installs are not available",
         )
     })?;
-    let (args, cwd) = cli_args_and_cwd(req.method, source, &req.skill, &req.scope, &req.harnesses);
+    let (args, cwd) = cli_args_and_cwd(
+        req.method,
+        source,
+        &req.skill,
+        &req.scope,
+        &req.harnesses,
+        req.link_mode,
+    );
     // For a project-scope install, `home_fallback` is where a `--cwd`-less
     // `npx skills add` (this op's own former bug, or a spawner that quietly
     // drops `cwd`) would land the skill instead of the project - recorded
@@ -225,7 +236,21 @@ mod tests {
     fn cli_args_and_cwd_matches_the_fixed_desktop_builders_or_names_the_drifted_argv() {
         let skill = SkillName("alpha".to_string());
         let none: Vec<AgentId> = Vec::new();
-        let claude_code = vec![AgentId::from(AgentId::CLAUDE_CODE)];
+        let claude_code = vec![
+            AgentId::from(install_targets::UNIVERSAL_TARGET),
+            AgentId::from(AgentId::CLAUDE_CODE),
+        ];
+        let every_harness: Vec<AgentId> = [
+            AgentId::CLAUDE_CODE,
+            AgentId::CODEX,
+            AgentId::OPEN_CODE,
+            AgentId::CURSOR,
+            AgentId::PI,
+            AgentId::GROK_BUILD,
+        ]
+        .into_iter()
+        .map(AgentId::from)
+        .collect();
         let project = RootScope::Project(ProjectRef(PathBuf::from("/proj")));
 
         // R5's own drift check, not a domain type anything else needs -
@@ -235,6 +260,7 @@ mod tests {
             InstallMethod,
             &'a RootScope,
             &'a [AgentId],
+            InstallLinkMode,
             Vec<&'a str>,
             Option<PathBuf>,
         );
@@ -244,6 +270,7 @@ mod tests {
                 InstallMethod::SkillsSh,
                 &RootScope::Global,
                 &none,
+                InstallLinkMode::Link,
                 vec![
                     "skills",
                     "add",
@@ -262,6 +289,7 @@ mod tests {
                 InstallMethod::SkillsSh,
                 &RootScope::Global,
                 &claude_code,
+                InstallLinkMode::Link,
                 vec![
                     "skills",
                     "add",
@@ -282,6 +310,7 @@ mod tests {
                 InstallMethod::SkillsSh,
                 &project,
                 &none,
+                InstallLinkMode::Link,
                 vec![
                     "skills",
                     "add",
@@ -299,6 +328,7 @@ mod tests {
                 InstallMethod::SkillsSh,
                 &project,
                 &claude_code,
+                InstallLinkMode::Link,
                 vec![
                     "skills",
                     "add",
@@ -314,10 +344,70 @@ mod tests {
                 Some(PathBuf::from("/proj")),
             ),
             (
+                "skills.sh global, every harness, link",
+                InstallMethod::SkillsSh,
+                &RootScope::Global,
+                &every_harness,
+                InstallLinkMode::Link,
+                vec![
+                    "skills",
+                    "add",
+                    "src",
+                    "--yes",
+                    "--global",
+                    "--skill",
+                    "alpha",
+                    "--agent",
+                    "claude-code",
+                    "--agent",
+                    "codex",
+                    "--agent",
+                    "opencode",
+                    "--agent",
+                    "cursor",
+                    "--agent",
+                    "pi",
+                    "--agent",
+                    "grok",
+                ],
+                None,
+            ),
+            (
+                "skills.sh project, universal and claude code, copy",
+                InstallMethod::SkillsSh,
+                &project,
+                &claude_code,
+                InstallLinkMode::Copy,
+                vec![
+                    "skills",
+                    "add",
+                    "src",
+                    "--yes",
+                    "--skill",
+                    "alpha",
+                    "--agent",
+                    "universal",
+                    "--agent",
+                    "claude-code",
+                    "--copy",
+                ],
+                Some(PathBuf::from("/proj")),
+            ),
+            (
+                "dotagents global, claude code, copy asked",
+                InstallMethod::Dotagents,
+                &RootScope::Global,
+                &claude_code,
+                InstallLinkMode::Copy,
+                vec!["-y", "@sentry/dotagents", "add", "src", "--name", "alpha"],
+                None,
+            ),
+            (
                 "dotagents global, no harnesses",
                 InstallMethod::Dotagents,
                 &RootScope::Global,
                 &none,
+                InstallLinkMode::Link,
                 vec!["-y", "@sentry/dotagents", "add", "src", "--name", "alpha"],
                 None,
             ),
@@ -326,6 +416,7 @@ mod tests {
                 InstallMethod::Dotagents,
                 &RootScope::Global,
                 &claude_code,
+                InstallLinkMode::Link,
                 vec!["-y", "@sentry/dotagents", "add", "src", "--name", "alpha"],
                 None,
             ),
@@ -334,6 +425,7 @@ mod tests {
                 InstallMethod::Dotagents,
                 &project,
                 &none,
+                InstallLinkMode::Link,
                 vec![
                     "-y",
                     "@sentry/dotagents",
@@ -350,6 +442,7 @@ mod tests {
                 InstallMethod::Dotagents,
                 &project,
                 &claude_code,
+                InstallLinkMode::Link,
                 vec![
                     "-y",
                     "@sentry/dotagents",
@@ -363,8 +456,8 @@ mod tests {
             ),
         ];
 
-        for (label, method, scope, harnesses, expected_args, expected_cwd) in cases {
-            let (args, cwd) = cli_args_and_cwd(method, "src", &skill, scope, harnesses);
+        for (label, method, scope, harnesses, link_mode, expected_args, expected_cwd) in cases {
+            let (args, cwd) = cli_args_and_cwd(method, "src", &skill, scope, harnesses, link_mode);
             let expected_args: Vec<String> = expected_args.into_iter().map(String::from).collect();
             assert_eq!(args, expected_args, "{label}: argv");
             assert_eq!(cwd, expected_cwd, "{label}: cwd");

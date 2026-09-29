@@ -5,7 +5,7 @@ It also repairs or converts the symlinks that carry a skill to disk.
 
 Commands: `set_harness_enabled`, `set_reader_enabled`, `set_plugin_enabled`, `restore_moved_deployment`, `materialize_harness_root`, `materialize_harness_root_then_disable`, `repair_skill_link`, `make_skill_independent_copy`.
 There is no `set_skill_visibility` command.
-The closest control, `UniversalVisibilitySelector` in the Add Skill sheet, only holds local state until `add_skill` or `set_harness_enabled` runs.
+The closest control, `InstallHarnessSelector` in the Add Skill sheet, only holds local state until `add_skill` or `set_harness_enabled` runs.
 See Gaps for what this gap means.
 
 UI entry points: `SkillLocationsCard.tsx` (enabled switch per row), `SkillLocationMenu.tsx` (Relink, Remove link, Convert to per-skill links, Make independent copy, Enable/Disable the plugin), `MaterializeRootDialog.tsx`, `MakeIndependentCopyDialog.tsx`, `SkillRepairCard.tsx`.
@@ -128,5 +128,5 @@ Several commands, like `set_harness_enabled`, note "no direct test" or rely on p
 - Backups and staging directories from `make_skill_independent_copy` and `materialize_harness_root` have no stated retention limit.
 - `set_harness_enabled` and several read commands in this area have "no direct test" per the map; only policy or primitive tests exist.
 - `set_shared_harness_skill_enabled` has no frontend caller.
-- There is no `set_skill_visibility` command; `UniversalVisibilitySelector` is local-only until an Add Skill submit, so "visibility" before install and "enabled" after install are two different, disconnected mechanisms.
+- There is no `set_skill_visibility` command; `InstallHarnessSelector` is local-only until an Add Skill submit, so "visibility" before install and "enabled" after install are two different, disconnected mechanisms.
 - Failure toasts, such as "Couldn't enable/disable" or "Couldn't convert", do not distinguish which step or which path failed.

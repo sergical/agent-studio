@@ -20,11 +20,19 @@
           "type": "string"
         },
         "linked_harnesses": {
-          "description": "Harnesses actually linked (a subset of the request's\n`harnesses` - only Claude Code gets a link this build).",
+          "description": "Harnesses that now see the skill through a per-skill link or a\nwhole-folder link into the shared folder.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/AgentIdentity"
           }
+        },
+        "harness_results": {
+          "description": "What happened for each requested harness, in request order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InstallHarnessResult"
+          },
+          "default": []
         },
         "kind": {
           "type": "string",
@@ -70,6 +78,108 @@
     "AgentIdentity": {
       "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
       "type": "string"
+    },
+    "InstallHarnessResult": {
+      "description": "What `install` did for one requested harness.",
+      "oneOf": [
+        {
+          "description": "The harness reads the skill from the shared folder at `path`, either\ndirectly or because its own folder is a link to the shared folder.",
+          "type": "object",
+          "properties": {
+            "harness": {
+              "description": "The requested harness (or `universal`).",
+              "$ref": "#/$defs/AgentIdentity"
+            },
+            "path": {
+              "description": "The skill folder the harness reads.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "reads_shared"
+            }
+          },
+          "required": [
+            "kind",
+            "harness",
+            "path"
+          ]
+        },
+        {
+          "description": "A relative symlink at `path` points to the shared folder's copy.",
+          "type": "object",
+          "properties": {
+            "harness": {
+              "description": "The requested harness.",
+              "$ref": "#/$defs/AgentIdentity"
+            },
+            "path": {
+              "description": "The new link.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "linked"
+            }
+          },
+          "required": [
+            "kind",
+            "harness",
+            "path"
+          ]
+        },
+        {
+          "description": "A real folder at `path`.",
+          "type": "object",
+          "properties": {
+            "harness": {
+              "description": "The requested harness.",
+              "$ref": "#/$defs/AgentIdentity"
+            },
+            "path": {
+              "description": "The new folder.",
+              "type": "string"
+            },
+            "link_failed": {
+              "description": "`true` when a link was asked for but the symlink failed, so the\nfolder was copied instead.",
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "copied"
+            }
+          },
+          "required": [
+            "kind",
+            "harness",
+            "path",
+            "link_failed"
+          ]
+        },
+        {
+          "description": "Nothing was written for this harness.",
+          "type": "object",
+          "properties": {
+            "harness": {
+              "description": "The requested harness.",
+              "$ref": "#/$defs/AgentIdentity"
+            },
+            "reason": {
+              "description": "Why, in one plain sentence.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "skipped"
+            }
+          },
+          "required": [
+            "kind",
+            "harness",
+            "reason"
+          ]
+        }
+      ]
     }
   }
 }

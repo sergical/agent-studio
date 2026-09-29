@@ -16,18 +16,19 @@
 // except the one unrelated Un-fork argv builder now living in
 // `skill_fork.rs`).
 //
-// `SkillDestination::PerHarness` stays on the wire (see the module's own
-// doc, `AddSkillSheet.tsx` builds it directly and is out of scope here), but
-// this adapter treats it identically to `Universal`: `ops::install` only
-// ever writes the one shared root, so a `PerHarness` request still gets a
-// Universal write, linked into exactly the harnesses `request.agents` names
-// - the same disk shape `docs/action-map/install.md`'s desired state
-// describes for every method, not just Copy.
+// `SkillDestination::PerHarness` stays on the wire, but this adapter treats
+// it identically to `Universal`. The sheet's harness list is the `skills`
+// CLI's interactive pick, where the shared `.agents/skills` folder is always
+// included: every request installs for `universal` plus `request.agents`,
+// and `request.link_mode` says whether Claude Code, pi, and Grok Build get
+// a link to that copy or a real folder of their own.
 // ============================================================================
 
 use std::path::{Path, PathBuf};
 
-use skill_studio_core::dto::{InstallFile, InstallMethod, InstallOutcome, InstallRequest};
+use skill_studio_core::dto::{
+    InstallFile, InstallHarnessResult, InstallMethod, InstallOutcome, InstallRequest,
+};
 use skill_studio_core::identity::{
     CorrelationId, ProjectRef, RootScope, SkillName, UNIVERSAL_ROOT_RELATIVE,
 };
@@ -265,6 +266,7 @@ pub(crate) fn request_for_entry(
         destination: batch.destination,
         agents: batch.agents.clone(),
         disabled_harnesses: batch.disabled_harnesses.clone(),
+        link_mode: batch.link_mode,
         scope: batch.scope,
         project_path: batch.project_path.clone(),
     }
@@ -338,6 +340,7 @@ fn request_scope_root(request: &AddSkillRequest, rt: &Runtime) -> Result<PathBuf
 /// Builds the op's own request from the desktop's wire request plus the
 /// files a `Copy` install already gathered. `destination` is read but not
 /// otherwise threaded through: see the module doc on `PerHarness`.
+/// `harnesses` is `universal` followed by `request.agents`.
 ///
 /// `pub(crate)`: shared with `skill_add_operation.rs`'s batch worker.
 pub(crate) fn build_install_request(
@@ -345,12 +348,11 @@ pub(crate) fn build_install_request(
     files: Vec<InstallFile>,
 ) -> Result<InstallRequest, String> {
     let name = derive_and_validate_name(request)?;
-    let harnesses = request
-        .agents
-        .iter()
-        .copied()
-        .map(core_harness)
-        .collect::<Result<Vec<_>, _>>()?;
+    let harnesses = std::iter::once(Ok(skill_studio_core::identity::AgentId::from(
+        skill_studio_core::install_targets::UNIVERSAL_TARGET,
+    )))
+    .chain(request.agents.iter().copied().map(core_harness))
+    .collect::<Result<Vec<_>, _>>()?;
     let scope = match request.scope {
         InstallScope::Global => RootScope::Global,
         InstallScope::Project => RootScope::Project(ProjectRef(PathBuf::from(
@@ -382,6 +384,7 @@ pub(crate) fn build_install_request(
         trust_identity,
         trust_confirmed: false,
         save_as_preference: true,
+        link_mode: request.link_mode,
     })
 }
 
@@ -421,36 +424,48 @@ pub(crate) fn finish_install(
     request: &AddSkillRequest,
     outcome: InstallOutcome,
 ) -> InstallAdapterOutcome {
-    let (skill, deployment_path, linked_harnesses) = match outcome {
+    let (skill, deployment_path, harness_results) = match outcome {
         InstallOutcome::Installed {
             skill,
             deployment_path,
-            linked_harnesses,
+            harness_results,
             ..
-        } => (skill, deployment_path, linked_harnesses),
+        } => (skill, deployment_path, harness_results),
         InstallOutcome::NeedsTrust { identity } => {
             return InstallAdapterOutcome::NeedsTrust { identity };
         }
     };
 
     let mut deployments_created = vec![deployment_path.to_string_lossy().into_owned()];
-    let claude_link_path = linked_harnesses
-        .iter()
-        .any(|h| h.as_str() == skill_studio_core::identity::AgentId::CLAUDE_CODE)
-        .then(|| {
-            let root = match &request.scope {
-                InstallScope::Global => rt.scope.home.lexical.clone(),
-                InstallScope::Project => {
-                    PathBuf::from(request.project_path.clone().unwrap_or_default())
+    let mut warnings = Vec::new();
+    for result in harness_results {
+        match result {
+            InstallHarnessResult::Linked { path, .. }
+            | InstallHarnessResult::Copied { path, .. }
+                if path == deployment_path => {}
+            InstallHarnessResult::Linked { path, .. } => {
+                deployments_created.push(path.to_string_lossy().into_owned());
+            }
+            InstallHarnessResult::Copied {
+                harness,
+                path,
+                link_failed,
+            } => {
+                if link_failed {
+                    warnings.push(format!(
+                        "{}: the link failed, so the skill was copied instead",
+                        harness.as_str()
+                    ));
                 }
-            };
-            root.join(".claude").join("skills").join(&skill.0)
-        });
-    if let Some(link) = &claude_link_path {
-        deployments_created.push(link.to_string_lossy().into_owned());
+                deployments_created.push(path.to_string_lossy().into_owned());
+            }
+            InstallHarnessResult::Skipped { reason, .. } => {
+                warnings.push(format!("skipped: {reason}"));
+            }
+            InstallHarnessResult::ReadsShared { .. } => {}
+        }
     }
 
-    let mut warnings = Vec::new();
     for agent in &request.disabled_harnesses {
         if let Err(e) = disable_harness(rt, &skill.0, *agent, request.project_path.as_deref()) {
             warnings.push(format!("{}: {e}", agent.cli_name()));
@@ -744,6 +759,7 @@ mod tests {
             destination: SkillDestination::Universal,
             agents: vec![],
             disabled_harnesses: vec![],
+            link_mode: skill_studio_core::dto::InstallLinkMode::Link,
             scope: InstallScope::Global,
             project_path: None,
         }
@@ -770,6 +786,7 @@ mod tests {
             destination: SkillDestination::Universal,
             agents: vec![],
             disabled_harnesses: vec![],
+            link_mode: skill_studio_core::dto::InstallLinkMode::Link,
             scope: InstallScope::Global,
             project_path: None,
         }
@@ -868,6 +885,7 @@ mod tests {
             destination: SkillDestination::Universal,
             agents: vec![],
             disabled_harnesses: vec![],
+            link_mode: skill_studio_core::dto::InstallLinkMode::Link,
             scope: InstallScope::Global,
             project_path: None,
         }

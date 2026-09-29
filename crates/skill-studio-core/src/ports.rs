@@ -215,6 +215,16 @@ impl ScopeFs for ScopedReads<'_> {
     ) -> std::io::Result<()> {
         self.inner.symlink(guard, target, link)
     }
+    fn symlink_relative(
+        &self,
+        guard: &ExclusiveGuard,
+        target: &ScopedPath,
+        relative_target: &Path,
+        link: &ScopedPath,
+    ) -> std::io::Result<()> {
+        self.inner
+            .symlink_relative(guard, target, relative_target, link)
+    }
     fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)> {
         self.inner.fsops_device_inode(path)
     }
@@ -296,6 +306,22 @@ pub trait ScopeFs: Send + Sync {
         target: &ScopedPath,
         link: &ScopedPath,
     ) -> std::io::Result<()>;
+    /// Creates a symlink at `link` that stores `relative_target` (a path
+    /// relative to `link`'s parent that resolves to `target`), the way the
+    /// `skills` CLI writes its per-harness links. A relative link keeps
+    /// working when the scope folder is moved or mounted at another path.
+    /// The default stores `target` as is, for a fake filesystem that only
+    /// needs the link to resolve.
+    fn symlink_relative(
+        &self,
+        guard: &ExclusiveGuard,
+        target: &ScopedPath,
+        relative_target: &Path,
+        link: &ScopedPath,
+    ) -> std::io::Result<()> {
+        let _ = relative_target;
+        self.symlink(guard, target, link)
+    }
 
     /// Device and inode of the entry at `path`, without following a final
     /// symlink. [`crate::fsops::Root`] rereads this before and after every

@@ -738,6 +738,11 @@ export interface AddSkillRequest {
   disabled_harnesses: AgentId[];
   scope: InstallScope;
   project_path: string | null;
+  /**
+   * Link or copy into each chosen harness folder that is not the shared
+   * folder. Ignored when the choice writes one folder only.
+   */
+  link_mode: "link" | "copy";
 }
 /**
  * A parsed "Source" field from the add-skill sheet - see
@@ -773,6 +778,11 @@ export interface AddSkillsRequest {
   disabled_harnesses: AgentId[];
   scope: InstallScope;
   project_path: string | null;
+  /**
+   * Link or copy into each chosen harness folder that is not the shared
+   * folder. Ignored when the choice writes one folder only.
+   */
+  link_mode: "link" | "copy";
 }
 /**
  * One skill folder inside a repo: `path` is repo-relative and `""` for a

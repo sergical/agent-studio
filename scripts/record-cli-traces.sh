@@ -416,24 +416,17 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Trace 04: add requesting two harnesses at once (Claude Code and an
-# unsupported/unrecognized harness id, `cursor`). `ops_install_cli.rs`'s
-# `cli_args_and_cwd` only ever special-cases Claude Code - a request naming
-# any other harness never reaches the CLI's argv, yet `ops::install` still
-# reports the overall install as `Installed`, as if `cursor` had been set up
-# too. That silent over-reporting, not the missing `--agent` token itself,
-# is the real gap this trace documents (see KNOWN_DIVERGENCES). Sending no
-# `--agent` token for a harness that reads the shared universal root by
-# design (Codex, OpenCode, pi - see `harness.rs`'s `reads_universal_root`)
-# would be correct, not a bug; `cursor` here stands in for a harness id the
-# catalog does not recognize at all.
+# Trace 04: add for two harnesses at once, one with its own folder (Claude
+# Code) and one that reads the shared folder (Cursor). `ops::install` passes
+# one `--agent` token per requested harness, so this argv is exactly what
+# `cli_args_and_cwd` builds for `[claude-code, cursor]`.
 # ---------------------------------------------------------------------------
 trace_04() {
   dir=$(trace_dir "04-add-two-harnesses")
   TMP_HOME_PREFIX=$(track_tmp)
   export HOME="$TMP_HOME_PREFIX"
   snapshot_tree "$HOME" "$dir/before" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
-  RECORD_TO="$dir" run_cli "" add anthropics/skills --yes --global --skill brand-guidelines --agent universal --agent claude-code
+  RECORD_TO="$dir" run_cli "" add anthropics/skills --yes --global --skill brand-guidelines --agent claude-code --agent cursor
   unset RECORD_TO
   write_stdout "$dir"
   snapshot_tree "$HOME" "$dir/after" "$HOME" '$HOME' "" "" "" "" '$HOME' "1"
@@ -445,7 +438,7 @@ trace_04() {
   "source_repo": "anthropics/skills",
   $( [ -n "$commit" ] && echo "\"source_commit\": \"$commit\"," )
   "exit_status": $CLI_EXIT_STATUS,
-  "notes": "InstallMethod::SkillsSh, global scope, requested harnesses = [claude-code, cursor]. cursor is an id the harness catalog does not recognize; ops::install still reports Installed even though nothing was done for it - the real KNOWN_DIVERGENCE."
+  "notes": "InstallMethod::SkillsSh, global scope, requested harnesses = [claude-code, cursor]. cursor reads ~/.agents/skills, so the CLI writes the shared copy and one Claude Code link. Every file body under a skills/<name>/ folder fetched from a remote source (including LICENSE.txt, when present) is stored on disk as a one-line stub (\`stub sha256=<original hash> bytes=<n>\`), never the real third-party content; tree.json still records the ORIGINAL sha256/length, and cli_parity.rs compares against that original hash, not the stub's own bytes."
 }
 EOF
 }
@@ -596,6 +589,13 @@ EOF
 }
 
 main() {
+  # With no arguments every trace is recorded; otherwise only the named
+  # ones (for example `trace_04`), leaving the other fixtures untouched.
+  if [ "$#" -gt 0 ]; then
+    for name in "$@"; do "$name"; done
+    echo "Recorded $* under $TRACES_ROOT"
+    return
+  fi
   trace_01
   trace_02
   trace_03
@@ -609,4 +609,4 @@ main() {
   du -sh "$TRACES_ROOT"
 }
 
-main
+main "$@"

@@ -435,6 +435,10 @@ pub struct AddSkillRequest {
     pub disabled_harnesses: Vec<super::agents::AgentId>,
     pub scope: InstallScope,
     pub project_path: Option<String>,
+    /// Link or copy into each chosen harness folder that is not the shared
+    /// folder. Ignored when the choice writes one folder only.
+    #[serde(default)]
+    pub link_mode: skill_studio_core::dto::InstallLinkMode,
 }
 
 /// `add_skills`' request: one source, and the skill folders picked out of it
@@ -454,6 +458,10 @@ pub struct AddSkillsRequest {
     pub disabled_harnesses: Vec<super::agents::AgentId>,
     pub scope: InstallScope,
     pub project_path: Option<String>,
+    /// Link or copy into each chosen harness folder that is not the shared
+    /// folder. Ignored when the choice writes one folder only.
+    #[serde(default)]
+    pub link_mode: skill_studio_core::dto::InstallLinkMode,
 }
 
 /// One skill's outcome in an `add_skills` batch. A failure never stops the

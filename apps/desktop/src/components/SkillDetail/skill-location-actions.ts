@@ -221,6 +221,7 @@ export function useLocationActions(
             destination: "universal",
             agents,
             disabled_harnesses: [],
+            link_mode: "link",
             scope: "global",
             project_path: null,
           });
@@ -284,6 +285,7 @@ export function useLocationActions(
             destination: "universal",
             agents: [],
             disabled_harnesses: [],
+            link_mode: "link",
             project_path: null,
           });
         });

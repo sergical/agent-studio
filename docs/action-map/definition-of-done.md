@@ -111,7 +111,7 @@ Each item names a command, file, or grep. Items that repeat the same fix across 
 - [ ] Backups and staging directories from `make_skill_independent_copy` and `materialize_harness_root` have a stated retention limit (shared: retention-limit).
 - [ ] `set_harness_enabled` and the flagged read commands in this area get a direct test.
 - [ ] `set_shared_harness_skill_enabled` gets a frontend caller, or is removed (shared: no-command-without-caller).
-- [ ] A `set_skill_visibility` command exists, so pre-install visibility (`UniversalVisibilitySelector`) and post-install `enabled` state are one mechanism, not two.
+- [ ] A `set_skill_visibility` command exists, so pre-install visibility (`InstallHarnessSelector`) and post-install `enabled` state are one mechanism, not two.
 - [ ] Failure toasts such as "Couldn't enable/disable" name which step and which path failed.
 
 ### skill-md-editing
