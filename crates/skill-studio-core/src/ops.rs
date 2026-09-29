@@ -5219,6 +5219,16 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
         .iter()
         .map(|link| crate::ports::confine(&rt.scope, fs, link))
         .collect::<Result<Vec<_>, _>>()?;
+    let link_targets: serde_json::Map<String, serde_json::Value> = links
+        .iter()
+        .filter_map(|link| {
+            let target = fs.read_link(link).ok()?;
+            Some((
+                link.to_string_lossy().into_owned(),
+                serde_json::Value::String(target.to_string_lossy().into_owned()),
+            ))
+        })
+        .collect();
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
 
     let step_start = clock.monotonic();
@@ -5253,6 +5263,7 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
             "from": deployment.path,
             "to": parked_dir,
             "links": links,
+            "link_targets": link_targets,
         }),
         // Undo of a directory move is out of this build's scope: `Park`
         // deliberately carries no inverse.
@@ -5379,6 +5390,10 @@ fn unpark_body(
         .as_ref()
         .map(|row| park_row_links(&row.payload))
         .unwrap_or_default();
+    let recorded_targets = park_row
+        .as_ref()
+        .and_then(|row| row.payload.get("link_targets").cloned())
+        .unwrap_or_default();
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
 
     let step_start = clock.monotonic();
@@ -5429,6 +5444,15 @@ fn unpark_body(
     fs.rename(&session.guard, &scoped_from, &scoped_to)
         .map_err(|e| CoreError::io(&deployment.path, e))?;
     for link_path in &links {
+        let relative_target = recorded_targets
+            .get(link_path.to_string_lossy().as_ref())
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .filter(|target| target.is_relative());
+        if let Some(target) = relative_target {
+            recreate_link(rt, &session.guard, link_path, &target)?;
+            continue;
+        }
         let scoped_target = crate::ports::confine(&rt.scope, fs, &restored_dir)?;
         let scoped_link = crate::ports::confine(&rt.scope, fs, link_path)?;
         fs.symlink(&session.guard, &scoped_target, &scoped_link)
@@ -5724,10 +5748,16 @@ fn set_claude_code_switch(
                 .backup_paths(&session.guard, id, std::slice::from_ref(&settings_path))?;
         let pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.clone());
         backup_dir = Some(manifest.backup_dir.clone());
-        Some(crate::events::restore_backup_inverse(
-            &settings_path,
-            pre_fingerprint.as_ref(),
-            None,
+        let settings_inverse =
+            crate::events::restore_backup_inverse(&settings_path, pre_fingerprint.as_ref(), None);
+        // Undo must also take down the link this event creates below.
+        let created_link: Vec<(PathBuf, Fingerprint)> = link_target
+            .iter()
+            .map(|target| (link_path.clone(), crate::events::link_fingerprint(target)))
+            .collect();
+        Some(crate::events::with_remove_copies(
+            settings_inverse,
+            &created_link,
         ))
     } else {
         link_target

@@ -420,6 +420,14 @@ pub(crate) fn fingerprint_path(
     fingerprint_entry(fs, path, meta.kind).map(Some)
 }
 
+/// The [`fingerprint_path`] of a link whose raw target text is `target`,
+/// known before the link exists.
+pub(crate) fn link_fingerprint(target: &Path) -> Fingerprint {
+    let mut buf = vec![b'L'];
+    buf.extend_from_slice(target.to_string_lossy().as_bytes());
+    Fingerprint::of_bytes(&buf)
+}
+
 /// One entry of [`fingerprint_path`]'s recursion; `kind` is the caller's
 /// already-known [`FileKind`] so a directory's children are not re-stat'd
 /// beyond the [`ScopeFs::read_dir`] call that named them.
@@ -431,9 +439,7 @@ fn fingerprint_entry(
     let buf = match kind {
         FileKind::Symlink => {
             let target = fs.read_link(path).map_err(|e| CoreError::io(path, e))?;
-            let mut buf = vec![b'L'];
-            buf.extend_from_slice(target.to_string_lossy().as_bytes());
-            buf
+            return Ok(link_fingerprint(&target));
         }
         FileKind::Dir => {
             let mut entries = fs.read_dir(path).map_err(|e| CoreError::io(path, e))?;

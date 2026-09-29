@@ -1962,6 +1962,59 @@ fn undo_of_a_claude_code_off_restores_settings_json_byte_for_byte_or_names_the_b
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// Flow: gamma is off in `settings.json` and Claude Code has no link to it;
+/// the user turns it on (which edits settings and creates the link), then
+/// undoes that. Expect `settings.json` back byte for byte and the link
+/// gone. Catches an undo that restores only the settings and leaves the
+/// link the on created.
+#[test]
+fn undo_of_a_claude_code_on_that_linked_the_skill_removes_the_link_too() {
+    let home = unique_temp_dir("claude_undo_on_link");
+    install_universal_skill(&home, "gamma");
+    std::fs::create_dir_all(home.join(CLAUDE_ROOT_RELATIVE)).unwrap();
+    std::fs::write(
+        claude_settings_path(&home),
+        "{\n  \"skillOverrides\": {\n    \"gamma\": \"off\"\n  }\n}\n",
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(claude_settings_path(&home)).unwrap();
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    let rt = runtime_for(&home);
+
+    let on = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "fixture setup: on must create the link"
+    );
+    assert_ne!(
+        std::fs::read_to_string(claude_settings_path(&home)).unwrap(),
+        before,
+        "fixture setup: on must edit settings.json"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: on.event_id,
+            force: false,
+        },
+    )
+    .unwrap_or_else(|e| panic!("undo of the on should succeed, got: {}", e.message));
+
+    assert_eq!(
+        std::fs::read_to_string(claude_settings_path(&home)).unwrap(),
+        before
+    );
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "undo left the link the on created at {}",
+        link.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// Flow: `~/.claude/settings.json` is a link into a dotfiles folder, and
 /// the user turns a skill off in Claude Code, then undoes it. Expect the
 /// write and the undo to land in the dotfiles file, the link to stay a link,

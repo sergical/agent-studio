@@ -221,6 +221,51 @@ fn park_removes_a_pi_per_skill_link_into_universal_and_unpark_restores_it() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// Flow: Claude Code links to gamma with a relative target; the user parks
+/// and then unparks gamma. Expect the Claude link back with the same
+/// relative target. Catches an unpark that recreates the link as absolute,
+/// which breaks when the user moves or syncs their home.
+#[cfg(unix)]
+#[test]
+fn park_then_unpark_recreates_a_relative_claude_link_as_relative() {
+    let home = unique_temp_dir("park_relative_link");
+    parkable_home(&home);
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    let relative = std::path::PathBuf::from("../../.agents/skills/gamma");
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&relative, &link).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+    ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap();
+    let parked_id = ops::scan(&rt, &ctx(), &ScanRequest::default())
+        .unwrap()
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "gamma")
+        .and_then(|s| {
+            s.deployments
+                .iter()
+                .find(|d| d.root.kind == RootKind::Parked)
+        })
+        .unwrap()
+        .id
+        .clone();
+
+    ops::unpark(
+        &rt,
+        &ctx(),
+        &UnparkRequest {
+            deployment_id: parked_id,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(std::fs::read_link(&link).unwrap(), relative);
+    assert!(link.join("SKILL.md").exists());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// Flow: the Universal entry is a dev link (`~/.agents/skills/gamma ->
 /// ~/src/gamma`) and Claude Code's whole skills folder links to
 /// `~/.agents/skills`; the user parks gamma. Expect the park to succeed,
