@@ -3,7 +3,7 @@
 //! in `add`):
 //!
 //! - The shared copy lives at `<scope>/.agents/skills/<name>`. Codex,
-//!   OpenCode, Cursor, and the `universal` pseudo id read it directly.
+//!   `OpenCode`, Cursor, and the `universal` pseudo id read it directly.
 //! - Claude Code (`.claude/skills`), pi (`.pi/agent/skills` globally,
 //!   `.pi/skills` in a project), and Grok Build (`.grok/skills`) have their
 //!   own folder. `Link` puts a relative symlink there; `Copy` a real folder.

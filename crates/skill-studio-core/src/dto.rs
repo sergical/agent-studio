@@ -763,7 +763,7 @@ pub struct InstallRequest {
     /// The harness set to install for, as the `skills` CLI's `--agent` list:
     /// harness ids plus the pseudo id `universal` for the shared
     /// `.agents/skills` folder alone. Empty means `universal` only. Codex,
-    /// OpenCode, Cursor, and `universal` read the shared folder; Claude
+    /// `OpenCode`, Cursor, and `universal` read the shared folder; Claude
     /// Code, pi, and Grok Build get their own folder (see `link_mode`).
     #[serde(default)]
     pub harnesses: Vec<AgentId>,

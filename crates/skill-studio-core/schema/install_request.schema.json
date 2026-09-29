@@ -17,7 +17,7 @@
       "$ref": "#/$defs/RootScope"
     },
     "harnesses": {
-      "description": "The harness set to install for, as the `skills` CLI's `--agent` list:\nharness ids plus the pseudo id `universal` for the shared\n`.agents/skills` folder alone. Empty means `universal` only. Codex,\nOpenCode, Cursor, and `universal` read the shared folder; Claude\nCode, pi, and Grok Build get their own folder (see `link_mode`).",
+      "description": "The harness set to install for, as the `skills` CLI's `--agent` list:\nharness ids plus the pseudo id `universal` for the shared\n`.agents/skills` folder alone. Empty means `universal` only. Codex,\n`OpenCode`, Cursor, and `universal` read the shared folder; Claude\nCode, pi, and Grok Build get their own folder (see `link_mode`).",
       "type": "array",
       "items": {
         "$ref": "#/$defs/AgentIdentity"

@@ -462,8 +462,6 @@ const PI_PACKAGES_DOC: &str =
     "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/packages.md";
 const CURSOR_SKILLS_DOC: &str = "https://cursor.com/docs/context/skills";
 const GROK_SKILLS_DOC: &str = "https://docs.x.ai/build/features/skills-plugins-marketplaces";
-const GROK_OVERVIEW_DOC: &str = "https://docs.x.ai/build/overview";
-const GROK_SETTINGS_DOC: &str = "https://docs.x.ai/build/settings";
 const CODE_SURVEY: &str = "apps/desktop/src-tauri/src/skills/agents.rs";
 const CLAUDE_TRANSCRIPT_READER: &str = "crates/skill-studio-host/src/skill_uses.rs";
 const CODEX_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/codex.rs";
@@ -896,7 +894,7 @@ fn cursor() -> HarnessFacts {
 fn grok_build() -> HarnessFacts {
     let ev = || Evidence::inferred(CODE_SURVEY);
     let doc = || Evidence::verified(GROK_SKILLS_DOC);
-    // `$GROK_HOME` moves `~/.grok` (GROK_SETTINGS_DOC); host root
+    // `$GROK_HOME` moves `~/.grok` (https://docs.x.ai/build/settings); host root
     // resolution does not honour it yet. The project `.grok/skills` is also
     // found in every parent folder up to the repo root.
     let mut roots = vec![
@@ -1355,8 +1353,8 @@ impl HarnessAdapter for CursorAdapter {
 }
 
 /// Grok Build. The binary is `grok` (`cd your-project` then `grok`,
-/// GROK_OVERVIEW_DOC) and the config file is `~/.grok/config.toml`
-/// (GROK_SETTINGS_DOC). Sessions are stored under `~/.grok/sessions/`
+/// <https://docs.x.ai/build/overview>) and the config file is
+/// `~/.grok/config.toml` (<https://docs.x.ai/build/settings>). Sessions are stored under `~/.grok/sessions/`
 /// (<https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md>).
 /// `$GROK_HOME` moves all three; detection does not honour it yet.
 pub struct GrokBuildAdapter;

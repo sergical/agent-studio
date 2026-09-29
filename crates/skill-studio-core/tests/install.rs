@@ -1271,7 +1271,7 @@ fn harness_results(outcome: InstallOutcome) -> (PathBuf, Vec<InstallHarnessResul
             harness_results,
             ..
         } => (deployment_path, harness_results),
-        other => panic!("expected Installed, got {other:?}"),
+        other @ InstallOutcome::NeedsTrust { .. } => panic!("expected Installed, got {other:?}"),
     }
 }
 
