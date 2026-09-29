@@ -50,11 +50,6 @@ pub(crate) struct DotagentsEntry {
 pub(crate) struct ScopeLedgers {
     pub lock: SkillLockFile,
     pub dotagents: Vec<DotagentsEntry>,
-    /// Whether `agents.toml` or `agents.lock` exists at all, regardless of
-    /// what it names. A dotagents install with no row for a given skill
-    /// still makes that skill's owner ambiguous - see `classify_owner`'s
-    /// shared-root carve-out - so presence is a separate fact from content.
-    pub has_dotagents_files: bool,
     /// Skill names a project-scope `<project>/skills-lock.json` (schema
     /// version 1) names - a second, project-root source for skills.sh
     /// ownership alongside `lock` above, which only ever sees the shared
@@ -89,12 +84,6 @@ pub(crate) fn read_scope_ledgers(
     ScopeLedgers {
         lock,
         dotagents: read_dotagents_ledger(fs, dotagents_dir),
-        has_dotagents_files: fs
-            .symlink_metadata(&dotagents_dir.join("agents.toml"))
-            .is_ok()
-            || fs
-                .symlink_metadata(&dotagents_dir.join("agents.lock"))
-                .is_ok(),
         project_lock_skills,
     }
 }
