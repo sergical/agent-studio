@@ -197,7 +197,7 @@ function SkillCard({ skill, isSelected, onClick, hideInstalledIndicator }: Skill
   return (
     <Button
       variant="ghost"
-      className={`h-auto flex-col items-stretch gap-2 rounded-md border p-4 justify-start text-left ${borderClass} ${bgClass}`}
+      className={`h-auto flex-col items-stretch gap-2 rounded-md border bg-clip-border p-4 justify-start text-left ${borderClass} ${bgClass}`}
       onClick={onClick}
     >
       <div className="flex items-center justify-between gap-2">
