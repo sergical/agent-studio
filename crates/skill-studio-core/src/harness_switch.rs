@@ -13,7 +13,8 @@
 //! `crate::ops::codex_write_disabled_row`, the decor-preserving
 //! `[[skills.config]]` row writer, with `set_codex_skill_disabled_with` rather
 //! than duplicating it as a plain-string transform - a second writer for
-//! the same file only invites the two to drift.
+//! the same file only invites the two to drift. OpenCode's edit is
+//! `crate::opencode_config::skill_denied_text` for the same reason.
 
 use serde_json::{Map, Value};
 
@@ -38,70 +39,6 @@ pub(crate) fn opencode_refuses_jsonc(
         ));
     }
     Ok(())
-}
-
-/// Sets (`deny`) or clears `permission.skill.<name>` in `opencode.json`
-/// text, given its current text (`None` for a missing file). Ports
-/// `opencode_skill_permission.rs::set_skill_denied`'s JSON edit onto a plain
-/// string.
-pub(crate) fn opencode_toggle(
-    existing: Option<&str>,
-    name: &str,
-    denied: bool,
-) -> Result<String, CoreError> {
-    let mut root: Map<String, Value> = match existing {
-        Some(text) => serde_json::from_str(text).map_err(|e| {
-            CoreError::new(
-                ErrorCode::Io,
-                format!("opencode.json is not valid JSON: {e}"),
-            )
-        })?,
-        None => Map::new(),
-    };
-    if !root.contains_key("$schema") {
-        root.insert(
-            "$schema".to_string(),
-            Value::String("https://opencode.ai/config.json".to_string()),
-        );
-    }
-
-    let permission = root
-        .entry("permission")
-        .or_insert_with(|| Value::Object(Map::new()));
-    let Value::Object(permission) = permission else {
-        return Err(CoreError::new(
-            ErrorCode::Io,
-            "opencode.json has a non-object `permission` key",
-        ));
-    };
-    let skill = permission
-        .entry("skill")
-        .or_insert_with(|| Value::Object(Map::new()));
-    let Value::Object(skill) = skill else {
-        return Err(CoreError::new(
-            ErrorCode::Io,
-            "opencode.json has a non-object `permission.skill` key",
-        ));
-    };
-
-    if denied {
-        skill.insert(name.to_string(), Value::String("deny".to_string()));
-    } else {
-        skill.remove(name);
-        if skill.is_empty() {
-            permission.remove("skill");
-        }
-        if permission.is_empty() {
-            root.remove("permission");
-        }
-    }
-
-    serde_json::to_string_pretty(&Value::Object(root)).map_err(|e| {
-        CoreError::new(
-            ErrorCode::Io,
-            format!("failed to serialize opencode.json: {e}"),
-        )
-    })
 }
 
 /// pi has no native per-skill switch (`docs/action-map/enable-and-links.md`
@@ -167,17 +104,6 @@ pub(crate) fn pi_toggle(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn opencode_add_then_remove_round_trips() {
-        let denied = opencode_toggle(None, "find-bugs", true).unwrap();
-        assert!(denied.contains("\"deny\""));
-        let value: Value = serde_json::from_str(&denied).unwrap();
-        assert_eq!(value["permission"]["skill"]["find-bugs"], "deny");
-        let cleared = opencode_toggle(Some(&denied), "find-bugs", false).unwrap();
-        let value: Value = serde_json::from_str(&cleared).unwrap();
-        assert!(value.get("permission").is_none());
-    }
 
     #[test]
     fn opencode_refuses_jsonc_only() {

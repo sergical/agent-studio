@@ -5803,10 +5803,12 @@ fn refuse_opencode_name_collision(skill: &InstalledSkillDto) -> Result<(), CoreE
     Ok(())
 }
 
-/// Sets or clears `permission.skill.<name>` in `~/.config/opencode/
-/// opencode.json`. Refuses when only `opencode.jsonc` exists, or when the
-/// skill name resolves to more than one OpenCode-visible location
-/// ([`refuse_opencode_name_collision`]).
+/// Sets or clears `permission.skill.<name>` in the `opencode.json` the scan
+/// reads (`RuntimeScope::opencode_config_root`, else `~/.config/opencode`).
+/// Refuses when only `opencode.jsonc` exists, when the skill name resolves
+/// to more than one OpenCode-visible location
+/// ([`refuse_opencode_name_collision`]), or when an enable would leave a
+/// `permissions[]` or glob rule still denying the skill.
 #[allow(clippy::too_many_arguments)]
 fn set_opencode_switch(
     rt: &Runtime,
@@ -5819,11 +5821,34 @@ fn set_opencode_switch(
     enabled: bool,
 ) -> Result<(u32, u32), CoreError> {
     refuse_opencode_name_collision(skill)?;
-    let config_path = home.join(".config/opencode/opencode.json");
-    let jsonc_path = home.join(".config/opencode/opencode.jsonc");
+    let config_dir = rt
+        .scope
+        .raw
+        .opencode_config_root
+        .clone()
+        .unwrap_or_else(|| home.join(".config").join("opencode"));
+    let config_path = crate::opencode_config::opencode_json_path(&config_dir);
+    let jsonc_path = crate::opencode_config::opencode_jsonc_path(&config_dir);
     crate::harness_switch::opencode_refuses_jsonc(
         fs.symlink_metadata(&config_path).is_ok(),
         fs.symlink_metadata(&jsonc_path).is_ok(),
+    )?;
+
+    let existing = match fs.read_capped(
+        &config_path,
+        crate::opencode_config::OPENCODE_CONFIG_MAX_BYTES,
+    ) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(CoreError::io(&config_path, e)),
+    };
+    // Computed before the journal entry so a refused enable (a
+    // `permissions[]` rule still denies the skill) records nothing.
+    let new_text = crate::opencode_config::skill_denied_text(
+        existing.as_deref(),
+        &config_path,
+        &skill.name.0,
+        !enabled,
     )?;
 
     let manifest =
@@ -5849,23 +5874,10 @@ fn set_opencode_switch(
     // after `record` runs inside this closure so it reaches `finish(Failed)`
     // below, not just the final `write_atomic` call.
     let mutate: Result<Option<Fingerprint>, CoreError> = (|| {
-        let existing = match fs.read_capped(
-            &config_path,
-            crate::harness_switch::HARNESS_CONFIG_MAX_BYTES,
-        ) {
-            Ok(bytes) => Some(
-                String::from_utf8(bytes)
-                    .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(&config_path))?,
-            ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(CoreError::io(&config_path, e)),
-        };
-        let new_text =
-            crate::harness_switch::opencode_toggle(existing.as_deref(), &skill.name.0, !enabled)?;
         let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
         ensure_dir_all(rt, session, fs, &config_parent)?;
         let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
-        fs.write_atomic(&session.guard, &scoped_config, new_text.as_bytes())
+        fs.write_atomic(&session.guard, &scoped_config, &new_text)
             .map_err(|e| CoreError::io(&config_path, e))?;
         crate::events::fingerprint_path(fs, &config_path)
     })();
