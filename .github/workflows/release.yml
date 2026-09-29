@@ -17,8 +17,25 @@ jobs:
           persist-credentials: false
       - run: ./scripts/release/check-version-matches-tag.sh "${{ github.ref_name }}"
 
+  # A `v*` tag push never runs the branch ruleset's required checks and never
+  # proves the tagged commit was merged; before this job the release path's
+  # only pre-build assertions compared version strings. Assert the tagged
+  # commit is reachable from the default branch here, before `build` spends a
+  # macOS runner and publishes public artifacts - see
+  # scripts/release/check-tag-ancestry.sh.
+  check-on-main:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Assert the tagged commit is on the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/release/check-tag-ancestry.sh "${{ github.sha }}" "${{ github.event.repository.default_branch }}"
+
   build:
-    needs: check-version
+    needs: [check-version, check-on-main]
     runs-on: macos-14
     # tauri-action creates the GitHub release and `gh release upload` attaches
     # the .dSYM archive; the default GITHUB_TOKEN is read-only.
