@@ -32,8 +32,25 @@ function updateStatusLabel(status: UpdateStatus): string {
       return `Downloading v${status.version}…`;
     case "ready-to-install":
       return `v${status.version} ready to install`;
+    case "check-failed":
+      return `Couldn't check for updates: ${status.message}`;
     case "error":
       return status.message;
+  }
+}
+
+/** The colour for each `UpdateStatus`: the manual click's hard `Error` and a
+ * failed install stay red, a background check that could not reach the
+ * endpoint is a warning (visible, but not the user's fault), and the rest
+ * are neutral. */
+function updateStatusTone(status: UpdateStatus): string {
+  switch (status.status) {
+    case "error":
+      return "text-error";
+    case "check-failed":
+      return "text-warning";
+    default:
+      return "text-text-secondary";
   }
 }
 
@@ -125,9 +142,7 @@ export function AppVersionCard() {
         </div>
       )}
       <div className="flex items-center gap-2">
-        <p
-          className={`m-0 flex-1 text-body ${updateStatus.status === "error" ? "text-error" : "text-text-secondary"}`}
-        >
+        <p className={`m-0 flex-1 text-body ${updateStatusTone(updateStatus)}`}>
           {checking && (
             <span className="mr-2 inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent align-middle" />
           )}
