@@ -69,7 +69,6 @@ export interface MaterializeLocationRequest {
   harness: string;
   harnessLabel: string;
   root: string;
-  intent: "convert-only" | "convert-then-disable";
 }
 
 /** Display label for a harness whose whole skills root can be materialized. */
@@ -92,33 +91,20 @@ function materializeHarnessLabel(harness: AgentId): string {
   }
 }
 
-/** Routes only explicit conversion and whole-root toggle-off actions to the conversion dialog. */
+/**
+ * Routes the explicit "Convert to per-skill links…" action to the conversion
+ * dialog. The Enabled switch never does: every harness switch writes its own
+ * setting and leaves a whole-folder link in place.
+ */
 export function materializeRequestForLocationAction(
   action: LocationAction,
 ): MaterializeLocationRequest | null {
-  if (action.kind === "convert-root") {
-    return {
-      target: action.target,
-      harness: action.harness,
-      harnessLabel: materializeHarnessLabel(action.harness),
-      root: action.root,
-      intent: "convert-only",
-    };
-  }
-  if (
-    action.kind !== "set-enabled" ||
-    action.enabled ||
-    !action.deployment.shared_via_whole_dir_link
-  ) {
-    return null;
-  }
-  const { deployment } = action;
+  if (action.kind !== "convert-root") return null;
   return {
-    target: { deployment_id: deployment.id },
-    harness: agentIdFromDeploymentLabel(deployment.agent) ?? deployment.agent,
-    harnessLabel: deployment.agent,
-    root: deployment.path.slice(0, deployment.path.lastIndexOf("/")),
-    intent: "convert-then-disable",
+    target: action.target,
+    harness: action.harness,
+    harnessLabel: materializeHarnessLabel(action.harness),
+    root: action.root,
   };
 }
 
@@ -192,11 +178,6 @@ export function useLocationActions(
       case "set-enabled": {
         const { deployment, enabled } = action;
         const readerAgent = agentIdFromDeploymentLabel(deployment.agent);
-        const conversion = materializeRequestForLocationAction(action);
-        if (conversion) {
-          setMaterializeRequest(conversion);
-          return;
-        }
         // `park` is the off switch only for the Global Universal deployment - never this row's
         // (see `canOfferHarnessSwitch`). Both the rail and the Locations card disable the
         // control for any row that fails this check, so the rejection below is a

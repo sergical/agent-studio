@@ -28,12 +28,7 @@ import { HarnessStack } from "../SkillList/HarnessStack";
 import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
 import { SwitchControl } from "../ui/SwitchControl";
 import { buildInstalledSkillSourceLedgerModel } from "./installed-skill-source-ledger-model";
-import { MaterializeRootDialog } from "../ui/MaterializeRootDialog";
-import {
-  materializeRequestForLocationAction,
-  setInvocationForFile,
-} from "./skill-location-actions";
-import type { MaterializeLocationRequest } from "./skill-location-actions";
+import { setInvocationForFile } from "./skill-location-actions";
 import { canOfferHarnessSwitchForRow, harnessSwitchOffTitle } from "./skill-location-helpers";
 import {
   buildInvocationFiles,
@@ -90,9 +85,6 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
     text: string;
   } | null>(null);
   const [pendingHarness, setPendingHarness] = useState<AgentId | null>(null);
-  const [materializeRequest, setMaterializeRequest] = useState<MaterializeLocationRequest | null>(
-    null,
-  );
   const [isSavingInvocation, setIsSavingInvocation] = useState(false);
 
   const groups = buildScopeGroups(skill);
@@ -117,18 +109,6 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
   };
 
   const toggleHarness = async (harness: AgentId, row: AgentLocationRow, enabled: boolean) => {
-    const conversion =
-      row.kind !== "reader" && row.deployment
-        ? materializeRequestForLocationAction({
-            kind: "set-enabled",
-            deployment: row.deployment,
-            enabled,
-          })
-        : null;
-    if (conversion) {
-      setMaterializeRequest(conversion);
-      return;
-    }
     setPendingHarness(harness);
     try {
       if (row.kind === "reader") {
@@ -321,16 +301,6 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
           </span>
         </PropertyRow>
       </dl>
-      {materializeRequest && (
-        <MaterializeRootDialog
-          target={materializeRequest.target}
-          harness={materializeRequest.harness}
-          harnessLabel={materializeRequest.harnessLabel}
-          root={materializeRequest.root}
-          intent={{ kind: "convert-then-disable", skill: skill.name }}
-          onClose={() => setMaterializeRequest(null)}
-        />
-      )}
     </aside>
   );
 }

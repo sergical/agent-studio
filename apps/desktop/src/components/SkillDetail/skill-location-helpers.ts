@@ -39,18 +39,16 @@ interface SharedFolderSwitchPolicy {
 /**
  * Whether the Enabled switch can actually change this deployment. The disable
  * mechanisms are global: Codex config, OpenCode permission, Claude Code's
- * global per-skill symlink. A project-scope copy has nothing to toggle, so
- * showing the switch there just produces an error - except when the row is
- * already disabled, which must stay re-enableable.
+ * `skillOverrides` in ~/.claude/settings.json. Each works however the entry
+ * got there (per-skill link, whole-folder link, or real copy). A project-scope
+ * row stays without a switch in 0.1.0 - except when it is already disabled,
+ * which must stay re-enableable.
  */
 export function canToggleHarness(deployment: Deployment): boolean {
   const id = agentIdFromDeploymentLabel(deployment.agent) ?? "";
   if (!HARNESSES_WITH_PER_SKILL_DISABLE.includes(id)) return false;
   if (deployment.disabled) return true;
-  if (deployment.scope !== "global") return false;
-  // A whole-root link's entry is a real folder, so `is_symlink` is false; its
-  // toggle-off converts the root first (`materializeRequestForLocationAction`).
-  return id !== "claude-code" || deployment.is_symlink || deployment.shared_via_whole_dir_link;
+  return deployment.scope === "global";
 }
 
 /**

@@ -295,6 +295,11 @@ function offCondition(deployment: Deployment): Condition {
         "Allows it again in opencode.json.",
         "Off for OpenCode — denied in opencode.json.",
       );
+    case "claude-skill-overrides":
+      return enable(
+        "Removes the override in ~/.claude/settings.json.",
+        "Off for Claude Code — switched off in ~/.claude/settings.json.",
+      );
     case "claude-link-removed":
       return enable(
         "Restores the link in ~/.claude/skills.",
@@ -338,6 +343,28 @@ function readerOffCondition(agent: AgentId, target: LifecycleTarget): Condition 
         menu: [{ label: "Enable for OpenCode", action }],
         hint: "Allows it again in opencode.json.",
       };
+}
+
+/**
+ * A global Universal skill Claude Code cannot see: `~/.claude/skills` is a
+ * real folder (or missing) with no entry for it. The switch links it.
+ */
+function claudeNotLinkedCondition(target: LifecycleTarget): Condition {
+  return {
+    level: "off",
+    status: "Not linked",
+    phrase: "not linked",
+    plural: "not linked",
+    what: "Off for Claude Code — not linked from ~/.claude/skills.",
+    fix: "Use the switch to link it.",
+    menu: [
+      {
+        label: "Link for Claude Code",
+        action: { kind: "set-reader-enabled", target, agent: "claude-code", enabled: true },
+      },
+    ],
+    hint: "Creates a link in ~/.claude/skills to the Universal folder.",
+  };
 }
 
 /** Off because the folder that carries this row is parked - the folder's own switch is the fix, not this row's. */
@@ -631,6 +658,28 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
           invocation: null,
         });
       }
+      if (
+        isGlobal &&
+        !parkedScope &&
+        !covered.has("claude-code") &&
+        disabledReaders.has("claude-code")
+      ) {
+        const conditions = [claudeNotLinkedCondition(shared.lifecycleTarget)];
+        rows.push({
+          kind: "reader",
+          harness: "claude-code",
+          harnessLabel: "Claude Code",
+          path: shared.path,
+          caption: "",
+          conditions,
+          level: topLevel(conditions),
+          deployment: null,
+          lifecycleTarget: shared.lifecycleTarget,
+          hasSwitch: true,
+          switchOn: false,
+          invocation: null,
+        });
+      }
     }
 
     // A harness with its own entry carries its own dot, so it never rolls
@@ -673,7 +722,7 @@ export function siblingRows(group: ScopeGroup): LocationRow[] {
   return group.rows.filter((row) => row.kind !== "reader");
 }
 
-/** `AGENTS_READING_SHARED_ROOT`, minus Grok Build - it has no row-level condition of its own worth synthesizing today. Kept in its documented order. */
+/** `AGENTS_READING_SHARED_ROOT`, in its documented order. */
 const AGENTS_READING_SHARED_ROOT_ORDER: AgentId[] = [
   "codex",
   "open-code",

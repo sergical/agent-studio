@@ -214,11 +214,7 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
           harness={actions.materializeRequest.harness}
           harnessLabel={actions.materializeRequest.harnessLabel}
           root={actions.materializeRequest.root}
-          intent={
-            actions.materializeRequest.intent === "convert-only"
-              ? { kind: "convert-only" }
-              : { kind: "convert-then-disable", skill: skill.name }
-          }
+          intent={{ kind: "convert-only" }}
           onClose={actions.closeMaterializeRequest}
         />
       )}
