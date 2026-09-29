@@ -216,6 +216,7 @@ fn copy_request(skill: &str) -> InstallRequest {
             relative_path: PathBuf::from("SKILL.md"),
             contents: format!("---\nname: {skill}\ndescription: a copied skill\n---\nBody.\n")
                 .into_bytes(),
+            mode: None,
         }],
         source: None,
         trust_identity: None,

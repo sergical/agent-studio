@@ -592,6 +592,7 @@ mod tests {
             files: vec![skill_studio_core::dto::InstallFile {
                 relative_path: PathBuf::from("SKILL.md"),
                 contents: b"---\nname: find-bugs\ndescription: finds bugs\n---\nBody.\n".to_vec(),
+                mode: None,
             }],
             source: None,
             trust_identity: None,

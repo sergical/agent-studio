@@ -196,6 +196,7 @@ fn copy_request(skill: &str) -> InstallRequest {
             relative_path: PathBuf::from("SKILL.md"),
             contents: format!("---\nname: {skill}\ndescription: a copied skill\n---\nBody.\n")
                 .into_bytes(),
+            mode: None,
         }],
         source: None,
         trust_identity: None,
@@ -1768,6 +1769,43 @@ fn install_falls_back_to_a_copy_when_the_link_fails_and_reports_it_or_names_the_
             link_failed: true,
         }
     );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `copy_install_keeps_each_source_files_mode_or_names_the_file_that_lost_its_bits`:
+/// Flow: a global Copy install carries `scripts/run.sh` (0o755) and
+/// `SKILL.md` (0o640). Expectation: the deployed script is still 0o755 and
+/// `SKILL.md` keeps 0o640. A failure here means the copy wrote bytes with the
+/// process default mode, so an installed script is no longer executable.
+#[cfg(unix)]
+#[test]
+fn copy_install_keeps_each_source_files_mode_or_names_the_file_that_lost_its_bits() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = unique_temp_dir("install_copy_keeps_modes");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let mut req = copy_request("modes");
+    req.files[0].mode = Some(0o640);
+    req.files.push(InstallFile {
+        relative_path: PathBuf::from("scripts/run.sh"),
+        contents: b"#!/bin/sh\necho hi\n".to_vec(),
+        mode: Some(0o755),
+    });
+
+    ops::install(&rt, &ctx(), &req).unwrap();
+
+    let deployed = home.join(UNIVERSAL_ROOT_RELATIVE).join("modes");
+    let mode_of = |relative: &str| {
+        std::fs::metadata(deployed.join(relative))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode_of("scripts/run.sh"), 0o755, "the script lost its bits");
+    assert_eq!(mode_of("SKILL.md"), 0o640, "a plain file lost its own mode");
 
     std::fs::remove_dir_all(&home).ok();
 }

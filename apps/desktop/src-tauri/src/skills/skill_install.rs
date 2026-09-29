@@ -168,6 +168,21 @@ fn guard_local_copy_source(
     Ok(canonical_source)
 }
 
+/// The permission bits of a file read from disk, for `InstallFile::mode`;
+/// `None` off Unix.
+fn unix_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Some(metadata.permissions().mode() & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
 /// Reads `dir` into the `InstallFile` list `InstallMethod::Copy` stages -
 /// same walk as the CLI's own `read_skill_files` (`apps/cli/src/main.rs`),
 /// duplicated rather than shared across the crate boundary the CLI binary
@@ -181,11 +196,13 @@ fn read_skill_files(dir: &Path) -> Result<Vec<InstallFile>, String> {
             if file_type.is_dir() {
                 walk(root, &path, out)?;
             } else if file_type.is_file() {
+                let mode = unix_mode(&entry.metadata()?);
                 let contents = std::fs::read(&path)?;
                 let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
                 out.push(InstallFile {
                     relative_path,
                     contents,
+                    mode,
                 });
             }
         }
