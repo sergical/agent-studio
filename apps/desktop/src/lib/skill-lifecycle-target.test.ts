@@ -14,6 +14,7 @@ import {
   skillRemovalDescription,
   skillRemovalPreview,
   skillUpdateOwnerTargets,
+  skillUpdateToast,
   updateSkillOwners,
 } from "./skill-lifecycle-target";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
@@ -284,6 +285,37 @@ describe("skill update owner targets", () => {
       attempted: 2,
       succeeded: 1,
       failures: [{ ownerId: "owner:v1/project/%2Fp/x", message: "project update failed" }],
+    });
+  });
+});
+
+describe("skillUpdateToast", () => {
+  const failure = { ownerId: "owner:v1/project/%2Fp/x", message: "project update failed" };
+
+  it("names the skill alone when every copy updated, or names the count that leaked in", () => {
+    expect(skillUpdateToast("find-bugs", { attempted: 2, succeeded: 2, failures: [] })).toEqual({
+      type: "success",
+      title: "Updated find-bugs",
+    });
+  });
+
+  it("reports how many copies updated when only some did, or hides the failed ones", () => {
+    expect(
+      skillUpdateToast("find-bugs", { attempted: 2, succeeded: 1, failures: [failure] }),
+    ).toEqual({
+      type: "warning",
+      title: "Updated 1 of 2 copies of find-bugs",
+      message: "project update failed",
+    });
+  });
+
+  it("reports an error with the failure text when no copy updated, or reads as a success", () => {
+    expect(
+      skillUpdateToast("find-bugs", { attempted: 1, succeeded: 0, failures: [failure] }),
+    ).toEqual({
+      type: "error",
+      title: "Could not update find-bugs",
+      message: "project update failed",
     });
   });
 });

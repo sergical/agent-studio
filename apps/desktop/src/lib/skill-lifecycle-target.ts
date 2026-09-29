@@ -1,5 +1,11 @@
 import { agentIdFromDeploymentLabel, parentDirectory } from "@skill-studio/lib";
-import type { Deployment, InstalledSkill, InstallScope, LifecycleTarget } from "@skill-studio/lib";
+import type {
+  Deployment,
+  InstalledSkill,
+  InstallScope,
+  LifecycleTarget,
+  Toast,
+} from "@skill-studio/lib";
 
 type SkillLifecycleView = Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
 
@@ -320,6 +326,28 @@ export async function updateSkillOwners(
     }
   }
   return { attempted: targets.length, succeeded, failures };
+}
+
+/**
+ * The toast for a finished skill update, the same words wherever an update
+ * result shows: all copies updated, some of them, or none.
+ */
+export function skillUpdateToast(
+  skillName: string,
+  summary: SkillOwnerUpdateSummary,
+): Omit<Toast, "id"> {
+  const failureMessage = summary.failures.map((failure) => failure.message).join("; ");
+  if (summary.failures.length === 0) {
+    return { type: "success", title: `Updated ${skillName}` };
+  }
+  if (summary.succeeded === 0) {
+    return { type: "error", title: `Could not update ${skillName}`, message: failureMessage };
+  }
+  return {
+    type: "warning",
+    title: `Updated ${summary.succeeded} of ${summary.attempted} copies of ${skillName}`,
+    message: failureMessage,
+  };
 }
 
 /** Describe the managed deployment group and linked locations removed by one exact target. */

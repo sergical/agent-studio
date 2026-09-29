@@ -38,6 +38,7 @@ import {
   lifecycleTargetForDeployment,
   lifecycleTargetForPark,
   lifecycleTargetForSkill,
+  skillUpdateToast,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
@@ -261,11 +262,7 @@ export function useLocationActions(
       case "update":
         runWithErrorToast("Update failed", async () => {
           const summary = await updateSkillOwners(skill, updateSkill);
-          if (summary.failures.length > 0) {
-            throw new Error(
-              `Updated ${summary.succeeded} of ${summary.attempted} deployments. ${summary.failures.map((failure) => failure.message).join("; ")}`,
-            );
-          }
+          addToast(skillUpdateToast(skill.name, summary));
         });
         return;
       case "install-again":
