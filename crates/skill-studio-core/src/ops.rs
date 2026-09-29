@@ -1530,6 +1530,34 @@ fn global_root_path(rt: &Runtime, relative: &Path) -> PathBuf {
     rt.scope.home.lexical.join(relative)
 }
 
+/// Every harness's own skills directory in `scope`, resolved to a concrete
+/// path (the same paths [`scan_targets`] walks for `RootRole::Own`).
+pub(crate) fn harness_own_skill_roots(rt: &Runtime, scope: &RootScope) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for root_spec in rt
+        .ports
+        .catalog
+        .facts
+        .iter()
+        .flat_map(|facts| &facts.roots)
+        .filter(|root_spec| root_spec.role == RootRole::Own)
+    {
+        let path = match (root_spec.level, scope) {
+            (ScopeLevel::Global, RootScope::Global) => {
+                global_root_path(rt, Path::new(&root_spec.relative_path))
+            }
+            (ScopeLevel::Project, RootScope::Project(project)) => {
+                project.0.join(&root_spec.relative_path)
+            }
+            _ => continue,
+        };
+        if !roots.contains(&path) {
+            roots.push(path);
+        }
+    }
+    roots
+}
+
 fn scan_targets(rt: &Runtime) -> Vec<ScanTarget> {
     let mut seen: HashSet<(RootScope, RootKind, PathBuf)> = HashSet::new();
     let mut targets = Vec::new();

@@ -61,7 +61,9 @@ use crate::identity::{PlanId, RootScope, SkillName, UNIVERSAL_ROOT_RELATIVE};
 use crate::journal::{FsJournal, PlanWriter};
 use crate::ops::Operation;
 use crate::ops_install;
-use crate::ports::{ExclusiveGuard, MutationSession, OpContext, PlanStatus, Runtime, ScopeFs};
+use crate::ports::{
+    ExclusiveGuard, FileKind, MutationSession, OpContext, PlanStatus, Runtime, ScopeFs,
+};
 
 /// The `npx` argv `update_via_cli` hands the spawner, and the process cwd to
 /// run it in: skills.sh from `skill_lifecycle.rs`'s `skills_sh_update_args`
@@ -280,6 +282,51 @@ fn update_via_cli(
     Ok(())
 }
 
+/// The harness skills directories that already hold `<skill>` (as anything,
+/// links included) before the CLI runs.
+fn harness_dirs_holding(rt: &Runtime, scope: &RootScope, skill: &SkillName) -> Vec<PathBuf> {
+    crate::ops::harness_own_skill_roots(rt, scope)
+        .into_iter()
+        .filter(|dir| rt.ports.fs.symlink_metadata(&dir.join(&skill.0)).is_ok())
+        .collect()
+}
+
+/// `npx skills update` links the skill into every harness it knows, not only
+/// the ones that had it. Removes each link that appeared during the update in
+/// a harness folder that did not hold the skill before, so an update never
+/// turns a harness on. A real folder there is not ours to delete: it stays,
+/// with a warning.
+fn remove_links_the_cli_added(
+    rt: &Runtime,
+    guard: &ExclusiveGuard,
+    scope: &RootScope,
+    skill: &SkillName,
+    held_before: &[PathBuf],
+) -> Result<(), CoreError> {
+    let fs = rt.ports.fs.as_ref();
+    for dir in crate::ops::harness_own_skill_roots(rt, scope) {
+        if held_before.contains(&dir) {
+            continue;
+        }
+        let entry = dir.join(&skill.0);
+        let Ok(facts) = fs.symlink_metadata(&entry) else {
+            continue;
+        };
+        if facts.kind == FileKind::Symlink {
+            let scoped = crate::ports::confine(&rt.scope, fs, &entry)?;
+            fs.remove_file(guard, &scoped)
+                .map_err(|e| CoreError::io(&entry, e))?;
+        } else {
+            eprintln!(
+                "warning: skills update added {} in a harness that did not have {}; it is a real folder, so it stays",
+                entry.display(),
+                skill.0
+            );
+        }
+    }
+    Ok(())
+}
+
 /// `Copy`: stages `files` under [`ops_install::journal_root`], then swaps it
 /// into `<universal_root>/<skill>`, quarantining whatever already sat there
 /// - see the module doc for why `QUARANTINE_DIR_NAME`, not the desktop's
@@ -437,7 +484,18 @@ fn update_write(
                         .map_err(|e| CoreError::io(&plan.config, e))?;
                 }
             }
-            update_via_cli(rt, ctx, req, destination)
+            let held_before = harness_dirs_holding(rt, &req.scope, &req.skill);
+            update_via_cli(rt, ctx, req, destination)?;
+            if req.method == InstallMethod::SkillsSh {
+                remove_links_the_cli_added(
+                    rt,
+                    &session.guard,
+                    &req.scope,
+                    &req.skill,
+                    &held_before,
+                )?;
+            }
+            Ok(())
         }
     }
 }

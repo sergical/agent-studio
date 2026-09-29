@@ -45,6 +45,12 @@ struct FakeNpxUpdateSpawner {
     home: PathBuf,
     revision: &'static str,
     recorded: Mutex<Vec<(Vec<String>, Option<PathBuf>)>>,
+    /// Harness skills directories (relative to `home`) where the fake CLI
+    /// links the updated skill, as `npx skills update` does for every
+    /// harness it knows. A link already there is left alone.
+    links_into: Vec<&'static str>,
+    /// Same, but the fake CLI writes a real folder instead of a link.
+    copies_into: Vec<&'static str>,
 }
 
 impl FakeNpxUpdateSpawner {
@@ -53,7 +59,19 @@ impl FakeNpxUpdateSpawner {
             home,
             revision,
             recorded: Mutex::new(Vec::new()),
+            links_into: Vec::new(),
+            copies_into: Vec::new(),
         }
+    }
+
+    fn linking_into(mut self, dirs: &[&'static str]) -> Self {
+        self.links_into = dirs.to_vec();
+        self
+    }
+
+    fn copying_into(mut self, dirs: &[&'static str]) -> Self {
+        self.copies_into = dirs.to_vec();
+        self
     }
 }
 
@@ -97,6 +115,19 @@ impl ProcessSpawner for FakeNpxUpdateSpawner {
                 ),
             )
             .unwrap();
+            for dir in &self.links_into {
+                let link = cwd.join(dir).join(&skill);
+                if link.symlink_metadata().is_err() {
+                    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&dir_of(&cwd, &skill), &link).unwrap();
+                }
+            }
+            for dir in &self.copies_into {
+                let folder = cwd.join(dir).join(&skill);
+                std::fs::create_dir_all(&folder).unwrap();
+                std::fs::write(folder.join("SKILL.md"), "real folder written by the CLI").unwrap();
+            }
         }
         Ok(ProcessOutput {
             status: Some(0),
@@ -105,6 +136,10 @@ impl ProcessSpawner for FakeNpxUpdateSpawner {
             timed_out: false,
         })
     }
+}
+
+fn dir_of(cwd: &std::path::Path, skill: &str) -> PathBuf {
+    cwd.join(UNIVERSAL_ROOT_RELATIVE).join(skill)
 }
 
 fn runtime_with(
@@ -827,4 +862,84 @@ fn a_failed_cli_update_says_which_command_failed_with_the_tool_line_and_no_npm_c
 
         std::fs::remove_dir_all(&home).ok();
     }
+}
+
+/// Flow: a global skills.sh update over a skill only the Universal folder
+/// holds, where the CLI links it into the Claude Code and Codex folders too.
+/// Expectation: after the update neither harness folder holds the skill, and
+/// the Universal folder carries the new revision.
+/// A failure here means an update turned harnesses on that the user never
+/// enabled, so the skill starts loading in tools that did not have it.
+#[test]
+fn update_removes_links_the_cli_added_for_harnesses_without_the_skill_or_names_the_leftover_link() {
+    let home = unique_temp_dir("update_removes_added_links");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "zeta", "v1");
+    let spawner = FakeNpxUpdateSpawner::new(home.clone(), "v2")
+        .linking_into(&[".claude/skills", ".codex/skills"]);
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(Arc::new(spawner)));
+
+    let outcome = ops::update(&rt, &ctx(), &cli_request("zeta", InstallMethod::SkillsSh)).unwrap();
+
+    for dir in [".claude/skills", ".codex/skills"] {
+        let leftover = home.join(dir).join("zeta");
+        assert!(
+            leftover.symlink_metadata().is_err(),
+            "the CLI's link at {} must be removed",
+            leftover.display()
+        );
+    }
+    let bytes = std::fs::read_to_string(outcome.deployment_path.join("SKILL.md")).unwrap();
+    assert!(bytes.contains("Body at v2"), "{bytes}");
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the same update where the pi folder already had a link to the skill
+/// before the update, and the CLI also adds a Codex link.
+/// Expectation: the pi link survives; only the new Codex link goes.
+/// A failure here means the update switched off a harness the user had on.
+#[test]
+fn update_keeps_a_harness_link_that_existed_before_or_names_the_removed_link() {
+    let home = unique_temp_dir("update_keeps_existing_link");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "eta", "v1");
+    let pi_link = home.join(".pi/agent/skills/eta");
+    std::fs::create_dir_all(pi_link.parent().unwrap()).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir_of(&home, "eta"), &pi_link).unwrap();
+    let spawner = FakeNpxUpdateSpawner::new(home.clone(), "v2")
+        .linking_into(&[".pi/agent/skills", ".codex/skills"]);
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(Arc::new(spawner)));
+
+    ops::update(&rt, &ctx(), &cli_request("eta", InstallMethod::SkillsSh)).unwrap();
+
+    assert!(
+        pi_link.symlink_metadata().unwrap().file_type().is_symlink(),
+        "the pi link that existed before the update must stay"
+    );
+    assert!(home.join(".codex/skills/eta").symlink_metadata().is_err());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the CLI writes a real folder (not a link) into a harness folder
+/// that did not hold the skill.
+/// Expectation: the update still succeeds and the folder stays, since it is
+/// not a link Skill Studio may delete.
+/// A failure here means the update deleted a folder it did not create as a
+/// link, or failed the whole update over it.
+#[test]
+fn update_leaves_a_real_folder_the_cli_wrote_in_place_or_names_the_deleted_folder() {
+    let home = unique_temp_dir("update_keeps_real_folder");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "theta", "v1");
+    let spawner = FakeNpxUpdateSpawner::new(home.clone(), "v2").copying_into(&[".codex/skills"]);
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(Arc::new(spawner)));
+
+    ops::update(&rt, &ctx(), &cli_request("theta", InstallMethod::SkillsSh)).unwrap();
+
+    assert!(home.join(".codex/skills/theta/SKILL.md").is_file());
+
+    std::fs::remove_dir_all(&home).ok();
 }
