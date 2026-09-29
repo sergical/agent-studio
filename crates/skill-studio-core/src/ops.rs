@@ -1283,7 +1283,15 @@ fn process_entries(
             )
         });
 
-        let source_kind = source_kind_from_owner(owner_kind);
+        // A link end has no source of its own: the universal deployment it
+        // points to supplies the skill's real source. `Manual` is the lowest
+        // kind, so it never outvotes that deployment in the skill-level
+        // minimum.
+        let source_kind = if is_link && owner_kind == LifecycleOwnerKind::Ambiguous {
+            SourceKind::Manual
+        } else {
+            source_kind_from_owner(owner_kind)
+        };
         let deployment = DeploymentDto {
             id,
             root: match RootRef::new(cx.target.scope.clone(), cx.target.kind.clone()) {
@@ -2518,7 +2526,7 @@ fn classify_owner(cx: &OwnerClassifyContext) -> (LifecycleOwnerKind, Option<Owne
     // so an empty ledger and a missing one behave the same: no dotagents or
     // skills.sh entry, fall through to the checks below. A missing entry is
     // therefore a caller bug, not a "no ledger" case: silently skipping the
-    // symlink and universal-root carve-outs would misclassify the skill.
+    // symlink carve-out would misclassify the skill.
     let Some(ledger) = cx.scope_ledgers.get(cx.scope) else {
         unreachable!("scan_inner populates a ledger for every scope it classifies")
     };
@@ -2561,21 +2569,15 @@ fn classify_owner(cx: &OwnerClassifyContext) -> (LifecycleOwnerKind, Option<Owne
         return (LifecycleOwnerKind::SkillsSh, Some(owner));
     }
 
-    // Two carve-outs applied before falling back, both of which narrow the
-    // owner rather than widen it. Owner kind gates repair, so skipping them
-    // would permit owner-wide actions that neither carve-out's ambiguity
-    // should allow.
-
-    // A universal root sitting beside an `agents.toml` or `agents.lock` that
-    // names no row for this skill: the dotagents install owns the root, so
-    // the skill reads as dotagents-managed, but no row says who owns it.
-    if matches!(cx.kind, RootKind::Universal) && ledger.has_dotagents_files {
-        return (LifecycleOwnerKind::Ambiguous, None);
-    }
-
+    // A universal folder that no ledger names stays `Manual`: dotagents
+    // prunes only folders `agents.lock` names, and `sync` adopts the rest
+    // without changing them.
+    //
     // A per-skill symlink into the universal root: the bytes belong to the
     // universal deployment, whose own ledger entry may say otherwise, so
-    // this end of the link claims no owner.
+    // this end of the link claims no owner. Owner kind gates repair, so
+    // skipping this would permit owner-wide actions the ambiguity should not
+    // allow.
     if cx.is_link && cx.link_target.is_some_and(resolves_into_dotagents) {
         return (LifecycleOwnerKind::Ambiguous, None);
     }
@@ -3126,9 +3128,10 @@ fn resolves_into_dotagents(path: &Path) -> bool {
 /// separate lock-file check here would be scope-blind - one home lock file
 /// tested against every root's bare name - and would badge a per-harness
 /// manual folder as skills.sh whenever the home lock names a same-named
-/// skill. Every `Ambiguous` origin (a dual claim, an unnamed dotagents
-/// ledger beside the universal root, a link back into it) reads as dotagents
-/// because each one is a dotagents-managed root with no single owner row.
+/// skill. An `Ambiguous` dual claim (a dotagents row and a skills.sh row for
+/// one name) reads as dotagents because it is a dotagents-managed root with
+/// no single owner row. An `Ambiguous` link back into the universal root has
+/// no source of its own; the scan call site badges it `Manual`.
 fn source_kind_from_owner(owner: LifecycleOwnerKind) -> SourceKind {
     match owner {
         LifecycleOwnerKind::Plugin => SourceKind::Plugin,

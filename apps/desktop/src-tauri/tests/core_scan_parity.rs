@@ -812,15 +812,16 @@ fn opencode_config_dir_resolves_the_same_on_linux_and_macos_rules_or_names_the_d
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Proves the first of the desktop's two `Ambiguous` carve-outs: a universal
-/// root beside an `agents.toml`/`agents.lock` that names no row for this
-/// skill. The dotagents install owns the root, so the skill reads as
-/// dotagents-managed, but nothing says who owns it - and `Ambiguous` permits
-/// no repair where `Manual` permits a direct one, so a core that skipped the
-/// carve-out would widen what a repair may touch.
+/// Proves an unnamed folder beside dotagents files stays unmanaged: a
+/// universal root beside an `agents.toml`/`agents.lock` that names no row for
+/// this skill is `Manual`. dotagents prunes only folders `agents.lock` names
+/// (`cli/commands/install/skills.js:141-154`) and `sync` adopts every other
+/// folder without changing it (`cli/commands/sync.js:60-88`), so the folder
+/// has no owner tool. Reading it as `Ambiguous` made its invocation edit fork
+/// first and the fork refuse it.
 #[test]
-fn a_universal_root_beside_an_unnamed_dotagents_ledger_is_ambiguous() {
-    let dir = unique_temp_dir("shared-root-ambiguous");
+fn a_universal_root_beside_an_unnamed_dotagents_ledger_is_manual() {
+    let dir = unique_temp_dir("shared-root-unnamed");
     std::fs::create_dir_all(&dir).unwrap();
     let home = dir.canonicalize().unwrap();
 
@@ -835,17 +836,17 @@ fn a_universal_root_beside_an_unnamed_dotagents_ledger_is_ambiguous() {
     )
     .unwrap();
 
-    let core = run_core("shared-root-ambiguous", &home);
+    let core = run_core("shared-root-unnamed", &home);
 
     assert_eq!(
         owner_kind_at(&core, "orphan-skill", &home, &orphan),
-        "ambiguous"
+        "manual"
     );
 
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Proves the second carve-out: a symlink that both lives in the universal
+/// Proves the remaining carve-out: a symlink that both lives in the universal
 /// root and points back into it. The bytes belong to the deployment it
 /// points at, whose own ledger entry may say otherwise, so this end of the
 /// link claims no owner.
@@ -1035,10 +1036,8 @@ fn frontmatter_name_cannot_claim_a_skills_sh_owner() {
 
 /// Ports `frontmatter_name_cannot_claim_a_dotagents_owner`: the same
 /// frontmatter/directory mismatch, but against a dotagents ledger (`agents.toml`
-/// row named `bar`) instead of the skills.sh lock. The universal root sits
-/// beside dotagents ledger files that name no row for `foo`, so the
-/// unnamed-root carve-out applies and the deployment is `Ambiguous`, not
-/// `Manual`.
+/// row named `bar`) instead of the skills.sh lock. The ledger names no row
+/// for the folder `foo`, so the deployment is `Manual`.
 #[test]
 fn frontmatter_name_cannot_claim_a_dotagents_owner() {
     let dir = unique_temp_dir("frontmatter-dotagents");
@@ -1057,7 +1056,7 @@ fn frontmatter_name_cannot_claim_a_dotagents_owner() {
     let inventory = core_scan(&home, &[], None);
     let row = deployment_at(&inventory, "foo", &home, &skill_dir);
 
-    assert_eq!(row.owner_kind, LifecycleOwnerKind::Ambiguous);
+    assert_eq!(row.owner_kind, LifecycleOwnerKind::Manual);
     assert!(row.owner_id.is_none());
 
     std::fs::remove_dir_all(&dir).ok();

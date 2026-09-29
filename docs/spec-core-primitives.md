@@ -826,6 +826,14 @@ Core already depends on `toml` and `serde_json`, so both parsers are present.
 A deployment claimed by two ledgers is `Ambiguous`; this is the case the
 parity fixtures missed before the adversarial review.
 
+A universal-root folder that no ledger names is not ambiguous, even beside an
+`agents.toml` or `agents.lock`: it is `Manual` (`InRepo` inside a git tree).
+dotagents 3.1.0 prunes only folders `agents.lock` names
+(`cli/commands/install/skills.js:141-154`, `sync.js:60-88`) and adopts every
+other folder as a `path:` entry without changing it. The only ledger-free
+`Ambiguous` case left is a symlink inside the universal root that points back
+into it.
+
 ### 13.5 Order of work
 
 1. Add `ScopeFs::ancestor_holds` and the two dependencies. Extend
@@ -914,8 +922,10 @@ a projection of the owner kind.
 
 The core now does the same. `source_kind_from_owner` maps each
 `LifecycleOwnerKind` to a `SourceKind`: plugin, fork, skills.sh, and in-repo
-map to themselves; dotagents, wildcard-dotagents, and ambiguous all read as
-dotagents; copy and manual read as manual. The badge is a projection of the
+map to themselves; dotagents, wildcard-dotagents, and a dual-claim ambiguous
+read as dotagents; copy and manual read as manual. An ambiguous link
+deployment has no source of its own, so the scan badges it manual and the
+universal deployment it points to supplies the skill's source. The badge is a projection of the
 owner classification, not a second classifier, so it can never disagree with
 it. The scanner no longer reads the lock file for the badge; the lock file
 is read once, inside the ledger set, for ownership.
