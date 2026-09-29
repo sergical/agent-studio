@@ -1513,6 +1513,23 @@ struct ScanTarget {
     harness: Option<AgentId>,
 }
 
+/// A catalog global root under the scope's own Codex home and `OpenCode`
+/// config root, the same folders `split` writes to (see
+/// [`crate::ops_split::split_target_root`]); every other root sits under
+/// the home.
+fn global_root_path(rt: &Runtime, relative: &Path) -> PathBuf {
+    if let Ok(rest) = relative.strip_prefix(".codex") {
+        return rt.scope.codex_home.join(rest);
+    }
+    if let (Some(root), Ok(rest)) = (
+        &rt.scope.raw.opencode_config_root,
+        relative.strip_prefix(".config/opencode"),
+    ) {
+        return root.join(rest);
+    }
+    rt.scope.home.lexical.join(relative)
+}
+
 fn scan_targets(rt: &Runtime) -> Vec<ScanTarget> {
     let mut seen: HashSet<(RootScope, RootKind, PathBuf)> = HashSet::new();
     let mut targets = Vec::new();
@@ -1539,7 +1556,7 @@ fn scan_targets(rt: &Runtime) -> Vec<ScanTarget> {
                 ScopeLevel::Global => {
                     push_target(
                         RootScope::Global,
-                        rt.scope.home.lexical.join(&root_spec.relative_path),
+                        global_root_path(rt, Path::new(&root_spec.relative_path)),
                     );
                 }
                 ScopeLevel::Project => {
@@ -4425,6 +4442,29 @@ enum RestorePlan {
     WriteDir(Vec<fsops::StageFile>),
 }
 
+/// Puts back a link an op took down, with the target text `read_link`
+/// returned before it did. A relative target stays relative, so a link the
+/// skills CLI wrote keeps working when the user moves the home. The target
+/// is confined as resolved from `link_path`'s parent.
+pub(crate) fn recreate_link(
+    rt: &Runtime,
+    guard: &ExclusiveGuard,
+    link_path: &Path,
+    recorded_target: &Path,
+) -> Result<(), CoreError> {
+    let fs = rt.ports.fs.as_ref();
+    let resolved_target =
+        crate::fsops::join_lexical(link_path.parent().unwrap_or(link_path), recorded_target);
+    let scoped_link = crate::ports::confine(&rt.scope, fs, link_path)?;
+    let scoped_target = crate::ports::confine(&rt.scope, fs, &resolved_target)?;
+    if recorded_target.is_relative() {
+        fs.symlink_relative(guard, &scoped_target, recorded_target, &scoped_link)
+    } else {
+        fs.symlink(guard, &scoped_target, &scoped_link)
+    }
+    .map_err(|e| CoreError::io(link_path, e))
+}
+
 /// [`RestorePlan::WriteDir`]'s mutation step: stages `files` beside `path`
 /// under its own journal root (the same lease/journal primitives
 /// `ops::update`'s own `Copy` method uses) and swaps the staged folder into
@@ -5019,14 +5059,7 @@ fn restore_event_body(
         if fs.symlink_metadata(&link_path).is_ok() {
             continue;
         }
-        let resolved_target =
-            crate::fsops::join_lexical(link_path.parent().unwrap_or(&link_path), &target);
-        if let (Ok(scoped_link), Ok(scoped_target)) = (
-            crate::ports::confine(&rt.scope, fs, &link_path),
-            crate::ports::confine(&rt.scope, fs, &resolved_target),
-        ) {
-            let _ = fs.symlink(&session.guard, &scoped_target, &scoped_link);
-        }
+        let _ = recreate_link(rt, &session.guard, &link_path, &target);
     }
     // The `.skill-lock.json` row `ops::remove` saved before the real CLI
     // dropped it (`SkillsSh` only - see `restore_backup_inverse_with_links_and_lock`'s

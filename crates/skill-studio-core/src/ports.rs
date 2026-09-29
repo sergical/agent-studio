@@ -658,6 +658,17 @@ pub trait HistoryStore: Send {
     ) -> Result<(), CoreError> {
         Ok(())
     }
+    /// [`Self::patch_payload`] for the event's inverse: an op records its
+    /// inverse before the first write (journal first) and fills in what only
+    /// the write can know, such as the fingerprint of each folder it wrote.
+    fn patch_inverse(
+        &mut self,
+        _guard: &ExclusiveGuard,
+        _id: &EventId,
+        _patch: serde_json::Value,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
 }
 
 /// Lifecycle state of one journal plan.

@@ -163,6 +163,55 @@ impl SqliteHistoryStore {
     fn backup_dir_for(&self, id: &EventId) -> PathBuf {
         self.backups_root.join(&id.0)
     }
+
+    /// Merges `patch`'s top-level keys into the JSON object stored in
+    /// `column` for event `id`. A missing or non-object value is left as-is.
+    fn patch_json_column(
+        &self,
+        column: JsonColumn,
+        id: &EventId,
+        patch: &serde_json::Value,
+    ) -> Result<(), CoreError> {
+        let Some(patch_obj) = patch.as_object() else {
+            return Ok(());
+        };
+        let (select, update) = match column {
+            JsonColumn::Payload => (
+                "SELECT payload FROM events WHERE id = ?1",
+                "UPDATE events SET payload = ?1 WHERE id = ?2",
+            ),
+            JsonColumn::Inverse => (
+                "SELECT inverse FROM events WHERE id = ?1",
+                "UPDATE events SET inverse = ?1 WHERE id = ?2",
+            ),
+        };
+        let stored: Option<String> = self
+            .conn
+            .query_row(select, params![id.0], |row| row.get(0))
+            .map_err(sql_err)?;
+        let Some(stored) = stored else {
+            return Ok(());
+        };
+        let mut value: serde_json::Value =
+            serde_json::from_str(&stored).unwrap_or(serde_json::Value::Null);
+        let Some(obj) = value.as_object_mut() else {
+            return Ok(());
+        };
+        for (key, patch_value) in patch_obj {
+            obj.insert(key.clone(), patch_value.clone());
+        }
+        let updated = serde_json::to_string(&value).map_err(json_err)?;
+        self.conn
+            .execute(update, params![updated, id.0])
+            .map_err(sql_err)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum JsonColumn {
+    Payload,
+    Inverse,
 }
 
 impl HistoryStore for SqliteHistoryStore {
@@ -394,33 +443,16 @@ impl HistoryStore for SqliteHistoryStore {
         id: &EventId,
         patch: serde_json::Value,
     ) -> Result<(), CoreError> {
-        let Some(patch_obj) = patch.as_object() else {
-            return Ok(());
-        };
-        let payload_str: String = self
-            .conn
-            .query_row(
-                "SELECT payload FROM events WHERE id = ?1",
-                params![id.0],
-                |row| row.get(0),
-            )
-            .map_err(sql_err)?;
-        let mut value: serde_json::Value =
-            serde_json::from_str(&payload_str).unwrap_or(serde_json::Value::Null);
-        let Some(obj) = value.as_object_mut() else {
-            return Ok(());
-        };
-        for (key, patch_value) in patch_obj {
-            obj.insert(key.clone(), patch_value.clone());
-        }
-        let updated = serde_json::to_string(&value).map_err(json_err)?;
-        self.conn
-            .execute(
-                "UPDATE events SET payload = ?1 WHERE id = ?2",
-                params![updated, id.0],
-            )
-            .map_err(sql_err)?;
-        Ok(())
+        self.patch_json_column(JsonColumn::Payload, id, &patch)
+    }
+
+    fn patch_inverse(
+        &mut self,
+        _guard: &ExclusiveGuard,
+        id: &EventId,
+        patch: serde_json::Value,
+    ) -> Result<(), CoreError> {
+        self.patch_json_column(JsonColumn::Inverse, id, &patch)
     }
 
     fn claim_revert(

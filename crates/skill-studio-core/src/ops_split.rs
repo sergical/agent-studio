@@ -176,6 +176,18 @@ fn split_body(
         });
     }
 
+    // The copies are written from the backup, which cannot carry a link.
+    if let Some(nested) = find_nested_symlink(fs, &deployment.path) {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            format!(
+                "{} is a link inside the skill folder; split copies only regular files, so replace the link with a file first",
+                nested.display()
+            ),
+        )
+        .at(&nested));
+    }
+
     let link_targets: Vec<(PathBuf, PathBuf)> = links
         .iter()
         .filter_map(|link| fs.read_link(link).ok().map(|target| (link.clone(), target)))
@@ -213,9 +225,10 @@ fn split_body(
     let files = session
         .store
         .read_backup_files(&manifest.backup_dir, &backup_entry.relative)?;
-    // Each copy is written from the same backed-up files, so its fingerprint
-    // is the Universal folder's own: undo compares against it to see whether
-    // a copy was edited after the split.
+    // Recorded before the write as the Universal folder's own fingerprint,
+    // then replaced by each copy's real one once it is written (a copy has
+    // no empty folders, so the two can differ). Undo compares against it to
+    // see whether a copy was edited after the split.
     let copy_fingerprints: Vec<(PathBuf, crate::identity::Fingerprint)> = copies
         .iter()
         .map(|copy| (copy.path.clone(), pre_fingerprint.clone()))
@@ -263,11 +276,23 @@ fn split_body(
         },
     );
     if let Err(e) = write_result {
+        roll_back_split(rt, &session, fs, &copies, &link_targets);
         let _ = session
             .store
             .finish(&session.guard, &id, EventStatus::Failed, None);
         return Err(e);
     }
+    let written: Vec<(PathBuf, crate::identity::Fingerprint)> = copies
+        .iter()
+        .filter_map(|copy| {
+            crate::events::fingerprint_path(fs, &copy.path)
+                .ok()
+                .flatten()
+                .map(|fingerprint| (copy.path.clone(), fingerprint))
+        })
+        .collect();
+    let patch = crate::events::with_remove_copies(serde_json::json!({}), &written);
+    let _ = session.store.patch_inverse(&session.guard, &id, patch);
     session
         .store
         .finish(&session.guard, &id, EventStatus::Done, None)?;
@@ -349,4 +374,45 @@ fn write_split(
     let scoped_to = crate::ports::confine(&rt.scope, fs, writes.quarantine_target)?;
     fs.rename(&session.guard, &scoped_from, &scoped_to)
         .map_err(|e| CoreError::io(writes.universal, e))
+}
+
+/// Undoes a split that failed part-way, best-effort: the caller still
+/// returns the original error. A copy folder is new (its place held at most
+/// a link), so any real folder there is ours to remove.
+fn roll_back_split(
+    rt: &Runtime,
+    session: &MutationSession,
+    fs: &dyn ScopeFs,
+    copies: &[SplitCopy],
+    link_targets: &[(PathBuf, PathBuf)],
+) {
+    for copy in copies {
+        if fs
+            .symlink_metadata(&copy.path)
+            .is_ok_and(|facts| facts.kind == FileKind::Dir)
+        {
+            crate::ops_remove::remove_tree_best_effort(fs, &copy.path);
+        }
+    }
+    for (link, target) in link_targets {
+        if fs.symlink_metadata(link).is_err() {
+            let _ = crate::ops::recreate_link(rt, &session.guard, link, target);
+        }
+    }
+}
+
+fn find_nested_symlink(fs: &dyn ScopeFs, dir: &Path) -> Option<PathBuf> {
+    for entry in fs.read_dir(dir).ok()? {
+        let child = dir.join(&entry.name);
+        match entry.kind {
+            FileKind::Symlink => return Some(child),
+            FileKind::Dir => {
+                if let Some(found) = find_nested_symlink(fs, &child) {
+                    return Some(found);
+                }
+            }
+            FileKind::File | FileKind::Other => {}
+        }
+    }
+    None
 }

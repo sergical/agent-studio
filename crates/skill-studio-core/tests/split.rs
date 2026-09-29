@@ -399,3 +399,209 @@ fn split_and_its_undo_keep_a_script_executable() {
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+fn gamma_deployment_paths(rt: &Runtime) -> Vec<PathBuf> {
+    let inventory = ops::scan(rt, &ctx(), &ScanRequest::default()).unwrap();
+    let mut paths: Vec<PathBuf> = inventory
+        .skills
+        .iter()
+        .filter(|s| s.name.0 == "gamma")
+        .flat_map(|s| s.deployments.iter().map(|d| d.path.clone()))
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// Flow: the scope sets `CODEX_HOME` and a custom `OpenCode` root, and the
+/// user splits to Codex and `OpenCode`. Expect the next scan to list both
+/// copies. Catches a scan that reads only `~/.codex` and `~/.config/opencode`,
+/// so the copies split wrote there vanish from the app.
+#[test]
+fn split_copies_under_codex_home_and_a_custom_opencode_root_show_in_the_scan() {
+    let home = unique_temp_dir("split_custom_roots_scan");
+    splittable_home(&home);
+    let codex_home = home.join("custom-codex");
+    let opencode_root = home.join("custom-opencode");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    std::fs::create_dir_all(&opencode_root).unwrap();
+    let mut scope = RuntimeScope::fixture(&home).with_codex_home(&codex_home);
+    scope.opencode_config_root = Some(opencode_root.clone());
+    let rt = runtime_with_scope(&home, &scope);
+    let deployment_id = universal_deployment_id(&rt);
+
+    ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["codex", "open-code"]),
+        },
+    )
+    .unwrap();
+
+    let mut expected = vec![
+        codex_home.join("skills/gamma"),
+        opencode_root.join("skills/gamma"),
+    ];
+    expected.sort();
+    assert_eq!(gamma_deployment_paths(&rt), expected);
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: Claude Code links to the Universal folder with a relative target,
+/// the user splits to Codex, then undoes it. Expect the Claude link back
+/// with the same relative target. Catches an undo that recreates the link
+/// as absolute, which breaks when the user moves or syncs their home.
+#[test]
+fn undo_split_recreates_a_relative_link_as_relative() {
+    let home = unique_temp_dir("split_relative_link");
+    splittable_home(&home);
+    let relative = PathBuf::from("../../.agents/skills/gamma");
+    std::fs::remove_file(claude_copy(&home)).unwrap();
+    std::os::unix::fs::symlink(&relative, claude_copy(&home)).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+    let outcome = ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["codex"]),
+        },
+    )
+    .unwrap();
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(std::fs::read_link(claude_copy(&home)).unwrap(), relative);
+    assert_eq!(
+        std::fs::read(claude_copy(&home).join("SKILL.md")).unwrap(),
+        SKILL_MD
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the Universal folder holds an empty `assets/` folder; the user
+/// splits to Codex and undoes it with no edits in between. Expect the undo
+/// to pass without force. Catches drift that compares each copy with the
+/// Universal fingerprint, which counts a folder the copy never gets.
+#[test]
+fn undo_split_of_a_skill_with_an_empty_folder_needs_no_force() {
+    let home = unique_temp_dir("split_empty_folder");
+    splittable_home(&home);
+    std::fs::create_dir_all(universal(&home).join("assets")).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+    let outcome = ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["codex"]),
+        },
+    )
+    .unwrap();
+
+    let result = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    );
+
+    assert!(result.is_ok(), "undo reported drift: {result:?}");
+    assert!(std::fs::symlink_metadata(codex_copy(&home)).is_err());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the Universal folder holds a link (`refs/latest.md`), and the user
+/// splits. Expect a refusal that names the link, with no journal row and no
+/// backup folder left. Catches a refusal that comes after the backup, which
+/// leaves an orphan backup no event points to.
+#[test]
+fn split_refuses_a_skill_with_a_nested_link_before_its_backup() {
+    let home = unique_temp_dir("split_nested_link");
+    splittable_home(&home);
+    let nested = universal(&home).join("refs/latest.md");
+    std::os::unix::fs::symlink("notes.md", &nested).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+
+    let err = ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["codex"]),
+        },
+    )
+    .unwrap_err();
+
+    let backups = home.join(".history/backups");
+    let left = std::fs::read_dir(&backups).map_or(0, Iterator::count);
+    assert_eq!(left, 0, "a refused split left a backup in {}", backups.display());
+    assert_eq!(split_event_count(&rt), 0);
+    assert!(
+        err.message.contains(&nested.display().to_string()),
+        "{}",
+        err.message
+    );
+    assert!(std::fs::symlink_metadata(claude_copy(&home))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: a regular file sits where the quarantine folder must go, so the
+/// split fails after it removed the links and wrote the copies. Expect the
+/// error, no copies, both links back, and the Universal folder in place.
+/// Catches a split that returns its error but leaves the skill half-split:
+/// real copies plus missing links that no undo can reach.
+#[test]
+fn split_that_fails_part_way_rolls_back_its_copies_and_links() {
+    let home = unique_temp_dir("split_rollback");
+    splittable_home(&home);
+    std::fs::write(home.join(".agents/skills/.skill-studio-quarantine"), b"").unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+
+    let result = ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["claude-code", "codex"]),
+        },
+    );
+
+    assert!(result.is_err(), "the split must fail: {result:?}");
+    assert!(std::fs::symlink_metadata(codex_copy(&home)).is_err());
+    for link in [claude_copy(&home), pi_link(&home)] {
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink()),
+            "{} must be a link again",
+            link.display()
+        );
+    }
+    assert_eq!(
+        std::fs::read(universal(&home).join("SKILL.md")).unwrap(),
+        SKILL_MD
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
