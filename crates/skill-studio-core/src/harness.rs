@@ -460,6 +460,10 @@ const PI_SKILLS_DOC: &str =
     "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md";
 const PI_PACKAGES_DOC: &str =
     "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/packages.md";
+const CURSOR_SKILLS_DOC: &str = "https://cursor.com/docs/context/skills";
+const GROK_SKILLS_DOC: &str = "https://docs.x.ai/build/features/skills-plugins-marketplaces";
+const GROK_OVERVIEW_DOC: &str = "https://docs.x.ai/build/overview";
+const GROK_SETTINGS_DOC: &str = "https://docs.x.ai/build/settings";
 const CODE_SURVEY: &str = "apps/desktop/src-tauri/src/skills/agents.rs";
 const CLAUDE_TRANSCRIPT_READER: &str = "crates/skill-studio-host/src/skill_uses.rs";
 const CODEX_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/codex.rs";
@@ -819,30 +823,55 @@ fn pi() -> HarnessFacts {
 
 fn cursor() -> HarnessFacts {
     let ev = || Evidence::inferred(CODE_SURVEY);
+    let doc = || Evidence::verified(CURSOR_SKILLS_DOC);
+    let mut roots = vec![
+        root(
+            ScopeLevel::Global,
+            ".cursor/skills",
+            RootRole::Own,
+            false,
+            doc(),
+        ),
+        root(
+            ScopeLevel::Project,
+            ".cursor/skills",
+            RootRole::Own,
+            false,
+            doc(),
+        ),
+        root(
+            ScopeLevel::Global,
+            ".agents/skills",
+            RootRole::Universal,
+            false,
+            doc(),
+        ),
+        root(
+            ScopeLevel::Project,
+            ".agents/skills",
+            RootRole::Universal,
+            false,
+            doc(),
+        ),
+    ];
+    // "For compatibility, Cursor also loads skills from Claude and Codex
+    // directories", at both levels.
+    for level in [ScopeLevel::Global, ScopeLevel::Project] {
+        for path in [".claude/skills", ".codex/skills"] {
+            roots.push(root(level, path, RootRole::CrossHarness, false, doc()));
+        }
+    }
     HarnessFacts {
         id: AgentId::from(AgentId::CURSOR),
         display_name: "Cursor".into(),
-        roots: vec![
-            root(
-                ScopeLevel::Global,
-                ".cursor/skills",
-                RootRole::Own,
-                false,
-                ev(),
-            ),
-            root(
-                ScopeLevel::Project,
-                ".cursor/skills",
-                RootRole::Own,
-                false,
-                ev(),
-            ),
-        ],
-        reads_universal_root: Support::Unknown,
+        roots,
+        reads_universal_root: Support::Yes(doc()),
         follows_per_skill_link: Support::Unknown,
         follows_whole_dir_link: Support::Unknown,
         skips_hidden_entries: Support::Unknown,
         all_skills_disable: Support::Unknown,
+        // The docs name no per-skill off switch, only
+        // `disable-model-invocation`; Park is the off path.
         native_disable: None,
         invocation_control: InvocationControlSpec {
             model_invocation: Support::Unknown,
@@ -866,30 +895,60 @@ fn cursor() -> HarnessFacts {
 
 fn grok_build() -> HarnessFacts {
     let ev = || Evidence::inferred(CODE_SURVEY);
+    let doc = || Evidence::verified(GROK_SKILLS_DOC);
+    // `$GROK_HOME` moves `~/.grok` (GROK_SETTINGS_DOC); host root
+    // resolution does not honour it yet. The project `.grok/skills` is also
+    // found in every parent folder up to the repo root.
+    let mut roots = vec![
+        root(
+            ScopeLevel::Global,
+            ".grok/skills",
+            RootRole::Own,
+            false,
+            doc(),
+        ),
+        root(
+            ScopeLevel::Project,
+            ".grok/skills",
+            RootRole::Own,
+            false,
+            doc(),
+        ),
+        root(
+            ScopeLevel::Global,
+            ".agents/skills",
+            RootRole::Universal,
+            false,
+            doc(),
+        ),
+        root(
+            ScopeLevel::Project,
+            ".agents/skills",
+            RootRole::Universal,
+            false,
+            doc(),
+        ),
+    ];
+    for level in [ScopeLevel::Global, ScopeLevel::Project] {
+        roots.push(root(
+            level,
+            ".claude/skills",
+            RootRole::CrossHarness,
+            false,
+            doc(),
+        ));
+    }
     HarnessFacts {
         id: AgentId::from(AgentId::GROK_BUILD),
         display_name: "Grok Build".into(),
-        roots: vec![
-            root(
-                ScopeLevel::Global,
-                ".grok/skills",
-                RootRole::Own,
-                false,
-                ev(),
-            ),
-            root(
-                ScopeLevel::Project,
-                ".grok/skills",
-                RootRole::Own,
-                false,
-                ev(),
-            ),
-        ],
-        reads_universal_root: Support::Unknown,
+        roots,
+        reads_universal_root: Support::Yes(doc()),
         follows_per_skill_link: Support::Unknown,
         follows_whole_dir_link: Support::Unknown,
         skips_hidden_entries: Support::Unknown,
         all_skills_disable: Support::Unknown,
+        // The docs name no per-skill off switch, only the `user-invocable`
+        // frontmatter field; Park is the off path.
         native_disable: None,
         invocation_control: InvocationControlSpec {
             model_invocation: Support::Unknown,
@@ -1295,9 +1354,11 @@ impl HarnessAdapter for CursorAdapter {
     }
 }
 
-/// Grok Build. Binary name and config folder are undocumented
-/// (`docs/action-map/harnesses/harness-detection.md`, "Open items"); `grok`
-/// is a placeholder until one is confirmed.
+/// Grok Build. The binary is `grok` (`cd your-project` then `grok`,
+/// GROK_OVERVIEW_DOC) and the config file is `~/.grok/config.toml`
+/// (GROK_SETTINGS_DOC). Sessions are stored under `~/.grok/sessions/`
+/// (<https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md>).
+/// `$GROK_HOME` moves all three; detection does not honour it yet.
 pub struct GrokBuildAdapter;
 
 impl HarnessAdapter for GrokBuildAdapter {
@@ -1311,7 +1372,7 @@ impl HarnessAdapter for GrokBuildAdapter {
         &["grok"]
     }
     fn config_relative_path(&self) -> Option<&'static str> {
-        None
+        Some(".grok/config.toml")
     }
     fn used_relative_path(&self) -> Option<&'static str> {
         Some(".grok/sessions")
@@ -1701,7 +1762,10 @@ mod tests {
             .into_iter()
             .map(|f| f.id.as_str().to_string())
             .collect();
-        assert_eq!(readers, ["codex", "open-code", "pi"]);
+        assert_eq!(
+            readers,
+            ["codex", "open-code", "pi", "cursor", "grok-build"]
+        );
         let cursor = catalog.get(&AgentId::from(AgentId::CURSOR)).unwrap();
         let cursor_report = CapabilityReport::from_facts(cursor, None);
         assert!(cursor_report
