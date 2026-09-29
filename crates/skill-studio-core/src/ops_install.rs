@@ -446,6 +446,9 @@ fn install_body(
         )
         .at(existing));
     }
+    for path in &written_paths {
+        confine_planned(rt, fs, path)?;
+    }
 
     let step_start = clock.monotonic();
     let id = rt.ports.ids.next_event_id();
@@ -462,10 +465,10 @@ fn install_body(
     // only recognizes `restore_backup`/`recreate_symlink`/`remove_symlink`).
     // `pre` is always `None` (absent): every written path was checked above
     // to not exist yet, so `backup_paths` already recorded it as "absent" in
-    // the manifest this inverse's `backup_dir` points at. `post` is `None`
-    // too, matching every other pre-mutation inverse in this crate
-    // (`ops.rs`'s own `restore_backup_inverse` call sites) - the bytes this
-    // write is about to produce aren't known yet at this point.
+    // the manifest this inverse's `backup_dir` points at. `post` and the
+    // other written paths are patched in after the write, when their
+    // fingerprints exist; a crash before that leaves the row `Pending`,
+    // which undo refuses anyway.
     let inverse = crate::events::restore_backup_inverse(&destination, None, None);
     let draft = EventDraft {
         kind: EventKind::Install,
@@ -503,12 +506,18 @@ fn install_body(
     };
     match install_and_link(rt, ctx, &mut session, fs, req, &targets, documents) {
         Err(e) => {
+            remove_written(rt, &session, fs, &written_paths);
             let _ = session
                 .store
                 .finish(&session.guard, &id, EventStatus::Failed, None);
             Err(e)
         }
         Ok(harness_results) => {
+            let _ = session.store.patch_inverse(
+                &session.guard,
+                &id,
+                written_inverse_patch(fs, &destination, &written_paths),
+            );
             session
                 .store
                 .finish(&session.guard, &id, EventStatus::Done, None)?;
@@ -529,6 +538,59 @@ fn install_body(
             })
         }
     }
+}
+
+/// [`ports::confine`] for a path whose folders `install` has yet to make:
+/// the nearest existing ancestor of the parent stands in for the parent, so
+/// a harness folder under a link out of the scope is refused before the
+/// journal row and the first write.
+fn confine_planned(rt: &Runtime, fs: &dyn ScopeFs, path: &Path) -> Result<(), CoreError> {
+    let parent = path.parent().unwrap_or(path);
+    let resolved_parent = crate::ops::codex_path_form(fs, parent);
+    let lexical_ok = path.is_absolute()
+        && !path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir);
+    if lexical_ok && rt.scope.contains(path) && rt.scope.contains(&resolved_parent) {
+        return Ok(());
+    }
+    Err(CoreError::new(ErrorCode::InvalidRequest, "path lies outside the scope").at(path))
+}
+
+/// Best-effort cleanup after a failed install. Every path in `written` was
+/// absent before the install began, so whatever is there now is this
+/// install's own (or its CLI's). Links go before the shared folder they
+/// point at.
+fn remove_written(rt: &Runtime, session: &MutationSession, fs: &dyn ScopeFs, written: &[PathBuf]) {
+    for path in written.iter().rev() {
+        let Ok(facts) = fs.symlink_metadata(path) else {
+            continue;
+        };
+        if facts.kind == FileKind::Dir {
+            crate::ops_remove::remove_tree_best_effort(fs, path);
+        } else if let Ok(scoped) = ports::confine(&rt.scope, fs, path) {
+            let _ = fs.remove_file(&session.guard, &scoped);
+        }
+    }
+}
+
+/// The inverse fields only a finished install knows: the primary folder's
+/// fingerprint, and every other written link or folder with its own, for
+/// undo to drift-check and remove.
+fn written_inverse_patch(
+    fs: &dyn ScopeFs,
+    destination: &Path,
+    written: &[PathBuf],
+) -> serde_json::Value {
+    let fingerprint = |path: &Path| crate::events::fingerprint_path(fs, path).ok().flatten();
+    let others: Vec<(PathBuf, crate::identity::Fingerprint)> = written
+        .iter()
+        .filter(|p| p.as_path() != destination)
+        .filter_map(|p| fingerprint(p).map(|f| (p.clone(), f)))
+        .collect();
+    let post =
+        fingerprint(destination).map_or_else(|| "absent".to_string(), |f| f.bare_hex().to_string());
+    crate::events::with_remove_copies(serde_json::json!({ "post_fingerprint": post }), &others)
 }
 
 /// Harnesses with their own folder that now see the skill through a link:

@@ -4959,14 +4959,26 @@ fn restore_event_body(
     }
 
     let mutation_result = match &plan {
-        RestorePlan::RemoveIfPresent => {
-            if fs.symlink_metadata(&path).is_ok() {
-                fs.remove_file(&session.guard, &scoped)
-                    .map_err(|e| CoreError::io(&path, e))
-            } else {
-                Ok(())
+        RestorePlan::RemoveIfPresent => match fs.symlink_metadata(&path) {
+            // An install's folder: the drift check above already matched
+            // its whole tree, or `force` was given and the backup holds it.
+            Ok(facts) if facts.kind == FileKind::Dir => {
+                crate::ops_remove::remove_tree_best_effort(fs, &path);
+                if fs.symlink_metadata(&path).is_ok() {
+                    Err(CoreError::new(
+                        ErrorCode::Io,
+                        "could not remove the folder this event wrote",
+                    )
+                    .at(&path))
+                } else {
+                    Ok(())
+                }
             }
-        }
+            Ok(_) => fs
+                .remove_file(&session.guard, &scoped)
+                .map_err(|e| CoreError::io(&path, e)),
+            Err(_) => Ok(()),
+        },
         RestorePlan::Write(bytes) => fs
             .write_atomic(&session.guard, &scoped, bytes)
             .map_err(|e| CoreError::io(&path, e)),
