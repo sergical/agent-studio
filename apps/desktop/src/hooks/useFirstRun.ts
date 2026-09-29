@@ -59,7 +59,10 @@ interface FirstRunScreenState {
   setSearchProjectFolders: (value: boolean) => void;
   telemetryEnabled: boolean;
   setTelemetryEnabled: (value: boolean) => void;
+  /** Why harness detection failed; the screen still lets the user continue. */
   error: string | null;
+  /** Why the last save failed, kept apart from `error` so a save cannot hide or replace the detection reason. */
+  saveError: string | null;
   saving: boolean;
   continue: () => void;
 }
@@ -133,6 +136,7 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
   const [searchProjectFolders, setSearchProjectFolders] = useState(true);
   const [telemetryEnabled, setTelemetryEnabled] = useState(FIRST_RUN_TELEMETRY_DEFAULT);
   const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -163,7 +167,7 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
   }
 
   function continueToApp() {
-    setError(null);
+    setSaveError(null);
     setSaving(true);
     const { choice, telemetryEnabled: savedTelemetryEnabled } = buildFirstRunSave(
       kept,
@@ -174,7 +178,7 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
     void saveChoiceThenOpenApp(() => saveHarnessesChoice(choice, savedTelemetryEnabled), {
       onSaved,
       onSaveFailed: (reason) => {
-        setError(`Couldn't save your choice. ${reason}`);
+        setSaveError(`Couldn't save your choice. ${reason}`);
         setSaving(false);
       },
     });
@@ -189,6 +193,7 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
     telemetryEnabled,
     setTelemetryEnabled,
     error,
+    saveError,
     saving,
     continue: continueToApp,
   };

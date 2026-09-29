@@ -111,14 +111,15 @@ function App() {
     })();
   }, [setTrackedProjects, addToast]);
 
-  // The skill list fails silently otherwise: `useSkillSnapshot` already logs and stores the
-  // reason, but nothing on screen told the user their skills never loaded.
+  // This toast is the only place on screen that shows a failed load or refresh.
   useEffect(() => {
     if (snapshotError == null) return;
     addToast({
       type: "error",
       title: "Couldn't load your skills",
       message: snapshotError,
+      // Stays until the user acts; sonner removes it when "Try again" is clicked.
+      duration: Infinity,
       action: {
         label: "Try again",
         onClick: () => {
