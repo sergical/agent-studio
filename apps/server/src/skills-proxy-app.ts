@@ -58,9 +58,12 @@ export async function proxyGet(
     reportServerError?.(new Error(`skills.sh answered ${response.status}`), { kind: "upstream" });
   }
   const body = await response.json().catch(() => {
-    reportServerError?.(new Error(`skills.sh answered ${response.status} with a non-JSON body`), {
-      kind: "upstream",
-    });
+    // A 5xx was reported above; its HTML error page must not count a second time.
+    if (response.status < 500) {
+      reportServerError?.(new Error(`skills.sh answered ${response.status} with a non-JSON body`), {
+        kind: "upstream",
+      });
+    }
     return { error: "skills.sh returned a non-JSON response" };
   });
   return { status: response.status, body };
