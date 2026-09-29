@@ -15,6 +15,7 @@ import type {
   AddSkillsRequest,
   AgentId,
   AppVersion,
+  BulkTargetResult,
   DiscoverySourceSetting,
   ImportResult,
   InstallPreferences,
@@ -30,6 +31,7 @@ import type {
   HarnessVisibilityTarget,
   LifecycleTarget,
   InvocationPolicy,
+  InvocationTarget,
   PackImportPreflightResult,
   PackImportRequest,
   PaginatedSkillsResponse,
@@ -575,6 +577,19 @@ export async function unparkSkill(target: LifecycleTarget): Promise<void> {
 }
 
 /**
+ * `parkSkill` for many targets in one call. One result per target, in order:
+ * `error` is `null` when it parked, so one refused folder never hides the rest.
+ */
+export async function parkSkills(targets: LifecycleTarget[]): Promise<BulkTargetResult[]> {
+  return callCommand("park_skills", { targets });
+}
+
+/** `unparkSkill` for many targets in one call; results as in `parkSkills`. */
+export async function unparkSkills(targets: LifecycleTarget[]): Promise<BulkTargetResult[]> {
+  return callCommand("unpark_skills", { targets });
+}
+
+/**
  * Split one Universal deployment into a real copy per chosen harness, then
  * remove the Universal folder and every per-skill link into it. Harnesses not
  * in `harnesses` lose the skill. Refused for a whole-folder link or a name
@@ -643,6 +658,18 @@ export async function setSkillInvocation(
   policy: InvocationPolicy,
 ): Promise<void> {
   return callCommand("set_skill_invocation", { name, path, policy });
+}
+
+/**
+ * `setSkillInvocation` for many SKILL.md files in one call, with one snapshot
+ * reconcile at the end. One result per target, in order; a failing target
+ * does not stop the others.
+ */
+export async function setSkillsInvocation(
+  targets: InvocationTarget[],
+  policy: InvocationPolicy,
+): Promise<BulkTargetResult[]> {
+  return callCommand("set_skills_invocation", { targets, policy });
 }
 
 /**

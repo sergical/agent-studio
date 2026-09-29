@@ -65,7 +65,7 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
   const actions = useLocationActions(skill, onCompareCopies);
 
   const groups = buildScopeGroups(skill);
-  const files = buildInvocationFiles(groups, skill);
+  const files = buildInvocationFiles(groups);
   const hasDrift = scopeGroupsHaveDrift(groups);
   const link = titleLink(skill, hasDrift);
   const promote = link ? null : promoteToGlobal(groups);

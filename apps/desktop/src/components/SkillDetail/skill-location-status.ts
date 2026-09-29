@@ -189,10 +189,8 @@ export interface InvocationFile {
 
 /**
  * `buildInvocationFiles`'s per-file editable/disabledReason call: a file's
- * provenance is its own `plugin` field when set, otherwise the whole skill's
- * `source_kind` (there is no finer-grained per-deployment provenance -
- * see skill-list-filter.ts's "'plugin' reaches outside a skill's own
- * source_kind" note). The global Universal folder is always editable. A
+ * provenance is its own `plugin` field when set, otherwise its own
+ * `owner_kind` (`hasUpstreamOwner`). The global Universal folder is always editable. A
  * managed deployment forks before editing, as in the SKILL.md editor. Managed
  * Project Universal folders and managed copies are not editable because the
  * next sync or update would overwrite the changes.
@@ -200,7 +198,6 @@ export interface InvocationFile {
 function fileEditability(
   kind: "shared" | "copy" | "plugin",
   isGlobal: boolean,
-  skill: InstalledSkill,
   deployment: Deployment,
 ): Pick<InvocationFile, "editable" | "disabledReason"> {
   if (kind === "plugin") {
@@ -210,17 +207,27 @@ function fileEditability(
     };
   }
   if (kind === "shared" && isGlobal) return { editable: true };
-  const managedSource =
-    skill.source_kind === "dotagents"
-      ? "dotagents"
-      : skill.source_kind === "skills-sh"
-        ? "skills.sh"
-        : null;
-  if (!managedSource) return { editable: true };
+  if (!hasUpstreamOwner(deployment)) return { editable: true };
+  const managedSource = deployment.owner_kind === "skills-sh" ? "skills.sh" : "dotagents";
   return {
     editable: false,
     disabledReason: `Managed by ${managedSource}; changes would be overwritten on update`,
   };
+}
+
+/**
+ * True when an update would write over this deployment: its own `owner_kind`
+ * is skills.sh or dotagents. The skill's `source_kind` is not enough - a
+ * deployment no ledger row claims is `ambiguous`, and the skill still reads
+ * as dotagents; forking such a folder is refused, and it has no upstream to
+ * protect.
+ */
+export function hasUpstreamOwner(deployment: Deployment): boolean {
+  return (
+    deployment.owner_kind === "skills-sh" ||
+    deployment.owner_kind === "dotagents" ||
+    deployment.owner_kind === "wildcard-dotagents"
+  );
 }
 
 const harnessLabelFromAgent = (agent: string): string =>
@@ -863,14 +870,11 @@ export function promoteToGlobal(groups: ScopeGroup[]): PromoteSource | null {
 
 /** The Invocation files of one skill, exactly as the properties rail lists them - the rail and the list's bulk Invocation action both edit these. */
 export function invocationFilesForSkill(skill: InstalledSkill): InvocationFile[] {
-  return buildInvocationFiles(buildScopeGroups(skill), skill);
+  return buildInvocationFiles(buildScopeGroups(skill));
 }
 
 /** Build Invocation rows for the Universal folder and each copy or plugin. Links share the Universal SKILL.md and do not get a row. */
-export function buildInvocationFiles(
-  groups: ScopeGroup[],
-  skill: InstalledSkill,
-): InvocationFile[] {
+export function buildInvocationFiles(groups: ScopeGroup[]): InvocationFile[] {
   const files: InvocationFile[] = [];
   for (const group of groups) {
     const shared = group.shared;
@@ -885,7 +889,7 @@ export function buildInvocationFiles(
         tip: rowTipLines(shared.conditions).join("\n"),
         chip: null,
         invocation: shared.invocation ?? "both",
-        ...fileEditability("shared", group.isGlobal, skill, shared.deployment),
+        ...fileEditability("shared", group.isGlobal, shared.deployment),
         caption: "",
         deployment: shared.deployment,
       });
@@ -908,7 +912,7 @@ export function buildInvocationFiles(
         tip: rowTipLines(row.conditions).join("\n"),
         chip: isPlugin ? "plugin" : null,
         invocation: row.invocation ?? "both",
-        ...fileEditability(row.kind, group.isGlobal, skill, row.deployment),
+        ...fileEditability(row.kind, group.isGlobal, row.deployment),
         caption: codexNote,
         deployment: row.deployment,
       });

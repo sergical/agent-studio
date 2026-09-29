@@ -792,6 +792,27 @@ pub fn reconcile_skill_names_and_emit(
     names: impl IntoIterator<Item = String>,
     affected_projects: &[PathBuf],
 ) -> Result<(), String> {
+    reconcile_skill_names(app, state, names, affected_projects, true)
+}
+
+/// [`reconcile_skill_names_and_emit`] for the watcher: the disk change that
+/// triggered it is already what this reads, so a success queues no full
+/// rebuild. A failure still marks skills dirty, so the full rebuild covers it.
+fn reconcile_watched_skill_names_and_emit(
+    app: &AppHandle,
+    state: &SkillRefreshState,
+    names: impl IntoIterator<Item = String>,
+) -> Result<(), String> {
+    reconcile_skill_names(app, state, names, &[], false)
+}
+
+fn reconcile_skill_names(
+    app: &AppHandle,
+    state: &SkillRefreshState,
+    names: impl IntoIterator<Item = String>,
+    affected_projects: &[PathBuf],
+    queue_full_rebuild: bool,
+) -> Result<(), String> {
     let names: BTreeSet<String> = names.into_iter().collect();
     if names.is_empty()
         || names
@@ -802,6 +823,7 @@ pub fn reconcile_skill_names_and_emit(
         return Err("Targeted skill reconciliation needs plain skill names".to_string());
     }
 
+    let reconcile_start = Instant::now();
     let _guard = state
         .rebuild_lock
         .lock()
@@ -899,8 +921,15 @@ pub fn reconcile_skill_names_and_emit(
     let mut built = current;
     replace_snapshot_deployments(&mut built.skills, &targeted_paths, replacements);
     built.scanned_at = Utc::now().to_rfc3339();
-    state.mark_skills_dirty();
+    if queue_full_rebuild {
+        state.mark_skills_dirty();
+    }
     publish_skill_snapshot(app, state, built)?;
+    eprintln!(
+        "skill refresh: reconciled {} skills in {} ms",
+        names.len(),
+        reconcile_start.elapsed().as_millis()
+    );
     Ok(())
 }
 
@@ -1121,27 +1150,33 @@ fn run_refresh_loop(app: AppHandle, state: SkillRefreshState) {
                 // re-walks the same `OpenCode` data directory once per event
                 // instead of once per batch.
                 let opencode_databases = skill_studio_host::opencode_databases(&home);
-                for event in events {
-                    match classify_watch_event(
-                        &event.path,
-                        &home,
-                        &claude_projects_dir,
-                        &opencode_databases,
-                    ) {
-                        WatchEventKind::Skills => {
-                            // Logged once per rebuild cycle so an unexpected
-                            // rescan can be traced to the path that caused it.
-                            if !state.skills_dirty.swap(true, Ordering::SeqCst) {
-                                eprintln!(
-                                    "skill refresh: full rebuild queued by {}",
-                                    event.path.display()
-                                );
-                            }
-                        }
-                        WatchEventKind::Invocations => {
-                            state.invocations_dirty.store(true, Ordering::SeqCst);
-                        }
-                        WatchEventKind::Ignored => {}
+                let known =
+                    state.snapshot.read().ok().and_then(|guard| {
+                        guard.as_ref().map(|s| KnownSkills::from_snapshot(&home, s))
+                    });
+                let plan = plan_watch_batch(
+                    events.iter().map(|event| event.path.as_path()),
+                    &home,
+                    &claude_projects_dir,
+                    &opencode_databases,
+                    known.as_ref(),
+                );
+                if plan.invocations {
+                    state.invocations_dirty.store(true, Ordering::SeqCst);
+                }
+                if let Some(path) = &plan.full_rebuild_by {
+                    // Logged once per rebuild cycle so an unexpected
+                    // rescan can be traced to the path that caused it.
+                    if !state.skills_dirty.swap(true, Ordering::SeqCst) {
+                        eprintln!("skill refresh: full rebuild queued by {}", path.display());
+                    }
+                } else if !plan.targeted_skills.is_empty() && !state.is_skills_dirty() {
+                    // Files changed inside existing skill folders: re-read
+                    // just those skills instead of rescanning every root.
+                    let names = plan.targeted_skills;
+                    if let Err(e) = reconcile_watched_skill_names_and_emit(&app, &state, names) {
+                        eprintln!("skill refresh: targeted refresh failed: {e}");
+                        state.mark_skills_dirty();
                     }
                 }
             }
@@ -2006,6 +2041,122 @@ fn is_config_file_name(name: &std::ffi::OsStr, home: &Path) -> bool {
         || fork_registry_name.is_some_and(|fork_name| name == fork_name)
 }
 
+/// Editor and OS temp files that are never a skill's content.
+fn is_editor_temp_name(name: &str) -> bool {
+    name == "4913"
+        || name.ends_with('~')
+        || Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("swp"))
+}
+
+/// A file (not a directory) that cannot change `snapshot.skills`: a dotfile
+/// the app does not read, or an editor/OS temp file. A dotfile such as
+/// `.last-complete-round`, which another app rewrites inside
+/// `~/.agents/skills/synced/<id>/`, must not queue a rebuild. A directory is
+/// never noise: harness directories (`.claude`, ...) and the move-aside
+/// holding directory are dot-named and their creation or removal matters.
+/// A removed path no longer exists, so it counts as a file.
+fn is_noise_file(path: &Path, home: &Path) -> bool {
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    if is_config_file_name(name, home) || path.is_dir() {
+        return false;
+    }
+    let name = name.to_string_lossy();
+    is_editor_temp_name(&name)
+        || (name.starts_with('.')
+            && !HARNESS_DIR_NAMES.contains(&name.as_ref())
+            && name != skill_studio_core::identity::MOVE_ASIDE_DIR_NAME)
+}
+
+/// The skill roots and skill names a watch batch is mapped against, taken
+/// from the current snapshot.
+struct KnownSkills {
+    roots: Vec<PathBuf>,
+    names: BTreeSet<String>,
+}
+
+impl KnownSkills {
+    fn from_snapshot(home: &Path, snapshot: &SkillSnapshot) -> Self {
+        let projects: Vec<PathBuf> = snapshot.projects.iter().map(PathBuf::from).collect();
+        Self {
+            roots: agents::skill_roots(home, &projects)
+                .into_iter()
+                .map(|root| root.path)
+                .collect(),
+            names: snapshot
+                .skills
+                .iter()
+                .map(|skill| skill.name.clone())
+                .collect(),
+        }
+    }
+
+    /// The name of the known skill whose existing folder holds `path`, mapped
+    /// the way the scan lays skills out: `<root>/<name>/...`, or
+    /// `<root>/<move-aside dir>/<name>/...` for a moved-aside skill. `None`
+    /// for the folder or link itself (created or removed), for a folder that
+    /// is gone or not a known skill yet, and for any path outside the roots.
+    fn skill_containing(&self, path: &Path) -> Option<String> {
+        self.roots.iter().find_map(|root| {
+            let relative = path.strip_prefix(root).ok()?;
+            let mut parts = relative.components();
+            let first = parts.next()?.as_os_str().to_str()?;
+            let (skill_dir, name, inner) =
+                if first == skill_studio_core::identity::MOVE_ASIDE_DIR_NAME {
+                    let name = parts.next()?.as_os_str().to_str()?;
+                    (root.join(first).join(name), name, parts.next())
+                } else {
+                    (root.join(first), first, parts.next())
+                };
+            inner?;
+            (self.names.contains(name) && skill_dir.is_dir()).then(|| name.to_string())
+        })
+    }
+}
+
+/// What one debounced batch of watch events asks for.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct WatchBatchPlan {
+    /// The first path that needs a full rebuild. When set, `targeted_skills`
+    /// is empty: the full rebuild covers those skills too.
+    full_rebuild_by: Option<PathBuf>,
+    /// Skills that only had files changed inside their existing folder.
+    targeted_skills: BTreeSet<String>,
+    invocations: bool,
+}
+
+fn plan_watch_batch<'a>(
+    paths: impl IntoIterator<Item = &'a Path>,
+    home: &Path,
+    claude_projects_dir: &Path,
+    opencode_databases: &[PathBuf],
+    known: Option<&KnownSkills>,
+) -> WatchBatchPlan {
+    let mut plan = WatchBatchPlan::default();
+    for path in paths {
+        match classify_watch_event(path, home, claude_projects_dir, opencode_databases) {
+            WatchEventKind::Skills => match known.and_then(|known| known.skill_containing(path)) {
+                Some(name) => {
+                    plan.targeted_skills.insert(name);
+                }
+                None => {
+                    plan.full_rebuild_by
+                        .get_or_insert_with(|| path.to_path_buf());
+                }
+            },
+            WatchEventKind::Invocations => plan.invocations = true,
+            WatchEventKind::Ignored => {}
+        }
+    }
+    if plan.full_rebuild_by.is_some() {
+        plan.targeted_skills.clear();
+    }
+    plan
+}
+
 /// Whether any component of `path` is a skill directory name.
 fn has_skill_dir_component(path: &Path) -> bool {
     path.components()
@@ -2065,6 +2216,10 @@ pub fn classify_watch_event(
 
     if skill_studio_host::is_skill_use_change_with_databases(home, path, opencode_databases) {
         return WatchEventKind::Invocations;
+    }
+
+    if is_noise_file(path, home) {
+        return WatchEventKind::Ignored;
     }
 
     let is_skills_change = has_skill_dir_component(path)
@@ -2331,6 +2486,200 @@ mod tests {
         assert_eq!(
             classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
             WatchEventKind::Skills
+        );
+    }
+
+    /// A temp home holding `docx` in the shared global root, plus the batch
+    /// planner's view of it (`docx` is the one known skill).
+    struct WatchFixture {
+        home: tempfile::TempDir,
+        known: KnownSkills,
+    }
+
+    impl WatchFixture {
+        fn new() -> Self {
+            let home = tempfile::tempdir().unwrap();
+            let root = home.path().join(".agents/skills");
+            fs::create_dir_all(root.join("docx")).unwrap();
+            fs::write(root.join("docx/SKILL.md"), "---\nname: docx\n---\n").unwrap();
+            let known = KnownSkills {
+                roots: vec![root],
+                names: BTreeSet::from(["docx".to_string()]),
+            };
+            Self { home, known }
+        }
+
+        fn root(&self) -> PathBuf {
+            self.home.path().join(".agents/skills")
+        }
+
+        fn plan(&self, paths: &[PathBuf]) -> WatchBatchPlan {
+            let claude_projects = self.home.path().join(".claude/projects");
+            plan_watch_batch(
+                paths.iter().map(PathBuf::as_path),
+                self.home.path(),
+                &claude_projects,
+                &[],
+                Some(&self.known),
+            )
+        }
+    }
+
+    #[test]
+    fn watch_batch_skill_md_edit_in_existing_skill_targets_that_skill_not_a_full_rebuild() {
+        let fixture = WatchFixture::new();
+        let plan = fixture.plan(&[
+            fixture.root().join("docx/SKILL.md"),
+            fixture.root().join("docx/scripts/run.sh"),
+        ]);
+        assert_eq!(
+            plan.full_rebuild_by, None,
+            "an edit inside a skill must not rescan every root"
+        );
+        assert_eq!(plan.targeted_skills, BTreeSet::from(["docx".to_string()]));
+    }
+
+    #[test]
+    fn watch_batch_moved_aside_skill_file_targets_that_skill() {
+        let fixture = WatchFixture::new();
+        let aside = fixture
+            .root()
+            .join(skill_studio_core::identity::MOVE_ASIDE_DIR_NAME)
+            .join("docx");
+        fs::create_dir_all(&aside).unwrap();
+        let plan = fixture.plan(&[aside.join("SKILL.md")]);
+        assert_eq!(plan.full_rebuild_by, None);
+        assert_eq!(plan.targeted_skills, BTreeSet::from(["docx".to_string()]));
+    }
+
+    #[test]
+    fn watch_batch_new_skill_folder_at_a_root_queues_a_full_rebuild() {
+        let fixture = WatchFixture::new();
+        let created = fixture.root().join("pdf");
+        fs::create_dir_all(&created).unwrap();
+        let plan = fixture.plan(std::slice::from_ref(&created));
+        assert_eq!(
+            plan.full_rebuild_by,
+            Some(created),
+            "a new folder changes the skill list"
+        );
+        assert!(plan.targeted_skills.is_empty());
+    }
+
+    #[test]
+    fn watch_batch_file_in_a_folder_that_is_not_a_known_skill_queues_a_full_rebuild() {
+        let fixture = WatchFixture::new();
+        let file = fixture.root().join("pdf/SKILL.md");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let plan = fixture.plan(std::slice::from_ref(&file));
+        assert_eq!(
+            plan.full_rebuild_by,
+            Some(file),
+            "a SKILL.md that just appeared makes a new skill"
+        );
+    }
+
+    #[test]
+    fn watch_batch_file_event_after_the_skill_folder_was_removed_queues_a_full_rebuild() {
+        let fixture = WatchFixture::new();
+        let file = fixture.root().join("docx/SKILL.md");
+        fs::remove_dir_all(fixture.root().join("docx")).unwrap();
+        let plan = fixture.plan(std::slice::from_ref(&file));
+        assert_eq!(
+            plan.full_rebuild_by,
+            Some(file),
+            "a removed skill must leave the list"
+        );
+    }
+
+    #[test]
+    fn watch_batch_lock_file_change_queues_a_full_rebuild() {
+        let fixture = WatchFixture::new();
+        let lock = fixture.home.path().join(".agents/.skill-lock.json");
+        let plan = fixture.plan(std::slice::from_ref(&lock));
+        assert_eq!(
+            plan.full_rebuild_by,
+            Some(lock),
+            "the lock file feeds every skill's source"
+        );
+    }
+
+    #[test]
+    fn watch_batch_mixing_a_skill_edit_with_a_new_folder_yields_one_full_rebuild_only() {
+        let fixture = WatchFixture::new();
+        let created = fixture.root().join("pdf");
+        fs::create_dir_all(&created).unwrap();
+        let plan = fixture.plan(&[fixture.root().join("docx/SKILL.md"), created.clone()]);
+        assert_eq!(plan.full_rebuild_by, Some(created));
+        assert!(
+            plan.targeted_skills.is_empty(),
+            "the full rebuild already covers docx"
+        );
+    }
+
+    #[test]
+    fn watch_batch_without_a_snapshot_queues_a_full_rebuild() {
+        let fixture = WatchFixture::new();
+        let file = fixture.root().join("docx/SKILL.md");
+        let claude_projects = fixture.home.path().join(".claude/projects");
+        let plan = plan_watch_batch(
+            [file.as_path()],
+            fixture.home.path(),
+            &claude_projects,
+            &[],
+            None,
+        );
+        assert_eq!(plan.full_rebuild_by, Some(file));
+    }
+
+    #[test]
+    fn classify_watch_event_synced_last_complete_round_dotfile_is_ignored() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
+        let path = home.join(".agents/skills/synced/0a1b2c3d_4e5f6a7b/.last-complete-round");
+        assert_eq!(
+            classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
+            WatchEventKind::Ignored,
+            "another app rewrites this file; it must not rescan every root"
+        );
+    }
+
+    #[test]
+    fn classify_watch_event_editor_and_os_temp_files_in_a_skill_are_ignored() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
+        for name in [
+            ".DS_Store",
+            "SKILL.md.swp",
+            ".SKILL.md.swp",
+            "SKILL.md~",
+            "4913",
+        ] {
+            let path = home.join(".agents/skills/docx").join(name);
+            assert_eq!(
+                classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
+                WatchEventKind::Ignored,
+                "{name} is not skill content"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_watch_event_dot_named_directory_is_not_treated_as_noise() {
+        let home = tempfile::tempdir().unwrap();
+        let claude_projects = home.path().join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(home.path());
+        let holding = home
+            .path()
+            .join(".agents/skills")
+            .join(skill_studio_core::identity::MOVE_ASIDE_DIR_NAME);
+        fs::create_dir_all(&holding).unwrap();
+        assert_eq!(
+            classify_watch_event(&holding, home.path(), &claude_projects, &opencode_databases),
+            WatchEventKind::Skills,
+            "the move-aside directory appearing changes which skills exist"
         );
     }
 

@@ -740,7 +740,7 @@ describe("buildInvocationFiles / invocationFooterNote", () => {
     });
     const skill = fixtureSkill({ deployments: [shared, claude] });
     const groups = buildScopeGroups(skill);
-    const files = buildInvocationFiles(groups, skill);
+    const files = buildInvocationFiles(groups);
     expect(files).toHaveLength(1);
     expect(files[0].kind).toBe("shared");
   });
@@ -749,7 +749,7 @@ describe("buildInvocationFiles / invocationFooterNote", () => {
     const shared = fixtureDeployment({ invocation: "user-only" });
     const skill = fixtureSkill({ deployments: [shared], invocation: "user-only" });
     const groups = buildScopeGroups(skill);
-    const files = buildInvocationFiles(groups, skill);
+    const files = buildInvocationFiles(groups);
     expect(invocationFooterNote(files, skill.name)).toBe("User only: only /find-bugs starts it.");
   });
 
@@ -763,7 +763,7 @@ describe("buildInvocationFiles / invocationFooterNote", () => {
     });
     const skill = fixtureSkill({ deployments: [shared, codexCopy] });
     const groups = buildScopeGroups(skill);
-    const files = buildInvocationFiles(groups, skill);
+    const files = buildInvocationFiles(groups);
     expect(files).toHaveLength(2);
     expect(invocationFooterNote(files, skill.name)).toBe(
       "Each file sets its own. Symlinks follow the folder they point to.",
@@ -775,7 +775,7 @@ describe("buildInvocationFiles editability", () => {
   it("keeps the global Universal folder editable even when the skill is managed", () => {
     const shared = fixtureDeployment();
     const skill = fixtureSkill({ deployments: [shared], source_kind: "dotagents" });
-    const files = buildInvocationFiles(buildScopeGroups(skill), skill);
+    const files = buildInvocationFiles(buildScopeGroups(skill));
     expect(files[0]).toMatchObject({ kind: "shared", editable: true });
   });
 
@@ -784,9 +784,10 @@ describe("buildInvocationFiles editability", () => {
       scope: "project",
       project_path: "/repo",
       path: "/repo/.agents/skills/find-bugs",
+      owner_kind: "skills-sh",
     });
     const skill = fixtureSkill({ deployments: [projectShared], source_kind: "skills-sh" });
-    const files = buildInvocationFiles(buildScopeGroups(skill), skill);
+    const files = buildInvocationFiles(buildScopeGroups(skill));
     expect(files[0]).toMatchObject({ kind: "shared", editable: false });
     expect(files[0].disabledReason).toContain("skills.sh");
   });
@@ -798,11 +799,32 @@ describe("buildInvocationFiles editability", () => {
       project_path: "/repo",
       is_symlink: false,
       path: "/repo/.cursor/skills/find-bugs",
+      owner_kind: "dotagents",
     });
     const skill = fixtureSkill({ deployments: [copy], source_kind: "dotagents" });
-    const files = buildInvocationFiles(buildScopeGroups(skill), skill);
+    const files = buildInvocationFiles(buildScopeGroups(skill));
     expect(files[0]).toMatchObject({ kind: "copy", editable: false });
     expect(files[0].disabledReason).toContain("dotagents");
+  });
+
+  it("keeps_an_ambiguous_copy_editable_even_though_the_skill_reads_as_dotagents", () => {
+    const copy = fixtureDeployment({
+      agent: "Cursor",
+      scope: "project",
+      project_path: "/repo",
+      is_symlink: false,
+      path: "/repo/.cursor/skills/find-bugs",
+      owner_kind: "ambiguous",
+    });
+    const skill = fixtureSkill({ deployments: [copy], source_kind: "dotagents" });
+    const files = buildInvocationFiles(buildScopeGroups(skill));
+    expect(
+      files[0],
+      "no ledger row owns it, so nothing upstream would overwrite an edit",
+    ).toMatchObject({
+      kind: "copy",
+      editable: true,
+    });
   });
 
   it("keeps a manual copy editable in place", () => {
@@ -814,7 +836,7 @@ describe("buildInvocationFiles editability", () => {
       path: "/repo/.cursor/skills/find-bugs",
     });
     const skill = fixtureSkill({ deployments: [copy], source_kind: "manual" });
-    const files = buildInvocationFiles(buildScopeGroups(skill), skill);
+    const files = buildInvocationFiles(buildScopeGroups(skill));
     expect(files[0]).toMatchObject({ kind: "copy", editable: true });
   });
 
@@ -833,7 +855,7 @@ describe("buildInvocationFiles editability", () => {
       },
     });
     const skill = fixtureSkill({ deployments: [plugin], source_kind: "manual" });
-    const files = buildInvocationFiles(buildScopeGroups(skill), skill);
+    const files = buildInvocationFiles(buildScopeGroups(skill));
     expect(files[0]).toMatchObject({ kind: "plugin", editable: false });
     expect(files[0].disabledReason).toContain("openai-templates");
   });

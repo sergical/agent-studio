@@ -28,7 +28,10 @@ use skill_studio_core::identity::{CorrelationId, DeploymentId};
 use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::OpContext;
 
-use super::skill_dto::LifecycleTarget;
+use tauri::Manager;
+
+use super::skill_dto::{BulkTargetResult, LifecycleTarget};
+use super::skill_refresh::SkillRefreshState;
 
 fn deployment_id_from_target(
     target: &LifecycleTarget,
@@ -85,4 +88,65 @@ pub async fn unpark_skill(
         super::core_runtime::to_command_result(envelope)
     })
     .await
+}
+
+/// Parks every target with one runtime and reports each outcome on its own
+/// target, so one refused folder never stops the rest. The watcher sees the
+/// moved folders as one burst; marking skills dirty once here queues the
+/// single full rebuild that burst needs.
+#[tauri::command]
+pub async fn park_skills(
+    targets: Vec<LifecycleTarget>,
+    app: tauri::AppHandle,
+) -> Result<Vec<BulkTargetResult>, String> {
+    let state_app = app.clone();
+    crate::timing_log::time_command_blocking(&app, "park_skills", move || {
+        let results = run_batch("Park", &targets, |rt, ctx, deployment_id| {
+            let result = ops::park(rt, ctx, &ParkRequest { deployment_id });
+            let envelope = ResultEnvelope::from_result(Operation::Park, &rt.scope, ctx, result);
+            super::core_runtime::to_command_result(envelope).map(|_| ())
+        })?;
+        state_app.state::<SkillRefreshState>().mark_skills_dirty();
+        Ok(results)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn unpark_skills(
+    targets: Vec<LifecycleTarget>,
+    app: tauri::AppHandle,
+) -> Result<Vec<BulkTargetResult>, String> {
+    let state_app = app.clone();
+    crate::timing_log::time_command_blocking(&app, "unpark_skills", move || {
+        let results = run_batch("Unpark", &targets, |rt, ctx, deployment_id| {
+            let result = ops::unpark(rt, ctx, &UnparkRequest { deployment_id });
+            let envelope = ResultEnvelope::from_result(Operation::Unpark, &rt.scope, ctx, result);
+            super::core_runtime::to_command_result(envelope).map(|_| ())
+        })?;
+        state_app.state::<SkillRefreshState>().mark_skills_dirty();
+        Ok(results)
+    })
+    .await
+}
+
+fn run_batch(
+    action: &'static str,
+    targets: &[LifecycleTarget],
+    op: impl Fn(&skill_studio_core::ports::Runtime, &OpContext, DeploymentId) -> Result<(), String>,
+) -> Result<Vec<BulkTargetResult>, String> {
+    let start = std::time::Instant::now();
+    let rt = super::core_runtime::build_runtime_write()?;
+    let results = BulkTargetResult::collect(targets, |target| {
+        let deployment_id = deployment_id_from_target(target, action)?;
+        let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+        op(&rt, &ctx, deployment_id)
+    });
+    eprintln!(
+        "skill refresh: batch {} {} targets in {} ms",
+        action.to_lowercase(),
+        targets.len(),
+        start.elapsed().as_millis()
+    );
+    Ok(results)
 }
