@@ -3,7 +3,7 @@
 // Subscribes to the background refresh thread's skill snapshot
 // ============================================================================
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getSkillSnapshot, onSkillSnapshot, requestSkillRescan } from "../lib/skill-api";
 import type { SkillSnapshot } from "@skill-studio/lib";
 
@@ -137,10 +137,10 @@ export function useSkillSnapshot(): UseSkillSnapshotResult {
     };
   }, []);
 
-  // Memoized so an effect keyed on it (the load-error toast in App) runs once
-  // per failure, not once per render. A retry starts clean: a stale reason
-  // would otherwise hide a repeat of the same failure.
-  const requestRescan = useCallback(async () => {
+  // The React Compiler keeps this function stable across renders, so the load-error
+  // toast effect in App, keyed on it, runs once per failure. A retry starts clean:
+  // a stale reason would otherwise hide a repeat of the same failure.
+  async function requestRescan(): Promise<void> {
     setError(null);
     if (subscriptionRef.current === "failed") {
       setIsLoading(true);
@@ -155,7 +155,7 @@ export function useSkillSnapshot(): UseSkillSnapshotResult {
       }
       throw err;
     }
-  }, []);
+  }
 
   return { snapshot, emittedSnapshotRevision, isLoading, error, requestRescan };
 }
