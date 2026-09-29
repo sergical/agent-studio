@@ -85,6 +85,7 @@ export type LocationAction =
   | { kind: "uninstall-plugin"; deployment: Deployment }
   | { kind: "park" }
   | { kind: "unpark" }
+  | { kind: "split"; target: LifecycleTarget; projectPath: string | null; readers: AgentId[] }
   | { kind: "remove-scope"; scopeLabel: string; projectPath: string | null }
   | { kind: "remove-deployment"; scopeLabel: string; deployment: Deployment }
   | { kind: "update" }
@@ -937,6 +938,8 @@ export function rowMenu(
   row: LocationRow,
   scopeLabel: string,
   projectPath: string | null = null,
+  /** Harnesses that read the shared row's folder in this scope - the split dialog's defaults. */
+  sharedReaders: AgentId[] = [],
 ): RowMenuResult {
   const plain: MenuEntry[] = [];
   const danger: MenuEntry[] = [];
@@ -961,6 +964,20 @@ export function rowMenu(
     );
     if (!hasOff && projectPath === null) {
       push({ label: "Park (Disable everywhere)", action: { kind: "park" } }, false);
+    }
+    if (!hasOff && row.deployment?.backing.kind === "canonical") {
+      push(
+        {
+          label: "Split into harness folders…",
+          action: {
+            kind: "split",
+            target: row.lifecycleTarget,
+            projectPath,
+            readers: sharedReaders,
+          },
+        },
+        false,
+      );
     }
     push(
       {

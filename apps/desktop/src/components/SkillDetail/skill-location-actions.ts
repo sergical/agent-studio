@@ -62,7 +62,12 @@ interface UseLocationActionsResult {
   /** Set while an "Uninstall the <name> plugin…" action is pending confirmation. */
   pluginUninstallRequest: Deployment | null;
   closePluginUninstallRequest: () => void;
+  /** Set while a "Split into harness folders…" action is pending confirmation. */
+  splitRequest: SplitLocationRequest | null;
+  closeSplitRequest: () => void;
 }
+
+export type SplitLocationRequest = Omit<Extract<LocationAction, { kind: "split" }>, "kind">;
 
 export interface MaterializeLocationRequest {
   target: LifecycleTarget;
@@ -128,6 +133,7 @@ export function useLocationActions(
     deployment?: Deployment;
   } | null>(null);
   const [pluginUninstallRequest, setPluginUninstallRequest] = useState<Deployment | null>(null);
+  const [splitRequest, setSplitRequest] = useState<SplitLocationRequest | null>(null);
 
   const runWithErrorToast = (title: string, fn: () => Promise<void>) => {
     setIsBusy(true);
@@ -234,6 +240,13 @@ export function useLocationActions(
           unparkSkill(lifecycleTargetForPark(skill)),
         );
         return;
+      case "split":
+        setSplitRequest({
+          target: action.target,
+          projectPath: action.projectPath,
+          readers: action.readers,
+        });
+        return;
       case "remove-scope":
         setRemoveRequest({ scopeLabel: action.scopeLabel, projectPath: action.projectPath });
         return;
@@ -294,6 +307,8 @@ export function useLocationActions(
     closeRemoveRequest: () => setRemoveRequest(null),
     pluginUninstallRequest,
     closePluginUninstallRequest: () => setPluginUninstallRequest(null),
+    splitRequest,
+    closeSplitRequest: () => setSplitRequest(null),
   };
 }
 

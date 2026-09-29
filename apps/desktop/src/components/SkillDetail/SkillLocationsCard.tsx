@@ -19,6 +19,7 @@ import { StatusIcon } from "../ui/StatusIcon";
 import { TooltipControl } from "../ui/TooltipControl";
 import { RemoveDeploymentsDialog } from "./RemoveDeploymentsDialog";
 import { SkillLocationScope } from "./SkillLocationScope";
+import { SplitSkillDialog } from "./SplitSkillDialog";
 import { UninstallPluginDialog } from "./UninstallPluginDialog";
 import { useLocationActions, setInvocationForFile } from "./skill-location-actions";
 import {
@@ -233,6 +234,15 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
           projectPath={actions.removeRequest.projectPath}
           deployment={actions.removeRequest.deployment}
           onClose={actions.closeRemoveRequest}
+        />
+      )}
+      {actions.splitRequest && (
+        <SplitSkillDialog
+          skillName={skill.name}
+          target={actions.splitRequest.target}
+          projectPath={actions.splitRequest.projectPath}
+          readers={actions.splitRequest.readers}
+          onClose={actions.closeSplitRequest}
         />
       )}
       {actions.pluginUninstallRequest && (

@@ -26,6 +26,7 @@ import {
   toTooltipLines,
 } from "./skill-location-status";
 import type { LocationAction, LocationRow, ScopeGroup } from "./skill-location-status";
+import { splitReaders } from "./skill-split-model";
 
 export function SkillLocationScope({
   group,
@@ -53,7 +54,7 @@ export function SkillLocationScope({
     return <div className="flex flex-col">{siblings.map(renderRow)}</div>;
   }
 
-  const menu = rowMenu(shared, group.label, group.projectPath ?? null);
+  const menu = rowMenu(shared, group.label, group.projectPath ?? null, splitReaders(group));
   const switchPolicy = sharedFolderSwitchPolicy(group);
   const label = showEyebrow ? (group.isGlobal ? "Global folder" : "Project folder") : group.label;
 

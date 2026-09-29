@@ -543,9 +543,7 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           }));
         }
         case "split_skill": {
-          const { deployment_id } = z
-            .object({ deployment_id: z.string() })
-            .parse(payload.target);
+          const { deployment_id } = z.object({ deployment_id: z.string() }).parse(payload.target);
           const harnesses = z.array(z.string()).parse(payload.harnesses);
           const name = skillNameForTarget({ deployment_id });
           const universal = currentSnapshot.skills
