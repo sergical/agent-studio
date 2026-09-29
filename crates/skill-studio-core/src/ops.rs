@@ -5139,6 +5139,11 @@ pub(crate) fn resolve_skill<'a>(
 /// both sides go through the same filesystem, and not, for example, when
 /// `target_path`'s ancestry crosses a symlink the test host (or the user's
 /// `$HOME`) happens to have, like macOS's `/tmp` -> `/private/tmp`.
+///
+/// An entry seen through a whole-folder link (`~/.claude/skills ->
+/// ~/.agents/skills`) is left out: its path names the Universal entry
+/// itself, so unlinking it would remove the Universal link, not a
+/// per-harness one.
 pub(crate) fn find_all_links<'a>(
     skill: &'a InstalledSkillDto,
     target_path: &Path,
@@ -5152,6 +5157,7 @@ pub(crate) fn find_all_links<'a>(
         .iter()
         .filter(|d| {
             d.backing == BackingRelationship::LinkedTo
+                && !d.shared_via_whole_dir_link
                 && d.link_target.as_deref() == Some(canonical_target.as_path())
         })
         .collect()
@@ -5255,29 +5261,40 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
     };
     session.store.record(&session.guard, &id, &draft)?;
 
-    for (link, scoped_link) in links.iter().zip(&scoped_links) {
-        fs.remove_file(&session.guard, scoped_link)
-            .map_err(|e| CoreError::io(link, e))?;
+    let write_result = (|| -> Result<(), CoreError> {
+        for (link, scoped_link) in links.iter().zip(&scoped_links) {
+            fs.remove_file(&session.guard, scoped_link)
+                .map_err(|e| CoreError::io(link, e))?;
+        }
+        let parent = parked_dir.parent().unwrap_or(&parked_dir).to_path_buf();
+        let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
+        fs.create_dir_all(&session.guard, &scoped_parent)
+            .map_err(|e| CoreError::io(&parent, e))?;
+        let scoped_from = crate::ports::confine(&rt.scope, fs, &deployment.path)?;
+        let scoped_to = crate::ports::confine(&rt.scope, fs, &parked_dir)?;
+        fs.rename(&session.guard, &scoped_from, &scoped_to)
+            .map_err(|e| CoreError::io(&deployment.path, e))?;
+        // Codex reads the universal root directly rather than through a link,
+        // so a `[[skills.config]]` row disabling this skill names the moved
+        // path itself; without this, park would leave that row pointing at a
+        // directory that no longer exists (docs/action-map/harnesses/codex.md).
+        codex_rewrite_skill_path(
+            rt,
+            ctx,
+            &session.guard,
+            &deployment.path.join("SKILL.md"),
+            &parked_dir.join("SKILL.md"),
+        )
+    })();
+    if let Err(e) = write_result {
+        let _ = session.store.finish(
+            &session.guard,
+            &id,
+            crate::events::EventStatus::Failed,
+            None,
+        );
+        return Err(e);
     }
-    let parent = parked_dir.parent().unwrap_or(&parked_dir).to_path_buf();
-    let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
-    fs.create_dir_all(&session.guard, &scoped_parent)
-        .map_err(|e| CoreError::io(&parent, e))?;
-    let scoped_from = crate::ports::confine(&rt.scope, fs, &deployment.path)?;
-    let scoped_to = crate::ports::confine(&rt.scope, fs, &parked_dir)?;
-    fs.rename(&session.guard, &scoped_from, &scoped_to)
-        .map_err(|e| CoreError::io(&deployment.path, e))?;
-    // Codex reads the universal root directly rather than through a link,
-    // so a `[[skills.config]]` row disabling this skill names the moved
-    // path itself; without this, park would leave that row pointing at a
-    // directory that no longer exists (docs/action-map/harnesses/codex.md).
-    codex_rewrite_skill_path(
-        rt,
-        ctx,
-        &session.guard,
-        &deployment.path.join("SKILL.md"),
-        &parked_dir.join("SKILL.md"),
-    )?;
 
     session
         .store

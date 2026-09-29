@@ -139,7 +139,6 @@ fn split_body(
 
     let mut links: Vec<PathBuf> = crate::ops::find_all_links(&skill, &deployment.path, fs)
         .into_iter()
-        .filter(|d| !d.shared_via_whole_dir_link)
         .map(|d| d.path.clone())
         .collect();
 
