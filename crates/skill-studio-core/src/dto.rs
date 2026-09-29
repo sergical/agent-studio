@@ -689,6 +689,47 @@ pub struct UnparkOutcome {
     pub restored_path: PathBuf,
 }
 
+/// Request to split one Universal deployment into per-harness copies.
+///
+/// Every harness in `harnesses` gets a real folder copy; every other
+/// harness that read the Universal folder loses the skill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SplitRequest {
+    /// The Universal deployment to split.
+    pub deployment_id: DeploymentId,
+    /// The harnesses that keep the skill. Must not be empty.
+    pub harnesses: Vec<AgentId>,
+}
+
+/// One folder `split` wrote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SplitCopy {
+    /// The harness that reads this copy.
+    pub harness: AgentId,
+    /// The copy's folder.
+    pub path: PathBuf,
+}
+
+/// Result of `split`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SplitOutcome {
+    /// The `split` event.
+    pub event_id: EventId,
+    /// The Universal deployment that was split.
+    pub deployment_id: DeploymentId,
+    /// The skill's name.
+    pub skill: SkillName,
+    /// One entry per chosen harness.
+    pub copies: Vec<SplitCopy>,
+    /// Links into the Universal folder that were removed.
+    pub removed_links: Vec<PathBuf>,
+    /// Where the Universal folder was moved (quarantine), kept for undo.
+    pub quarantine_path: PathBuf,
+    /// Plain-language note: `npx skills update` updates only a Universal
+    /// copy, so these copies no longer get updates from it.
+    pub update_note: String,
+}
+
 /// Request to turn a skill's per-harness native switch on or off.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SetHarnessEnabledRequest {

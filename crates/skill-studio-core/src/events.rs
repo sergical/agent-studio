@@ -67,11 +67,13 @@ pub enum EventKind {
     /// `ops::remove`'s own quarantine prune; `payload.pruned` names every
     /// entry it deleted.
     QuarantinePrune,
+    /// Universal folder replaced by one copy per chosen harness.
+    Split,
 }
 
 impl EventKind {
     /// Every kind, in declaration order.
-    pub const ALL: [EventKind; 22] = [
+    pub const ALL: [EventKind; 23] = [
         EventKind::Install,
         EventKind::Remove,
         EventKind::Update,
@@ -94,6 +96,7 @@ impl EventKind {
         EventKind::RepairSkillFrontmatter,
         EventKind::Restore,
         EventKind::QuarantinePrune,
+        EventKind::Split,
     ];
 
     /// The literal stored in the `kind` column.
@@ -121,6 +124,7 @@ impl EventKind {
             EventKind::RepairSkillFrontmatter => "repair_skill_frontmatter",
             EventKind::Restore => "restore",
             EventKind::QuarantinePrune => "quarantine_prune",
+            EventKind::Split => "split",
         }
     }
 
@@ -557,6 +561,43 @@ pub(crate) fn parse_restore_links(inverse: &serde_json::Value) -> Vec<(PathBuf, 
             let path = PathBuf::from(entry.get("path")?.as_str()?);
             let target = PathBuf::from(entry.get("target")?.as_str()?);
             Some((path, target))
+        })
+        .collect()
+}
+
+/// Adds a `"remove_copies"` array to a `restore_backup` inverse: folders the
+/// same event wrote (one per harness `ops::split` copied into), each with
+/// the fingerprint it had right after the write. `restore_event` removes
+/// them before it recreates `"links"`, because a split copy can sit where a
+/// removed link used to be. Additive like `"links"`.
+pub(crate) fn with_remove_copies(
+    mut inverse: serde_json::Value,
+    copies: &[(PathBuf, Fingerprint)],
+) -> serde_json::Value {
+    if !copies.is_empty() {
+        let copies: Vec<serde_json::Value> = copies
+            .iter()
+            .map(|(path, fingerprint)| {
+                serde_json::json!({ "path": path, "fingerprint": fingerprint.bare_hex() })
+            })
+            .collect();
+        inverse["remove_copies"] = serde_json::Value::Array(copies);
+    }
+    inverse
+}
+
+/// Reads back the `"remove_copies"` array [`with_remove_copies`] adds, or an
+/// empty list for an inverse that has none.
+pub(crate) fn parse_restore_remove_copies(inverse: &serde_json::Value) -> Vec<(PathBuf, String)> {
+    inverse
+        .get("remove_copies")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let path = PathBuf::from(entry.get("path")?.as_str()?);
+            let fingerprint = entry.get("fingerprint")?.as_str()?.to_string();
+            Some((path, fingerprint))
         })
         .collect()
 }

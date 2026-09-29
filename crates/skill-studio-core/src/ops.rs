@@ -121,6 +121,8 @@ pub enum Operation {
     Outdated,
     /// Unit 3.9b: prune the quarantine cap without a `remove` call.
     SweepQuarantine,
+    /// Replace a Universal folder with one real copy per chosen harness.
+    Split,
 }
 
 /// Outcome status of one call.
@@ -204,6 +206,11 @@ impl Outcome for RestoreOutcome {
     }
 }
 impl Outcome for ParkOutcome {
+    fn event_id(&self) -> Option<EventId> {
+        Some(self.event_id.clone())
+    }
+}
+impl Outcome for crate::dto::SplitOutcome {
     fn event_id(&self) -> Option<EventId> {
         Some(self.event_id.clone())
     }
@@ -4425,7 +4432,7 @@ enum RestorePlan {
 /// pre-restore tree the same way an update's own swap quarantines the
 /// pre-update tree. That quarantined copy is not itself wired to a further
 /// undo; restoring a restore is out of this op's scope.
-fn restore_write_dir(
+pub(crate) fn restore_write_dir(
     rt: &Runtime,
     guard: &ExclusiveGuard,
     path: &Path,
@@ -4770,16 +4777,35 @@ fn restore_event_body(
         )
         .at(&path));
     }
+    // `split`'s per-harness copies: each is drift-checked the same way as
+    // `path`, so an edit made in a copy after the split is never deleted
+    // without `force`.
+    let remove_copies = crate::events::parse_restore_remove_copies(inverse);
+    for (copy, expected) in &remove_copies {
+        let live = crate::events::fingerprint_path(fs, copy)?;
+        let live = live
+            .as_ref()
+            .map_or("absent", super::identity::Fingerprint::bare_hex);
+        if live != "absent" && live != expected && !req.force {
+            return Err(CoreError::new(
+                ErrorCode::DriftConflict,
+                "a split copy changed since this event; pass force to restore anyway",
+            )
+            .at(copy));
+        }
+    }
 
     let restore_id = rt.ports.ids.next_event_id();
     // Backs up the file's current bytes under the restore event's own id
     // before touching it: with `force` this is exactly "the drifted bytes
     // are backed up first"; without drift it still gives the restore its
-    // own undo.
+    // own undo. Split copies about to be deleted are backed up with it.
+    let mut restore_backup_targets = vec![path.clone()];
+    restore_backup_targets.extend(remove_copies.iter().map(|(copy, _)| copy.clone()));
     let manifest =
         session
             .store
-            .backup_paths(&session.guard, &restore_id, std::slice::from_ref(&path))?;
+            .backup_paths(&session.guard, &restore_id, &restore_backup_targets)?;
     let restore_pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.clone());
     let restore_inverse =
         crate::events::restore_backup_inverse(&path, restore_pre_fingerprint.as_ref(), None);
@@ -4945,6 +4971,33 @@ fn restore_event_body(
             let _ = result;
         }
     }
+    // Before the links below: a split copy can sit exactly where a link it
+    // replaced has to come back.
+    let mut copy_errors: Vec<String> = Vec::new();
+    for (copy, _) in &remove_copies {
+        let Ok(facts) = fs.symlink_metadata(copy) else {
+            continue;
+        };
+        match crate::ports::confine(&rt.scope, fs, copy) {
+            // Never walk through a link that replaced the copy: that would
+            // delete whatever the link points at.
+            Ok(scoped) if facts.kind != FileKind::Dir => {
+                let _ = fs.remove_file(&session.guard, &scoped);
+            }
+            Ok(_) => crate::ops_remove::remove_tree_best_effort(fs, copy),
+            Err(error) => copy_errors.push(error.message),
+        }
+        if fs.symlink_metadata(copy).is_ok() {
+            copy_errors.push(format!("could not remove {}", copy.display()));
+        }
+    }
+    if !copy_errors.is_empty() {
+        let _ = session.store.patch_payload(
+            &session.guard,
+            &restore_id,
+            serde_json::json!({ "remove_copies_error": copy_errors }),
+        );
+    }
     // Every harness link `remove` (or whichever event this reverts) took
     // down, recreated the same best-effort way - see
     // `crate::events::restore_backup_inverse_with_links`'s own doc for why
@@ -5069,6 +5122,7 @@ pub(crate) fn find_all_links<'a>(
 pub use crate::ops_doctor::doctor;
 pub use crate::ops_install::{install, install_preferences};
 pub use crate::ops_remove::{remove, sweep_quarantine};
+pub use crate::ops_split::split;
 pub use crate::ops_update::{update, update_all};
 
 /// Moves a universal deployment's directory into the parked root.
@@ -7420,6 +7474,7 @@ mod tests {
                 Operation::Doctor,
                 Operation::Outdated,
                 Operation::SweepQuarantine,
+                Operation::Split,
             ];
             for operation in all {
                 let expected = match operation {
@@ -7444,6 +7499,7 @@ mod tests {
                     Operation::Doctor => "doctor",
                     Operation::Outdated => "outdated",
                     Operation::SweepQuarantine => "sweep_quarantine",
+                    Operation::Split => "split",
                 };
                 let value = serde_json::to_value(operation).unwrap();
                 assert_eq!(

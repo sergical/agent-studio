@@ -229,7 +229,8 @@ fn is_referenced_by_open_remove(session: &MutationSession, event_id: &str) -> bo
     else {
         return false;
     };
-    record.kind == EventKind::Remove.as_str() && record.status != EventStatus::Done
+    (record.kind == EventKind::Remove.as_str() || record.kind == EventKind::Split.as_str())
+        && record.status != EventStatus::Done
 }
 
 /// Prunes `quarantine_dir` down to `doctor::QUARANTINE_RETENTION_CAP`
@@ -242,7 +243,7 @@ fn is_referenced_by_open_remove(session: &MutationSession, event_id: &str) -> bo
 /// themselves: a single entry this cannot remove (for example, a concurrent
 /// reader) is left for the next remove's prune rather than failing this
 /// one's own result.
-fn prune_quarantine(
+pub(crate) fn prune_quarantine(
     rt: &Runtime,
     session: &mut MutationSession,
     fs: &dyn ScopeFs,
@@ -304,7 +305,7 @@ fn prune_quarantine(
 /// skill's folder needs its own contents removed bottom-up first -
 /// best-effort throughout, matching `prune_quarantine`'s own doc: a stray
 /// entry this cannot fully clear is left for the next prune.
-fn remove_tree_best_effort(fs: &dyn ScopeFs, path: &Path) {
+pub(crate) fn remove_tree_best_effort(fs: &dyn ScopeFs, path: &Path) {
     let Ok(entries) = fs.read_dir(path) else {
         return;
     };
