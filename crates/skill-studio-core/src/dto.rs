@@ -1002,14 +1002,15 @@ pub struct UpdateRequest {
     /// `Copy` only: the fresh files to stage and swap in.
     #[serde(default)]
     pub files: Vec<InstallFile>,
-    /// `Dotagents`/`SkillsSh` only: the source argument the CLI's `add`
-    /// command needs to re-fetch (`skills update` itself only takes the
-    /// name; `dotagents`' argv still needs the original source).
+    /// `Dotagents` only: must be present, but no longer reaches the CLI -
+    /// the update runs `dotagents install`, which reads the source from the
+    /// scope's `agents.toml` entry (see `ops_update`'s module doc).
     #[serde(default)]
     pub source: Option<String>,
     /// `Dotagents` only: an already-resolved commit for a pinned
     /// (`declared_ref`) ledger entry - the caller's own concern, not
-    /// re-derived here (see `ops_update`'s module doc).
+    /// re-derived here (see `ops_update`'s module doc). The update writes it
+    /// into that entry's `ref` before running `dotagents install`.
     #[serde(default)]
     pub ref_pin: Option<String>,
 }

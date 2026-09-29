@@ -30,12 +30,11 @@ use skill_studio_host::{FileLease, RealFs, SqliteHistoryOpener};
 const UNIVERSAL_ROOT_RELATIVE: &str = ".agents/skills";
 
 /// Stands in for `npx skills update <name> ...` / `npx -y @sentry/dotagents
-/// add <source> --name <name> ...`: overwrites `<cwd or home>/.agents/
-/// skills/<skill>/SKILL.md` on the real filesystem with fresh content, the
-/// same in-place rewrite the real CLI leaves. Named by parsing the
-/// `--name`/second-positional flag out of argv - `update_cli_args_and_cwd`
-/// puts the name last for `SkillsSh` (`skills update <name>`) and after
-/// `--name` for `Dotagents`.
+/// install`: overwrites `<cwd or home>/.agents/skills/<skill>/SKILL.md` on
+/// the real filesystem with fresh content, the same in-place rewrite the
+/// real CLI leaves. `skills update` names its skill as the third argv
+/// entry; `dotagents install` names none and refreshes every folder in the
+/// skills root, then rewrites `agents.lock`.
 ///
 /// Records every call's argv and cwd (`recorded`), so the parity test can
 /// assert the exact shape `update_cli_args_and_cwd` built without
@@ -69,27 +68,36 @@ impl ProcessSpawner for FakeNpxUpdateSpawner {
             .lock()
             .unwrap()
             .push((spec.args.clone(), spec.cwd.clone()));
-        let skill = if spec.args.first().map(String::as_str) == Some("skills") {
-            spec.args.get(2).expect("skills update <name>").clone()
-        } else {
-            let i = spec
-                .args
-                .iter()
-                .position(|a| a == "--name")
-                .expect("--name flag");
-            spec.args.get(i + 1).expect("a value after --name").clone()
-        };
         let cwd = spec.cwd.clone().unwrap_or_else(|| self.home.clone());
-        let dir = cwd.join(UNIVERSAL_ROOT_RELATIVE).join(&skill);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("SKILL.md"),
-            format!(
-                "---\nname: {skill}\ndescription: updated by a fake CLI\n---\nBody at {}.\n",
-                self.revision
-            ),
-        )
-        .unwrap();
+        let skills = if spec.args.iter().any(|a| a == "install") {
+            // `dotagents install` refreshes every declared entry: rewrite
+            // each folder already in the skills root, and the lock file.
+            let root = cwd.join(UNIVERSAL_ROOT_RELATIVE);
+            let lock_dir = if spec.cwd.is_some() {
+                cwd.clone()
+            } else {
+                cwd.join(".agents")
+            };
+            std::fs::write(lock_dir.join("agents.lock"), "# rewritten by install\n").unwrap();
+            std::fs::read_dir(root)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect()
+        } else {
+            vec![spec.args.get(2).expect("skills update <name>").clone()]
+        };
+        for skill in skills {
+            let dir = cwd.join(UNIVERSAL_ROOT_RELATIVE).join(&skill);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!(
+                    "---\nname: {skill}\ndescription: updated by a fake CLI\n---\nBody at {}.\n",
+                    self.revision
+                ),
+            )
+            .unwrap();
+        }
         Ok(ProcessOutput {
             status: Some(0),
             stdout: String::new(),
@@ -216,6 +224,19 @@ fn copy_request(skill: &str, revision: &str) -> UpdateRequest {
         source: None,
         ref_pin: None,
     }
+}
+
+/// An `agents.toml` with comments the update must not lose, declaring
+/// `delta` (pinned) and `other`.
+const DECLARED_TOML: &str = "# skills I declared by hand\nversion = 1\n\n[[skills]]\nname = \"delta\" # pinned on purpose\nsource = \"o/r\"\nref = \"aaa\"\n\n[[skills]]\nname = \"other\"\nsource = \"o/r\"\n";
+const LOCK_BEFORE: &str = "# lock before the update\n";
+
+/// Writes `<home>/.agents/agents.toml` and its `agents.lock` beside it.
+fn seed_dotagents_files(home: &std::path::Path, toml: &str) {
+    let dir = home.join(".agents");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("agents.toml"), toml).unwrap();
+    std::fs::write(dir.join("agents.lock"), LOCK_BEFORE).unwrap();
 }
 
 /// `update_writes_a_journal_row_and_quarantines_the_old_tree_before_the_swap_or_names_the_missing_step`:
@@ -479,12 +500,13 @@ fn cli_update_spawns_the_npx_skills_update_argv_and_lands_the_new_revision_or_na
         (
             "dotagents",
             InstallMethod::Dotagents,
-            vec!["-y", "@sentry/dotagents", "add", "delta", "--name", "delta"],
+            vec!["-y", "@sentry/dotagents", "install"],
         ),
     ] {
         let home = unique_temp_dir(&format!("update_cli_parity_{label}"));
         std::fs::create_dir_all(&home).unwrap();
         seed_installed_skill(&home, "delta", "v1");
+        seed_dotagents_files(&home, DECLARED_TOML);
         let spawner = Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"));
         let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner.clone()));
 
@@ -621,4 +643,188 @@ fn update_all_runs_each_skill_as_its_own_journal_entry_or_names_the_missing_row(
     assert_eq!(events.len(), 3, "one journal row per skill");
 
     std::fs::remove_dir_all(&home).ok();
+}
+
+/// `dotagents_update_with_a_new_ref_runs_install_edits_only_the_ref_and_undo_restores_toml_lock_and_folder`:
+/// a pinned dotagents update spawns `dotagents install` (not `add`, which
+/// fails on repos whose marketplace lists `"source": "./"`), rewrites only
+/// the `ref` of the named `[[skills]]` entry with its comments intact, and
+/// one undo puts `agents.toml`, `agents.lock` and the skill folder back
+/// together. Fails if the argv falls back to `add`, if the edit reformats
+/// or drops comments, or if undo restores the folder but leaves the ref and
+/// lock at the new commit.
+#[test]
+fn dotagents_update_with_a_new_ref_runs_install_edits_only_the_ref_and_undo_restores_toml_lock_and_folder(
+) {
+    let home = unique_temp_dir("update_dotagents_pinned");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "delta", "v1");
+    seed_dotagents_files(&home, DECLARED_TOML);
+    let spawner = Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"));
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner.clone()));
+
+    let mut req = cli_request("delta", InstallMethod::Dotagents);
+    req.ref_pin = Some("bbb".to_string());
+    let outcome = ops::update(&rt, &ctx(), &req).unwrap();
+
+    let recorded = spawner.recorded.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, vec!["-y", "@sentry/dotagents", "install"]);
+    drop(recorded);
+
+    let toml_path = home.join(".agents/agents.toml");
+    let edited = std::fs::read_to_string(&toml_path).unwrap();
+    assert_eq!(
+        edited,
+        DECLARED_TOML.replace("ref = \"aaa\"", "ref = \"bbb\""),
+        "only the pinned entry's ref may change; comments and the other entry stay"
+    );
+    assert_ne!(
+        std::fs::read_to_string(home.join(".agents/agents.lock")).unwrap(),
+        LOCK_BEFORE,
+        "the fake install must have rewritten the lock, or this test proves nothing about undo"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap_or_else(|e| panic!("undo of a dotagents update must succeed: {e}"));
+
+    assert_eq!(std::fs::read_to_string(&toml_path).unwrap(), DECLARED_TOML);
+    assert_eq!(
+        std::fs::read_to_string(home.join(".agents/agents.lock")).unwrap(),
+        LOCK_BEFORE
+    );
+    let folder =
+        std::fs::read_to_string(home.join(UNIVERSAL_ROOT_RELATIVE).join("delta/SKILL.md")).unwrap();
+    assert!(
+        folder.contains("Body at v1"),
+        "folder not restored: {folder}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `dotagents_update_of_a_name_missing_from_agents_toml_is_refused_before_any_journal_row_or_process`:
+/// `dotagents install` only refreshes declared entries, so an update for a
+/// name with no `[[skills]]` row would run and change nothing. It must fail
+/// with `InvalidRequest` before `backup_paths`, leave no journal row, spawn
+/// nothing and leave `agents.toml` byte-for-byte alone.
+#[test]
+fn dotagents_update_of_a_name_missing_from_agents_toml_is_refused_before_any_journal_row_or_process(
+) {
+    let home = unique_temp_dir("update_dotagents_undeclared");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "stranger", "v1");
+    seed_dotagents_files(&home, DECLARED_TOML);
+    let spawner = Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"));
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner.clone()));
+
+    let mut req = cli_request("stranger", InstallMethod::Dotagents);
+    req.ref_pin = Some("bbb".to_string());
+    let err = ops::update(&rt, &ctx(), &req).unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::InvalidRequest);
+
+    assert!(spawner.recorded.lock().unwrap().is_empty());
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert!(events.is_empty(), "no journal row expected: {events:?}");
+    assert_eq!(
+        std::fs::read_to_string(home.join(".agents/agents.toml")).unwrap(),
+        DECLARED_TOML
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `dotagents_update_writes_through_a_symlinked_agents_toml_and_keeps_the_link`:
+/// a dotfiles repo often links `~/.agents/agents.toml`; the ref edit must
+/// land in the linked file, not replace the link with a regular file.
+#[cfg(unix)]
+#[test]
+fn dotagents_update_writes_through_a_symlinked_agents_toml_and_keeps_the_link() {
+    let home = unique_temp_dir("update_dotagents_symlinked_toml");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "delta", "v1");
+    seed_dotagents_files(&home, DECLARED_TOML);
+    let real = home.join("dotfiles-agents.toml");
+    let link = home.join(".agents/agents.toml");
+    std::fs::rename(&link, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let rt = runtime_for(&home, "v2");
+
+    let mut req = cli_request("delta", InstallMethod::Dotagents);
+    req.ref_pin = Some("bbb".to_string());
+    ops::update(&rt, &ctx(), &req).unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the update replaced the symlinked agents.toml with a regular file"
+    );
+    assert!(std::fs::read_to_string(&real)
+        .unwrap()
+        .contains("ref = \"bbb\""));
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Fails every call the way a real `npx` does: npm chatter, then the
+/// tool's own error line, exit status 1.
+struct FailingNpxSpawner;
+
+impl ProcessSpawner for FailingNpxSpawner {
+    fn run(
+        &self,
+        _spec: &ProcessSpec,
+        _cancel: &dyn CancelToken,
+    ) -> Result<ProcessOutput, skill_studio_core::CoreError> {
+        Ok(ProcessOutput {
+            status: Some(1),
+            stdout: String::new(),
+            stderr:
+                "npm notice New version available\nerror: could not fetch o/r\nnpm notice done\n"
+                    .to_string(),
+            timed_out: false,
+        })
+    }
+}
+
+/// `a_failed_cli_update_says_which_command_failed_with_the_tool_line_and_no_npm_chatter`:
+/// the message users see must read `dotagents install failed: ...` /
+/// `skills update failed: ...` with the tool's own error line, not `npx
+/// exited with Some(1): ...` followed by `npm notice` noise.
+#[test]
+fn a_failed_cli_update_says_which_command_failed_with_the_tool_line_and_no_npm_chatter() {
+    for (method, expected) in [
+        (
+            InstallMethod::Dotagents,
+            "dotagents install failed: error: could not fetch o/r",
+        ),
+        (
+            InstallMethod::SkillsSh,
+            "skills update failed: error: could not fetch o/r",
+        ),
+    ] {
+        let home = unique_temp_dir("update_cli_failure_text");
+        std::fs::create_dir_all(&home).unwrap();
+        seed_installed_skill(&home, "delta", "v1");
+        seed_dotagents_files(&home, DECLARED_TOML);
+        let rt = runtime_with(
+            &home,
+            Arc::new(RealFs::new()),
+            Some(Arc::new(FailingNpxSpawner)),
+        );
+
+        let err = ops::update(&rt, &ctx(), &cli_request("delta", method)).unwrap_err();
+        assert_eq!(err.message, expected);
+
+        std::fs::remove_dir_all(&home).ok();
+    }
 }

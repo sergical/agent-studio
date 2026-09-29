@@ -30,14 +30,26 @@
 //!   this reuses `fsops::swap`'s own quarantine convention instead of
 //!   widening the primitive; see the unit's PR body for that deviation.
 //!
-//! `Dotagents`/`SkillsSh` re-run the same `npx ... add`/`npx skills update`
-//! call the desktop's `skill_lifecycle.rs` shells out to, in place over the
-//! existing destination - not staged, for the same reason `ops_install`'s
-//! own CLI methods are not: redirecting the CLI into a temporary home to
-//! force a stage-and-swap would fight its own layout assumptions (see the
-//! shared brief's Correction section, and `ops_install`'s module doc). The
-//! journal row's backup of the destination, taken before this call, is what
-//! stands in for the "old tree" a crash mid-CLI-call would otherwise lose.
+//! `SkillsSh` re-runs `npx skills update <name>` and `Dotagents` re-runs
+//! `npx -y @sentry/dotagents install`, in place over the existing
+//! destination - not staged, for the same reason `ops_install`'s own CLI
+//! methods are not: redirecting the CLI into a temporary home to force a
+//! stage-and-swap would fight its own layout assumptions (see the shared
+//! brief's Correction section, and `ops_install`'s module doc). The journal
+//! row's backup of the destination, taken before this call, is what stands
+//! in for the "old tree" a crash mid-CLI-call would otherwise lose.
+//!
+//! `Dotagents` never uses `dotagents add`: in dotagents 3.1.0 `add` looks
+//! for plugins before skills and fails on a repo whose marketplace lists
+//! `"source": "./"` (upstream getsentry/dotagents#198), and it ignores the
+//! entry's `path`. The skill is already declared as a `[[skills]]` entry in
+//! the scope's `agents.toml`, so an update sets that entry's `ref` (only
+//! when the caller resolved a newer commit) and runs `install`, which
+//! fetches whatever the entry now names. The journal row backs up the
+//! folder, `agents.toml` and `agents.lock` in one call, so undo puts all
+//! three back together. `install` refreshes every declared entry in that
+//! scope; entries without a `ref` float to their latest commit on any
+//! install - that is dotagents' own rule, not something this op adds.
 
 use std::path::{Path, PathBuf};
 
@@ -52,12 +64,11 @@ use crate::ops_install;
 use crate::ports::{ExclusiveGuard, MutationSession, OpContext, PlanStatus, Runtime, ScopeFs};
 
 /// The `npx` argv `update_via_cli` hands the spawner, and the process cwd to
-/// run it in - ported from the desktop's own builders: skills.sh from
-/// `skill_lifecycle.rs`'s `skills_sh_update_args` (`npx skills update <name>
-/// [--global]`), dotagents from `dotagents_update_args` (`npx -y
-/// @sentry/dotagents [--project] add <source> --name <name> [--ref
-/// <commit>]`) - both run with the process cwd set to the project path for
-/// a project-scope update (`commands.rs`'s `run_update_skill`:
+/// run it in: skills.sh from `skill_lifecycle.rs`'s `skills_sh_update_args`
+/// (`npx skills update <name> [--global]`), dotagents as `npx -y
+/// @sentry/dotagents [--project] install` - never `add`, see the module doc.
+/// Both run with the process cwd set to the project path for a
+/// project-scope update (`commands.rs`'s `run_update_skill`:
 /// `command.current_dir(project_path)`), the same fix `install`'s own
 /// `cli_args_and_cwd` carries for a project-scope install (`skills@1.7.0`
 /// has neither a `--cwd` nor a `--project` flag; `add`/`update`/`remove`
@@ -65,8 +76,6 @@ use crate::ports::{ExclusiveGuard, MutationSession, OpContext, PlanStatus, Runti
 fn update_cli_args_and_cwd(
     method: InstallMethod,
     skill: &SkillName,
-    source: Option<&str>,
-    ref_pin: Option<&str>,
     scope: &RootScope,
 ) -> (Vec<String>, Option<PathBuf>) {
     let cwd = match scope {
@@ -86,18 +95,123 @@ fn update_cli_args_and_cwd(
             if matches!(scope, RootScope::Project(_)) {
                 args.push("--project".to_string());
             }
-            args.push("add".to_string());
-            args.push(source.unwrap_or_default().to_string());
-            args.push("--name".to_string());
-            args.push(skill.0.clone());
-            if let Some(commit) = ref_pin {
-                args.push("--ref".to_string());
-                args.push(commit.to_string());
-            }
+            args.push("install".to_string());
             (args, cwd)
         }
         InstallMethod::Copy => (Vec::new(), None),
     }
+}
+
+/// The scope's dotagents files, where `dotagents [--project]` itself puts
+/// them (`dotagents/dist/scope.js`'s `resolveScope`): `~/.agents` globally,
+/// and for a project the project root itself - `<project>/agents.toml`, not
+/// inside `<project>/.agents`.
+fn dotagents_file_dir(rt: &Runtime, scope: &RootScope) -> PathBuf {
+    match scope {
+        RootScope::Global => rt.scope.home.lexical.join(".agents"),
+        RootScope::Project(project) => project.0.clone(),
+    }
+}
+
+/// What a `Dotagents` update decided before its journal row exists.
+struct DotagentsPlan {
+    /// `agents.toml`, or the file its link resolves to, so undo restores the
+    /// real file and the link survives.
+    config: PathBuf,
+    lock: PathBuf,
+    /// The edited `agents.toml` text to write once the row is recorded;
+    /// `None` when no new ref is pinned.
+    edited_config: Option<String>,
+}
+
+/// Reads `agents.toml`, checks it declares a `[[skills]]` entry named
+/// `req.skill`, and - when `req.ref_pin` is set - sets that entry's `ref`
+/// with `toml_edit`, so comments and formatting survive. Writes nothing:
+/// `update` calls this before `backup_paths`, so a refusal leaves no
+/// journal row.
+fn plan_dotagents_update(
+    rt: &Runtime,
+    fs: &dyn ScopeFs,
+    req: &UpdateRequest,
+) -> Result<DotagentsPlan, CoreError> {
+    let dir = dotagents_file_dir(rt, &req.scope);
+    let config = crate::ports::resolve_config_link(fs, &dir.join("agents.toml"))?;
+    let text = match fs.read_capped(&config, crate::dotagents_ledger::DOTAGENTS_FILE_MAX_BYTES) {
+        Ok(bytes) => String::from_utf8(bytes).map_err(|e| {
+            CoreError::new(
+                ErrorCode::InvalidRequest,
+                format!("{} is not valid UTF-8: {e}", config.display()),
+            )
+            .at(&config)
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(CoreError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "{} does not exist; there is nothing to update",
+                    config.display()
+                ),
+            )
+            .at(&config))
+        }
+        Err(e) => return Err(CoreError::io(&config, e)),
+    };
+    let mut doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| {
+        CoreError::new(
+            ErrorCode::InvalidRequest,
+            format!("{} is not valid TOML: {e}", config.display()),
+        )
+        .at(&config)
+    })?;
+    let entry = doc
+        .get_mut("skills")
+        .and_then(toml_edit::Item::as_array_of_tables_mut)
+        .and_then(|rows| {
+            rows.iter_mut().find(|row| {
+                row.get("name").and_then(toml_edit::Item::as_str) == Some(req.skill.0.as_str())
+            })
+        })
+        .ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "{} has no [[skills]] entry named {}; dotagents install would not update it",
+                    config.display(),
+                    req.skill.0
+                ),
+            )
+            .at(&config)
+        })?;
+    let pinned = req.ref_pin.as_deref().map(|commit| {
+        entry["ref"] = toml_edit::value(commit);
+    });
+    Ok(DotagentsPlan {
+        config,
+        lock: dir.join("agents.lock"),
+        edited_config: pinned.map(|()| doc.to_string()),
+    })
+}
+
+/// The `<command> failed: <detail>` error for a non-zero CLI exit: the last
+/// few stderr lines that say something, without the `npm notice`/`npm warn`
+/// chatter `npx` prints around every run.
+fn cli_failure(command: &str, output: &crate::ports::ProcessOutput) -> CoreError {
+    let lines: Vec<&str> = output
+        .stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty() && !line.starts_with("npm notice") && !line.starts_with("npm warn")
+        })
+        .collect();
+    let detail = if output.timed_out {
+        "timed out".to_string()
+    } else if lines.is_empty() {
+        format!("exit status {:?}", output.status)
+    } else {
+        lines[lines.len().saturating_sub(3)..].join(" ")
+    };
+    CoreError::new(ErrorCode::Io, format!("{command} failed: {detail}"))
 }
 
 /// `Dotagents`/`SkillsSh` preconditions (U5): a missing source or a host
@@ -140,13 +254,7 @@ fn update_via_cli(
             "this host build has no process spawner; dotagents/skills.sh updates are not available",
         )
     })?;
-    let (args, cwd) = update_cli_args_and_cwd(
-        req.method,
-        &req.skill,
-        req.source.as_deref(),
-        req.ref_pin.as_deref(),
-        &req.scope,
-    );
+    let (args, cwd) = update_cli_args_and_cwd(req.method, &req.skill, &req.scope);
     let spec = crate::ports::ProcessSpec {
         program: "npx".to_string(),
         args,
@@ -156,10 +264,12 @@ fn update_via_cli(
     };
     let output = spawner.run(&spec, ctx.cancel.as_ref())?;
     if output.status != Some(0) {
-        return Err(CoreError::new(
-            ErrorCode::Io,
-            format!("npx exited with {:?}: {}", output.status, output.stderr),
-        ));
+        let command = if req.method == InstallMethod::Dotagents {
+            "dotagents install"
+        } else {
+            "skills update"
+        };
+        return Err(cli_failure(command, &output));
     }
     if rt.ports.fs.symlink_metadata(destination).is_err() {
         return Err(
@@ -302,6 +412,7 @@ fn update_write(
     universal_root: &Path,
     destination: &Path,
     copy_registry: Option<CopyRegistryRead>,
+    dotagents: Option<&DotagentsPlan>,
 ) -> Result<(), CoreError> {
     let fs = rt.ports.fs.as_ref();
     match req.method {
@@ -317,6 +428,15 @@ fn update_write(
             write_copy_registry(session, fs, rt, req, destination, read, content_hash)
         }
         InstallMethod::Dotagents | InstallMethod::SkillsSh => {
+            if let Some(plan) = dotagents {
+                if let Some(text) = &plan.edited_config {
+                    // `plan.config` is already the file a link resolves to,
+                    // so a linked `agents.toml` keeps its link.
+                    let scoped = crate::ports::confine_write_through(&rt.scope, fs, &plan.config)?;
+                    fs.write_atomic(&session.guard, &scoped, text.as_bytes())
+                        .map_err(|e| CoreError::io(&plan.config, e))?;
+                }
+            }
             update_via_cli(rt, ctx, req, destination)
         }
     }
@@ -370,17 +490,30 @@ fn update_body(
         InstallMethod::Copy => Some(read_copy_registry(rt, fs, &req.scope)?),
         InstallMethod::Dotagents | InstallMethod::SkillsSh => None,
     };
+    // Same ordering for `Dotagents`: `agents.toml` is read, checked and
+    // edited in memory here, so a missing entry fails before any row.
+    let dotagents = match req.method {
+        InstallMethod::Dotagents => Some(plan_dotagents_update(rt, fs, req)?),
+        InstallMethod::Copy | InstallMethod::SkillsSh => None,
+    };
 
     let step_start = clock.monotonic();
     let id = rt.ports.ids.next_event_id();
     // The row goes down before the first write, same as install's own F7 -
     // this time the backup captures the real tree already on disk (never
     // "absent": `update` refuses above when nothing is there yet), which is
-    // what the crash-window test and `ops::restore_event` undo against.
-    let manifest =
-        session
-            .store
-            .backup_paths(&session.guard, &id, std::slice::from_ref(&destination))?;
+    // what the crash-window test and `ops::restore_event` undo against. The
+    // destination stays first: its entry is the row's primary path, and
+    // `restore_event` puts every other entry - `Dotagents`' `agents.toml`
+    // and `agents.lock` - back beside it.
+    let mut backup_targets = vec![destination.clone()];
+    if let Some(plan) = &dotagents {
+        backup_targets.push(plan.config.clone());
+        backup_targets.push(plan.lock.clone());
+    }
+    let manifest = session
+        .store
+        .backup_paths(&session.guard, &id, &backup_targets)?;
     // `pre` is the backup's own fingerprint of the tree `update` is about to
     // overwrite - never `None` here, since `update` already refused above
     // when the destination did not exist. `None` would tell `restore_event`
@@ -419,6 +552,7 @@ fn update_body(
         &universal_root,
         &destination,
         copy_registry,
+        dotagents.as_ref(),
     ) {
         let _ = session
             .store
@@ -518,13 +652,13 @@ mod tests {
     use super::*;
     use crate::identity::ProjectRef;
 
-    /// `update_cli_args_and_cwd_matches_the_desktop_builders_verbatim_or_names_the_drifted_argv`:
-    /// table test over {global, project} x {`SkillsSh`, `Dotagents`} x
-    /// {unpinned, pinned `--ref`} - a drift from `skill_lifecycle.rs`'s
-    /// `skills_sh_update_args`/`dotagents_update_args` would otherwise go
-    /// unnoticed until a real `npx` call failed.
+    /// `update_cli_args_and_cwd_builds_skills_update_or_dotagents_install_and_never_dotagents_add`:
+    /// table test over {global, project} x {`SkillsSh`, `Dotagents`}. Fails
+    /// if dotagents ever goes back to `add`, which breaks on repos whose
+    /// marketplace lists `"source": "./"`, or if the project scope loses its
+    /// `--project` flag or its cwd.
     #[test]
-    fn update_cli_args_and_cwd_matches_the_desktop_builders_verbatim_or_names_the_drifted_argv() {
+    fn update_cli_args_and_cwd_builds_skills_update_or_dotagents_install_and_never_dotagents_add() {
         let skill = SkillName("alpha".to_string());
         let project = RootScope::Project(ProjectRef(PathBuf::from("/proj")));
 
@@ -532,7 +666,6 @@ mod tests {
             &'a str,
             InstallMethod,
             &'a RootScope,
-            Option<&'a str>,
             Vec<&'a str>,
             Option<PathBuf>,
         );
@@ -541,7 +674,6 @@ mod tests {
                 "skills.sh global",
                 InstallMethod::SkillsSh,
                 &RootScope::Global,
-                None,
                 vec!["skills", "update", "alpha", "--global"],
                 None,
             ),
@@ -549,40 +681,27 @@ mod tests {
                 "skills.sh project",
                 InstallMethod::SkillsSh,
                 &project,
-                None,
                 vec!["skills", "update", "alpha"],
                 Some(PathBuf::from("/proj")),
             ),
             (
-                "dotagents global, unpinned",
+                "dotagents global",
                 InstallMethod::Dotagents,
                 &RootScope::Global,
-                None,
-                vec!["-y", "@sentry/dotagents", "add", "src", "--name", "alpha"],
+                vec!["-y", "@sentry/dotagents", "install"],
                 None,
             ),
             (
-                "dotagents project, pinned",
+                "dotagents project",
                 InstallMethod::Dotagents,
                 &project,
-                Some("deadbeef"),
-                vec![
-                    "-y",
-                    "@sentry/dotagents",
-                    "--project",
-                    "add",
-                    "src",
-                    "--name",
-                    "alpha",
-                    "--ref",
-                    "deadbeef",
-                ],
+                vec!["-y", "@sentry/dotagents", "--project", "install"],
                 Some(PathBuf::from("/proj")),
             ),
         ];
 
-        for (label, method, scope, ref_pin, expected_args, expected_cwd) in cases {
-            let (args, cwd) = update_cli_args_and_cwd(method, &skill, Some("src"), ref_pin, scope);
+        for (label, method, scope, expected_args, expected_cwd) in cases {
+            let (args, cwd) = update_cli_args_and_cwd(method, &skill, scope);
             let expected_args: Vec<String> = expected_args.into_iter().map(String::from).collect();
             assert_eq!(args, expected_args, "{label}: argv");
             assert_eq!(cwd, expected_cwd, "{label}: cwd");
