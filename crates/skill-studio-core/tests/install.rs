@@ -1125,3 +1125,106 @@ fn install_over_corrupt_json_registry_document_fails_before_any_write_or_names_t
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// `install_with_claude_code_under_a_whole_folder_link_to_another_folder_refuses_before_any_write_or_names_the_false_link`:
+/// `~/.claude/skills` is a whole-folder link to a folder that is not
+/// `~/.agents/skills`. Claude Code reads only that other folder, so an
+/// install into the universal root cannot reach it. The install must refuse
+/// with a message that names the link, and write nothing - not report
+/// Claude Code as linked.
+#[test]
+fn install_with_claude_code_under_a_whole_folder_link_to_another_folder_refuses_before_any_write_or_names_the_false_link(
+) {
+    let home = unique_temp_dir("install_claude_whole_folder_link_elsewhere");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::create_dir_all(home.join("dotfiles").join("claude-skills")).unwrap();
+    std::os::unix::fs::symlink(
+        "../dotfiles/claude-skills",
+        home.join(".claude").join("skills"),
+    )
+    .unwrap();
+    let rt = runtime_for(&home);
+
+    let result = ops::install(&rt, &ctx(), &copy_request("iota"));
+
+    let err = match result {
+        Err(err) => err,
+        Ok(outcome) => panic!(
+            "install reported {outcome:?} although Claude Code reads another folder through \
+             ~/.claude/skills and cannot see ~/.agents/skills/iota"
+        ),
+    };
+    assert_eq!(err.code, skill_studio_core::ErrorCode::InvalidRequest);
+    assert!(
+        err.message.contains("link to another folder"),
+        "the refusal must say the whole-folder link points elsewhere, got: {}",
+        err.message
+    );
+    assert!(
+        !home.join(UNIVERSAL_ROOT_RELATIVE).join("iota").exists(),
+        "a refused install must not leave the skill folder behind"
+    );
+    assert!(
+        !home
+            .join("dotfiles")
+            .join("claude-skills")
+            .join("iota")
+            .exists(),
+        "a refused install must not write into the folder the link points at"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `install_with_claude_code_under_a_whole_folder_link_to_the_universal_root_reports_linked_or_names_the_refusal`:
+/// the common layout `~/.claude/skills -> ../.agents/skills`, both before
+/// the universal root exists (a dangling link on a fresh home) and after.
+/// Claude Code already sees every skill through the link, so the install
+/// adds no per-skill link and reports Claude Code as linked.
+#[test]
+fn install_with_claude_code_under_a_whole_folder_link_to_the_universal_root_reports_linked_or_names_the_refusal(
+) {
+    for (label, universal_root_exists) in [("dangling", false), ("live", true)] {
+        let home = unique_temp_dir(&format!("install_claude_whole_folder_link_{label}"));
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        if universal_root_exists {
+            std::fs::create_dir_all(home.join(UNIVERSAL_ROOT_RELATIVE)).unwrap();
+        }
+        std::os::unix::fs::symlink("../.agents/skills", home.join(".claude").join("skills"))
+            .unwrap();
+        let rt = runtime_for(&home);
+
+        let outcome = ops::install(&rt, &ctx(), &copy_request("kappa")).unwrap_or_else(|e| {
+            panic!("{label} whole-folder link into the universal root was refused: {e}")
+        });
+
+        let InstallOutcome::Installed {
+            linked_harnesses, ..
+        } = outcome
+        else {
+            panic!("{label}: expected Installed, got {outcome:?}");
+        };
+        assert_eq!(
+            linked_harnesses,
+            vec![AgentId::from(AgentId::CLAUDE_CODE)],
+            "{label}: Claude Code sees the skill through the whole-folder link"
+        );
+        assert!(
+            std::fs::symlink_metadata(home.join(".claude").join("skills"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "{label}: the whole-folder link must stay a link"
+        );
+        assert!(
+            home.join(".claude")
+                .join("skills")
+                .join("kappa")
+                .join("SKILL.md")
+                .exists(),
+            "{label}: the skill must be readable through ~/.claude/skills"
+        );
+
+        std::fs::remove_dir_all(&home).ok();
+    }
+}

@@ -1619,24 +1619,13 @@ fn plugin_manifest_present(fs: &dyn ScopeFs, plugin_dir: &Path) -> bool {
 fn enumerate_plugin_skills(fs: &dyn ScopeFs, target: &PluginCacheTarget) -> Vec<PluginSkillDir> {
     let mut plugin_roots = Vec::new();
     walk_for_plugin_roots(fs, &target.path, PLUGIN_CACHE_MAX_DEPTH, &mut plugin_roots);
+    if target.harness.as_str() == AgentId::CLAUDE_CODE {
+        retain_installed_claude_plugin_versions(fs, &target.path, &mut plugin_roots);
+    }
 
     let mut out = Vec::new();
     for plugin_root in plugin_roots {
-        let rel = plugin_root
-            .strip_prefix(&target.path)
-            .unwrap_or(&plugin_root);
-        let components: Vec<String> = rel
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect();
-        let source = PluginSourceDto {
-            marketplace: components.first().cloned().unwrap_or_default(),
-            plugin: components.get(1).cloned().unwrap_or_default(),
-            version: components.get(2).cloned(),
-            // Filled in by `scan_one_plugin_target` from `DisableSources`
-            // once the target's harness is known.
-            enabled: None,
-        };
+        let source = plugin_source_from_root(&target.path, &plugin_root);
         let skills_dir = plugin_root.join("skills");
         let Ok(entries) = fs.read_dir(&skills_dir) else {
             continue;
@@ -1661,6 +1650,102 @@ fn enumerate_plugin_skills(fs: &dyn ScopeFs, target: &PluginCacheTarget) -> Vec<
         }
     }
     out
+}
+
+fn plugin_source_from_root(cache: &Path, plugin_root: &Path) -> PluginSourceDto {
+    let rel = plugin_root.strip_prefix(cache).unwrap_or(plugin_root);
+    let components: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    PluginSourceDto {
+        marketplace: components.first().cloned().unwrap_or_default(),
+        plugin: components.get(1).cloned().unwrap_or_default(),
+        version: components.get(2).cloned(),
+        // Filled in by `scan_one_plugin_target` from `DisableSources`
+        // once the target's harness is known.
+        enabled: None,
+    }
+}
+
+/// Claude Code keeps an updated plugin's old version folder in the cache
+/// until it prunes orphans (about 14 days), so one plugin can have several
+/// version folders. `installed_plugins.json` (version 2), next to the
+/// cache, records the `installPath` Claude Code loads for each
+/// `<plugin>@<marketplace>`. This keeps only those version folders.
+///
+/// A plugin stays unfiltered when the file is missing, unreadable, or not
+/// version 2, when the file does not name the plugin, or when none of its
+/// `installPath`s is a cached folder: without a match the file cannot say
+/// which folder is live, and dropping every row would hide the plugin.
+fn retain_installed_claude_plugin_versions(
+    fs: &dyn ScopeFs,
+    cache: &Path,
+    plugin_roots: &mut Vec<PathBuf>,
+) {
+    let Some(installed) = read_claude_installed_plugin_paths(fs, cache) else {
+        return;
+    };
+    let plugin_id = |root: &Path| {
+        let source = plugin_source_from_root(cache, root);
+        format!("{}@{}", source.plugin, source.marketplace)
+    };
+    let is_install_path = |root: &Path| {
+        installed
+            .get(&plugin_id(root))
+            .is_some_and(|paths| paths.iter().any(|path| same_plugin_root(fs, path, root)))
+    };
+    let live_ids: HashSet<String> = plugin_roots
+        .iter()
+        .filter(|root| is_install_path(root))
+        .map(|root| plugin_id(root))
+        .collect();
+    plugin_roots.retain(|root| !live_ids.contains(&plugin_id(root)) || is_install_path(root));
+}
+
+/// `plugins.<plugin>@<marketplace>[].installPath` from Claude Code's
+/// `installed_plugins.json`, or `None` when the file is missing, malformed,
+/// or not version 2.
+fn read_claude_installed_plugin_paths(
+    fs: &dyn ScopeFs,
+    cache: &Path,
+) -> Option<HashMap<String, Vec<PathBuf>>> {
+    let path = cache.parent()?.join("installed_plugins.json");
+    let bytes = fs
+        .read_capped(&path, crate::harness_switch::HARNESS_CONFIG_MAX_BYTES)
+        .ok()?;
+    let value = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+    if value.get("version").and_then(serde_json::Value::as_u64) != Some(2) {
+        return None;
+    }
+    let plugins = value.get("plugins")?.as_object()?;
+    Some(
+        plugins
+            .iter()
+            .map(|(id, installs)| {
+                let paths = installs
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|install| install.get("installPath")?.as_str())
+                    .map(PathBuf::from)
+                    .collect();
+                (id.clone(), paths)
+            })
+            .collect(),
+    )
+}
+
+fn same_plugin_root(fs: &dyn ScopeFs, install_path: &Path, plugin_root: &Path) -> bool {
+    if fsops::join_lexical(Path::new("/"), install_path)
+        == fsops::join_lexical(Path::new("/"), plugin_root)
+    {
+        return true;
+    }
+    matches!(
+        (fs.canonicalize(install_path), fs.canonicalize(plugin_root)),
+        (Ok(a), Ok(b)) if a == b
+    )
 }
 
 fn walk_for_plugin_roots(
@@ -3891,6 +3976,39 @@ fn read_skill_md_text(
     Ok((path, bytes, text))
 }
 
+/// The file a `SKILL.md` repair writes: `skill_md` itself, or its target when
+/// it is a symlink. An atomic write to the link path would replace the link
+/// with a regular file and silently split this harness from every other one
+/// that shares the target. A target outside the scope is refused, since the
+/// core writes only inside it.
+fn skill_md_write_target(
+    scope: &crate::scope::NormalizedScope,
+    fs: &dyn ScopeFs,
+    skill_md: PathBuf,
+) -> Result<PathBuf, CoreError> {
+    if !fs
+        .symlink_metadata(&skill_md)
+        .is_ok_and(|f| f.kind == FileKind::Symlink)
+    {
+        return Ok(skill_md);
+    }
+    let target = fs
+        .canonicalize(&skill_md)
+        .map_err(|e| CoreError::io(&skill_md, e))?;
+    if !scope.contains(&target) {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            format!(
+                "SKILL.md is a link to {}, outside the folders Skill Studio manages; \
+                 edit that file directly",
+                target.display()
+            ),
+        )
+        .at(&skill_md));
+    }
+    Ok(target)
+}
+
 /// Builds a proposal id: sha256 over deployment id, path, owner id, owner
 /// kind, the expected fingerprint, and the proposed text, matching
 /// [`crate::identity::ProposalId`]'s invariant.
@@ -4116,6 +4234,7 @@ fn apply_frontmatter_repair_body(
         )
         .at(&path));
     }
+    let path = skill_md_write_target(&rt.scope, fs, path)?;
     let verify_step = crate::timing::step(clock, "read_and_verify", step_start);
 
     let step_start = clock.monotonic();
