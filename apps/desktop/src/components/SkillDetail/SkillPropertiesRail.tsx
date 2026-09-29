@@ -37,13 +37,10 @@ import {
   scopeGroupsHaveDrift,
 } from "./skill-location-status";
 import type { AgentLocationRow } from "./skill-location-status";
-import type { SkillPageAction } from "./skill-page-actions";
 import { railHarnessEntries, readerToggleAction } from "./skill-properties-rail-model";
 
 interface SkillPropertiesRailProps {
   skill: InstalledSkill;
-  /** The header's "Update"/"Pull latest" action, reused for Source's own Update button - `null` when nothing is available. */
-  updateAction: SkillPageAction | null;
 }
 
 /** One property row: a 96px label column and a value column, min height 28px. */
@@ -79,7 +76,7 @@ function showLocations() {
   heading?.focus();
 }
 
-export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRailProps) {
+export function SkillPropertiesRail({ skill }: SkillPropertiesRailProps) {
   const addToast = useAppStore((state) => state.addToast);
   const [announcement, setAnnouncement] = useState<{
     kind: "status" | "alert";
@@ -262,16 +259,6 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
           <div className="flex flex-col gap-0.5 py-1">
             <span className="truncate font-mono text-text-primary">{ledger.source}</span>
             <span className="text-caption text-text-tertiary">{ledger.lifecycleOwner}</span>
-            {updateAction && (
-              <Button
-                variant="ghost"
-                className={`${EDIT_BUTTON_CLASS} w-fit text-accent`}
-                onClick={updateAction.run}
-                disabled={updateAction.busy}
-              >
-                {updateAction.busy ? "Working…" : updateAction.label}
-              </Button>
-            )}
           </div>
         </PropertyRow>
 

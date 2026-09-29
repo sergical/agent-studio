@@ -343,7 +343,7 @@ export function SkillPage({
           )}
         </div>
 
-        <SkillPropertiesRail skill={skill} updateAction={pageActions.primaryAction} />
+        <SkillPropertiesRail skill={skill} />
       </div>
 
       <SkillAssistantDrawer

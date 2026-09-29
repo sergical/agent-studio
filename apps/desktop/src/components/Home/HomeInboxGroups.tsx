@@ -13,6 +13,7 @@ import { parkSkill, pullForkUpstream, updateAllSkills, updateSkill } from "../..
 import {
   lifecycleTargetForPark,
   skillCanPark,
+  skillUpdateToast,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
@@ -158,15 +159,7 @@ function PullLatestButton({ skill }: { skill: InstalledSkill }) {
         addToast({ type: "success", title });
       } else {
         const summary = await updateSkillOwners(skill, updateSkill);
-        let type: "success" | "warning" = "success";
-        if (summary.failures.length > 0) type = "warning";
-        let message = summary.failures.map((failure) => failure.message).join("; ");
-        if (!message) message = skill.name;
-        addToast({
-          type,
-          title: `Updated ${summary.succeeded} of ${summary.attempted} deployments`,
-          message,
-        });
+        addToast(skillUpdateToast(skill.name, summary));
       }
       setIsPulling(false);
     } catch (err) {

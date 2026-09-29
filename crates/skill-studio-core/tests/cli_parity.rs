@@ -306,6 +306,20 @@ const KNOWN_DIVERGENCES: &[Divergence] = &[
     // Trace 04's `InstallOutcome` divergence (an unknown `cursor` id reported
     // as installed) was removed once `install` learned every harness it can
     // write for and passed one `--agent` token per requested harness.
+    Divergence {
+        trace: "06-update-newer-source",
+        field: "on-disk path",
+        cli_value: ".claude/skills/academy-guide -> ../../.agents/skills/academy-guide",
+        core_value: ".claude/skills",
+        reason: "`npx skills update` links the skill into Claude Code even when Claude Code had no copy; `ops::update` removes the links it added so an update never turns a harness on",
+    },
+    Divergence {
+        trace: "07-update-already-current",
+        field: "on-disk path",
+        cli_value: ".claude/skills/academy-guide -> ../../.agents/skills/academy-guide",
+        core_value: ".claude/skills",
+        reason: "same as 06: the update removes a harness link the CLI added for a harness that did not have the skill",
+    },
 ];
 
 fn divergence(trace: &str, field: &str) -> Option<&'static Divergence> {
@@ -544,15 +558,21 @@ impl TraceCtx {
         let actual = walk_allowed(self.root(), &self.home, self.project.as_deref());
         let expected = load_tree(&self.dir.join("after"));
         assert_tree_matches(trace_name, &actual, &expected);
-        self.assert_symlinks_resolve(&expected);
+        self.assert_symlinks_resolve(trace_name, &expected);
     }
 
     /// For every symlink `after/tree.json` names, asserts it actually
     /// resolves on disk (`std::fs::metadata` follows the link) - the
     /// functional property that matters, independent of whatever exact
-    /// string form the target happens to be stored in.
-    fn assert_symlinks_resolve(&self, expected: &[TreeEntry]) {
-        for entry in expected.iter().filter(|e| e.kind == "symlink") {
+    /// string form the target happens to be stored in. Links under a path a
+    /// `KNOWN_DIVERGENCES` entry skips are not expected to exist.
+    fn assert_symlinks_resolve(&self, trace_name: &str, expected: &[TreeEntry]) {
+        let skip_prefix = divergence(trace_name, "on-disk path");
+        for entry in expected
+            .iter()
+            .filter(|e| e.kind == "symlink")
+            .filter(|e| skip_prefix.is_none_or(|d| !e.path.starts_with(d.core_value)))
+        {
             let dest = self.root().join(&entry.path);
             std::fs::metadata(&dest).unwrap_or_else(|e| {
                 panic!(

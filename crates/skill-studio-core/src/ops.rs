@@ -1530,6 +1530,34 @@ fn global_root_path(rt: &Runtime, relative: &Path) -> PathBuf {
     rt.scope.home.lexical.join(relative)
 }
 
+/// Every harness's own skills directory in `scope`, resolved to a concrete
+/// path (the same paths [`scan_targets`] walks for `RootRole::Own`).
+pub(crate) fn harness_own_skill_roots(rt: &Runtime, scope: &RootScope) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for root_spec in rt
+        .ports
+        .catalog
+        .facts
+        .iter()
+        .flat_map(|facts| &facts.roots)
+        .filter(|root_spec| root_spec.role == RootRole::Own)
+    {
+        let path = match (root_spec.level, scope) {
+            (ScopeLevel::Global, RootScope::Global) => {
+                global_root_path(rt, Path::new(&root_spec.relative_path))
+            }
+            (ScopeLevel::Project, RootScope::Project(project)) => {
+                project.0.join(&root_spec.relative_path)
+            }
+            _ => continue,
+        };
+        if !roots.contains(&path) {
+            roots.push(path);
+        }
+    }
+    roots
+}
+
 fn scan_targets(rt: &Runtime) -> Vec<ScanTarget> {
     let mut seen: HashSet<(RootScope, RootKind, PathBuf)> = HashSet::new();
     let mut targets = Vec::new();
@@ -2489,9 +2517,17 @@ fn classify_owner(cx: &OwnerClassifyContext) -> (LifecycleOwnerKind, Option<Owne
         unreachable!("scan_inner populates a ledger for every scope it classifies")
     };
 
-    let dotagents_entry = ledger.dotagents.iter().find(|d| d.name == cx.skill_name);
     let skills_sh_entry = lock_file::is_skill_installed(&ledger.lock, cx.skill_name)
         || ledger.project_lock_skills.contains(cx.skill_name);
+    // `dotagents sync` adopts any undeclared folder in the universal root as
+    // a `path:` row - a local folder with no upstream. That row must not
+    // outrank (or make ambiguous) a ledger that does have an upstream for
+    // the same name; it only owns the skill when nothing else claims it.
+    let dotagents_entry = ledger
+        .dotagents
+        .iter()
+        .find(|d| d.name == cx.skill_name)
+        .filter(|d| !(d.is_local_path && skills_sh_entry));
 
     if dotagents_entry.is_some() && skills_sh_entry {
         return (LifecycleOwnerKind::Ambiguous, None);

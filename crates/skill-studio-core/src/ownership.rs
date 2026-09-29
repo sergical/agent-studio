@@ -38,6 +38,10 @@ pub(crate) struct DotagentsEntry {
     /// --all`), which has an `agents.lock` row but no `[[skills]]` row in
     /// `agents.toml`.
     pub has_manifest_row: bool,
+    /// True when the ledger records a `path:` source - a folder `dotagents
+    /// sync` adopted, with no upstream. Such a row never claims a skill
+    /// another ledger also claims, see `classify_owner`.
+    pub is_local_path: bool,
 }
 
 /// The skills.sh lock file and the dotagents ledger for one `.agents`
@@ -95,13 +99,15 @@ pub(crate) fn read_scope_ledgers(
 /// `classify_owner` doesn't need (`source`, `installed_commit`, ...).
 fn read_dotagents_ledger(fs: &dyn ScopeFs, agents_dir: &Path) -> Vec<DotagentsEntry> {
     let manifest_names = dotagents_manifest_names(fs, agents_dir);
-    dotagents_lock_names(fs, agents_dir)
+    dotagents_lock_sources(fs, agents_dir)
         .into_iter()
-        .map(|name| {
+        .map(|(name, source)| {
             let has_manifest_row = manifest_names.contains(&name);
             DotagentsEntry {
                 name,
                 has_manifest_row,
+                is_local_path: source
+                    .is_some_and(|s| crate::dotagents_ledger::is_local_path_source(&s)),
             }
         })
         .collect()
@@ -116,15 +122,23 @@ fn read_toml_document(fs: &dyn ScopeFs, path: &Path) -> Option<toml::Table> {
 }
 
 /// `agents.lock`'s `[skills.<name>]` table keys - the set of skills
-/// dotagents has actually resolved on disk.
-fn dotagents_lock_names(fs: &dyn ScopeFs, agents_dir: &Path) -> Vec<String> {
+/// dotagents has actually resolved on disk - each with the `source` the row
+/// records.
+fn dotagents_lock_sources(fs: &dyn ScopeFs, agents_dir: &Path) -> Vec<(String, Option<String>)> {
     let Some(table) = read_toml_document(fs, &agents_dir.join("agents.lock")) else {
         return Vec::new();
     };
     table
         .get("skills")
         .and_then(toml::Value::as_table)
-        .map(|t| t.keys().cloned().collect())
+        .map(|t| {
+            t.iter()
+                .map(|(name, row)| {
+                    let source = row.get("source").and_then(toml::Value::as_str);
+                    (name.clone(), source.map(str::to_string))
+                })
+                .collect()
+        })
         .unwrap_or_default()
 }
 

@@ -26,6 +26,7 @@ import {
   skillRemovalBlockedReason,
   skillRemovalChoices,
   skillRemovalEmptiesSkill,
+  skillUpdateToast,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import type { SkillRemovalChoice } from "../../lib/skill-lifecycle-target";
@@ -261,19 +262,7 @@ export function useSkillPageActions(
   const doUpdate = () =>
     runAction(addToast, setIsUpdating, "Update failed", async () => {
       const summary = await updateSkillOwners(skill, updateSkill);
-      if (summary.failures.length === 0) {
-        addToast({
-          type: "success",
-          title: `Updated ${summary.succeeded} deployment${summary.succeeded === 1 ? "" : "s"}`,
-          message: skill.name,
-        });
-      } else {
-        addToast({
-          type: "warning",
-          title: `Updated ${summary.succeeded} of ${summary.attempted} deployments`,
-          message: summary.failures.map((failure) => failure.message).join("; "),
-        });
-      }
+      addToast(skillUpdateToast(skill.name, summary));
     });
 
   const doRemove = async (choice: SkillRemovalChoice) => {
