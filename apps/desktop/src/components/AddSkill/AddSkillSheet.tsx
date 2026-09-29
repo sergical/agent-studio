@@ -91,7 +91,7 @@ const SHEET_TAB_CLASS =
 const SECTION_LABEL_CLASS =
   "text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase";
 
-const ALL_METHODS = ["dotagents", "skills-sh", "copy"] as const satisfies AddMethod[];
+const ALL_METHODS = ["skills-sh", "dotagents", "copy"] as const satisfies AddMethod[];
 
 const DOTAGENTS_HARNESS_REASON =
   "dotagents sets the folders itself, so you cannot change the harnesses for it.";
@@ -161,7 +161,7 @@ function initialFormState(): FormState {
     sheetTab: "manual",
     source: "",
     gitSkillName: "",
-    methodChoice: "dotagents",
+    methodChoice: "skills-sh",
     pickedHarnesses: null,
     linkMode: "link",
     scope: "global",

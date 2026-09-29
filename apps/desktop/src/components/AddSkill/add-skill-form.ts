@@ -31,7 +31,7 @@ export function availableAddSkillMethods(
     // Pack is withheld here: import_skill_pack, confirm_skill_pack_trust, and
     // abandon_pack_import_trust are unregistered in lib.rs. Restore "pack" to
     // these lists together with registeredInLibRs: true in skill-api.test.ts.
-    return dotagentsInstalled ? ["dotagents", "skills-sh", "copy"] : ["skills-sh", "copy"];
+    return dotagentsInstalled ? ["skills-sh", "dotagents", "copy"] : ["skills-sh", "copy"];
   }
   if (parsed.kind === "git") return dotagentsInstalled ? ["dotagents"] : [];
   return ["copy"];
