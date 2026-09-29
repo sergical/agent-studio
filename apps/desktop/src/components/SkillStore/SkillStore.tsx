@@ -21,6 +21,7 @@ import type {
   InstallProgressState,
 } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
+import { isSearchQuery, loadBrowseInitialData } from "./browse-initial-load";
 
 const LIMIT = 50;
 
@@ -132,6 +133,9 @@ function useSkillStoreData(
   // Never read during render - only `loadMore`'s paging math needs it, so a
   // ref avoids a re-render on every page bump.
   const pageRef = useRef(0);
+  // The query `handleSearch` last ran, so the results on screen belong to it. `loadInitialData`
+  // reads it when its requests land; as a dependency it would rerun that load on every search.
+  const searchQueryRef = useRef("");
 
   // A Promise chain, not a try/finally statement, so the compiler can still
   // optimize this component (it doesn't support `finally` clauses yet).
@@ -140,14 +144,17 @@ function useSkillStoreData(
   // once instead of on every render.
   // react-doctor-disable-next-line react-doctor/react-compiler-no-manual-memoization -- the mount effect below depends on this callback's identity to run exactly once
   const loadInitialData = useCallback(() => {
-    pageRef.current = 0;
     setBrowseError(null);
-    // Load both in parallel
-    return Promise.all([getInstalledSkills(), getPopularSkills(0, LIMIT)])
-      .then(([installed, popularResponse]) => {
+    return loadBrowseInitialData(
+      { getInstalled: getInstalledSkills, getPopular: () => getPopularSkills(0, LIMIT) },
+      () => searchQueryRef.current,
+    )
+      .then(({ installed, popular }) => {
         setInstalledSkills(installed);
-        setHasMore(popularResponse.has_more);
-        setRawResults(popularResponse.skills);
+        if (!popular) return;
+        pageRef.current = 0;
+        setHasMore(popular.has_more);
+        setRawResults(popular.skills);
       })
       .catch((err) => {
         setBrowseError(invokeErrorMessage(err));
@@ -189,11 +196,12 @@ function useSkillStoreData(
   // optimize this component (it doesn't support `finally` clauses yet).
   const handleSearch = (query: string) => {
     setSearchQuery(query);
+    searchQueryRef.current = query;
     pageRef.current = 0;
     setBrowseError(null);
     setIsLoading(true);
 
-    if (!query.trim() || query.length < 2) {
+    if (!isSearchQuery(query)) {
       // Show popular skills when no search query
       return getPopularSkills(0, LIMIT)
         .then((response) => {
