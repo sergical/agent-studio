@@ -3803,6 +3803,39 @@ fn read_skill_md_text(
     Ok((path, bytes, text))
 }
 
+/// The file a `SKILL.md` repair writes: `skill_md` itself, or its target when
+/// it is a symlink. An atomic write to the link path would replace the link
+/// with a regular file and silently split this harness from every other one
+/// that shares the target. A target outside the scope is refused, since the
+/// core writes only inside it.
+fn skill_md_write_target(
+    scope: &crate::scope::NormalizedScope,
+    fs: &dyn ScopeFs,
+    skill_md: PathBuf,
+) -> Result<PathBuf, CoreError> {
+    if !fs
+        .symlink_metadata(&skill_md)
+        .is_ok_and(|f| f.kind == FileKind::Symlink)
+    {
+        return Ok(skill_md);
+    }
+    let target = fs
+        .canonicalize(&skill_md)
+        .map_err(|e| CoreError::io(&skill_md, e))?;
+    if !scope.contains(&target) {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            format!(
+                "SKILL.md is a link to {}, outside the folders Skill Studio manages; \
+                 edit that file directly",
+                target.display()
+            ),
+        )
+        .at(&skill_md));
+    }
+    Ok(target)
+}
+
 /// Builds a proposal id: sha256 over deployment id, path, owner id, owner
 /// kind, the expected fingerprint, and the proposed text, matching
 /// [`crate::identity::ProposalId`]'s invariant.
@@ -4028,6 +4061,7 @@ fn apply_frontmatter_repair_body(
         )
         .at(&path));
     }
+    let path = skill_md_write_target(&rt.scope, fs, path)?;
     let verify_step = crate::timing::step(clock, "read_and_verify", step_start);
 
     let step_start = clock.monotonic();

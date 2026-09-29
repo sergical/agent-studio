@@ -1011,32 +1011,31 @@ fn rebuild_invocations_only(app: &AppHandle, state: &SkillRefreshState) -> Resul
 /// reject `read_installed_skill_md` / `open_skill_path` requests for paths
 /// outside anything the snapshot actually deployed, so a caller can't read or
 /// open an arbitrary file on disk.
+///
+/// A `SKILL.md` is judged by the folder it lives in, not by where it points:
+/// one symlinked `SKILL.md` per harness in front of a single shared file is a
+/// normal layout, and the harness itself reads that target, so the target may
+/// lie anywhere. Any other path, or a `SKILL.md` whose folder is not a
+/// deployment, is still refused.
 pub fn snapshot_owns_path(snapshot: &SkillSnapshot, path: &Path) -> bool {
-    let Ok(canonical) = std::fs::canonicalize(path) else {
-        return false;
-    };
-    snapshot
-        .skills
-        .iter()
-        .flat_map(|s| &s.deployments)
-        .any(|d| {
-            let Ok(dep_path) = std::fs::canonicalize(&d.path) else {
-                return false;
-            };
-            canonical == dep_path || canonical == dep_path.join("SKILL.md")
-        })
+    snapshot_deployment_owning_path(snapshot, path).is_some()
 }
 
-/// The deployment in `snapshot` that owns `path`: its folder canonicalizes to
-/// `path`'s parent, or to `path` itself when `path` is `SKILL.md`. Used by
-/// `write_installed_skill_md` to find the deployment's `plugin` field (writes
-/// to a plugin-owned skill are refused) without re-deriving the same
-/// containment check `snapshot_owns_path` already does.
+/// The deployment in `snapshot` that owns `path`, by the rule
+/// `snapshot_owns_path` documents. Used by `write_installed_skill_md` to find
+/// the deployment's `plugin` field (writes to a plugin-owned skill are
+/// refused).
 pub fn snapshot_deployment_owning_path<'a>(
     snapshot: &'a SkillSnapshot,
     path: &Path,
 ) -> Option<&'a Deployment> {
     let canonical = std::fs::canonicalize(path).ok()?;
+    let skill_md_folder = if path.file_name().is_some_and(|name| name == "SKILL.md") {
+        path.parent()
+            .and_then(|dir| std::fs::canonicalize(dir).ok())
+    } else {
+        None
+    };
     snapshot
         .skills
         .iter()
@@ -1045,7 +1044,9 @@ pub fn snapshot_deployment_owning_path<'a>(
             let Ok(dep_path) = std::fs::canonicalize(&d.path) else {
                 return false;
             };
-            canonical == dep_path || canonical == dep_path.join("SKILL.md")
+            canonical == dep_path
+                || canonical == dep_path.join("SKILL.md")
+                || skill_md_folder.as_ref() == Some(&dep_path)
         })
 }
 
@@ -3824,6 +3825,91 @@ mod tests {
 
         let snapshot = fixture_snapshot(&dep_dir);
         assert!(snapshot_owns_path(&snapshot, &skill_md));
+    }
+
+    /// #77: a deployment whose `SKILL.md` is a symlink to one shared file,
+    /// with the target both inside the skills tree and outside it. The detail
+    /// page reads the body through `read_installed_skill_md` and saves it
+    /// through `write_installed_skill_md_if_unchanged`; both start with the
+    /// ownership check, then `canonicalize_skill_md`, and the save writes the
+    /// target. Each step must accept the link, and the save must leave the
+    /// link in place.
+    #[test]
+    fn symlinked_skill_md_is_owned_readable_and_writable_through_the_link_or_names_the_refusal() {
+        use super::super::commands::{canonicalize_skill_md, check_skill_md_write_allowed};
+        use super::super::skill_md_write::write_skill_md_compare_and_swap;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let inside_target = tmp.path().join(".agents/skills/foo/SKILL.md");
+        let outside_target = tmp.path().join("repo/src/nest_skill.md");
+        for (label, target) in [("inside", &inside_target), ("outside", &outside_target)] {
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, "---\nname: foo\n---\nold body\n").unwrap();
+            let dep_dir = tmp.path().join(format!("{label}/.claude/skills/foo"));
+            fs::create_dir_all(&dep_dir).unwrap();
+            let link = dep_dir.join("SKILL.md");
+            std::os::unix::fs::symlink(target, &link).unwrap();
+            let snapshot = fixture_snapshot(&dep_dir);
+
+            assert!(
+                snapshot_owns_path(&snapshot, &link),
+                "{label}: a SKILL.md link in a deployment folder was refused as not installed"
+            );
+            let link_str = link.to_string_lossy().to_string();
+            let canonical = canonicalize_skill_md(&link, &link_str)
+                .unwrap_or_else(|e| panic!("{label}: the link did not resolve to a file: {e}"));
+            check_skill_md_write_allowed(Some(&snapshot), &link)
+                .unwrap_or_else(|e| panic!("{label}: the save was refused: {e}"));
+            write_skill_md_compare_and_swap(
+                &canonical,
+                "---\nname: foo\n---\nold body\n",
+                "---\nname: foo\n---\nnew body\n",
+            )
+            .unwrap_or_else(|e| panic!("{label}: the save failed: {e}"));
+
+            assert_eq!(
+                fs::read_to_string(target).unwrap(),
+                "---\nname: foo\n---\nnew body\n",
+                "{label}: the save did not reach the shared file"
+            );
+            assert!(
+                fs::symlink_metadata(&link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "{label}: the save replaced the SKILL.md link with a regular file"
+            );
+        }
+    }
+
+    /// The #77 fix judges a `SKILL.md` by the folder it lives in; it must not
+    /// widen the check to other files. A link named `SKILL.md` in a folder the
+    /// snapshot does not know, and a non-`SKILL.md` link inside a deployment
+    /// folder, both point at a file outside and must stay refused.
+    #[test]
+    fn links_outside_a_deployments_own_skill_md_stay_refused_or_names_the_arbitrary_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dep_dir = tmp.path().join("foo");
+        fs::create_dir_all(&dep_dir).unwrap();
+        fs::write(dep_dir.join("SKILL.md"), "body").unwrap();
+        let secret = tmp.path().join("secret.txt");
+        fs::write(&secret, "secret").unwrap();
+        let stranger_dir = tmp.path().join("stranger");
+        fs::create_dir_all(&stranger_dir).unwrap();
+        let stranger_link = stranger_dir.join("SKILL.md");
+        std::os::unix::fs::symlink(&secret, &stranger_link).unwrap();
+        let notes_link = dep_dir.join("notes.md");
+        std::os::unix::fs::symlink(&secret, &notes_link).unwrap();
+        let snapshot = fixture_snapshot(&dep_dir);
+
+        assert!(
+            !snapshot_owns_path(&snapshot, &stranger_link),
+            "a SKILL.md link outside every deployment folder was accepted"
+        );
+        assert!(
+            !snapshot_owns_path(&snapshot, &notes_link),
+            "a non-SKILL.md link inside a deployment folder was accepted"
+        );
     }
 
     /// Pins the assumption `reconcile_skill_names_and_emit`'s doc comment
