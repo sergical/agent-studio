@@ -2,13 +2,13 @@
 
 ## Project Overview
 
-Skill Studio is a Tauri 2.x desktop application to manage, sync, and test agent skills across Claude Code, Codex, OpenCode, and pi, with skills.sh discovery built in.
+Skill Studio is a Tauri 2.x desktop application to manage, sync, and test agent skills across Claude Code, Codex, OpenCode, pi, Cursor, and Grok Build, with skills.sh discovery built in.
 
 ### Core Features
 
 1. **Skill Discovery** - Search 36,000+ skills from skills.sh
 2. **Skill Installation** - Install/remove/update via `npx skills` CLI to global or project scope
-3. **First-Class Agents** - Claude Code, Codex, OpenCode, pi, plus a shared `.agents/skills` root
+3. **First-Class Agents** - Claude Code, Codex, OpenCode, pi, Cursor, Grok Build, plus a shared `.agents/skills` root
 4. **Provenance** - Every installed skill is classified as `skills-sh`, `plugin`, `dotagents`, or `manual` (precedence: dotagents > plugin > skills-sh > manual)
 5. **Native Plugin Enumeration** - Discovers skills shipped inside Claude Code (`~/.claude/plugins/cache`) and Codex (`~/.codex/plugins/cache`) plugin caches, per the agent-plugins.org manifest convention
 6. **Spec Validation** - Flags agentskills.io SKILL.md spec violations (`spec_violations`) and detects the getsentry/skillet spec pattern (`has_spec`)
@@ -380,6 +380,8 @@ Tracks installed skills with their sources and hashes:
 | Codex       | `.codex/skills/`                    | `~/.codex/skills/`                           |
 | OpenCode    | `.opencode/skills/` (also `skill/`) | `~/.config/opencode/skills/` (also `skill/`) |
 | pi          | `.pi/skills/`                       | `~/.pi/agent/skills/`                        |
+| Cursor      | `.cursor/skills/`                   | `~/.cursor/skills/`                          |
+| Grok Build  | `.grok/skills/`                     | `~/.grok/skills/`                            |
 | shared      | `.agents/skills/`                   | `~/.agents/skills/`                          |
 
 `npx skills` can still target the full agent list; see `apps/desktop/src-tauri/src/skills/agents.rs` for `AgentId`.
