@@ -30,6 +30,7 @@ use skill_studio_core::harness::HarnessReport;
 use skill_studio_core::identity::CorrelationId;
 use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::OpContext;
+use tauri::Manager;
 
 /// The first-run screen's saved choice, round-tripped through the registry.
 /// Kept small and documented per unit 3.2's issue: unit 4.4 reads `kept` to
@@ -97,21 +98,67 @@ pub async fn get_harnesses_choice(
 /// writing it, so this read-modify-write can't lose a concurrent writer's
 /// change the way an unguarded read followed by a locked write could -
 /// matching every other registry mutation in this module family (see
-/// `skill_harness_disable.rs`).
+/// `skill_harness_disable.rs`). Also saves `telemetry_enabled` from
+/// the same screen's telemetry switch, so the first run's choice is the
+/// registry's only value for it rather than whatever the default happened
+/// to be.
 #[tauri::command]
 pub async fn save_harnesses_choice(
     choice: HarnessesChoice,
+    telemetry_enabled: bool,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    crate::timing_log::time_command_blocking(&app, "save_harnesses_choice", move || {
+    let timing_app = app.clone();
+    let consent = app
+        .state::<super::telemetry_commands::TelemetryState>()
+        .consent
+        .clone();
+    crate::timing_log::time_command_blocking(&timing_app, "save_harnesses_choice", move || {
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
         let write_lease = super::write_lease::WriteLease::default();
-        let guard = write_lease.try_acquire(&home)?;
-        let mut registry = super::skill_fork_registry::read_fork_registry(&home)?;
-        registry.harnesses = Some(choice);
-        super::skill_fork_registry::write_fork_registry_locked(&guard, &home, &registry)
+        save_harnesses_choice_at(
+            &write_lease,
+            &home,
+            choice,
+            telemetry_enabled,
+            &consent,
+            std::env::var("SKILL_STUDIO_TELEMETRY").ok(),
+        )?;
+        Ok(())
     })
     .await
+}
+
+/// The locked read-modify-write body of `save_harnesses_choice`, kept apart
+/// so a test can drive it with a plain `home` path - `tauri::AppHandle`
+/// can't be constructed outside a running app (see `detect_with_runtime`'s
+/// own split for the same reason). Takes the `WriteLease` itself, not just
+/// `home`, so a test can root it under a tempdir with
+/// `WriteLease::with_lease_root` instead of the real data root - matching
+/// `set_harness_enabled_with`'s own guard parameter in
+/// `skill_harness_disable.rs`. Takes `Consent` the same way, so the
+/// first-run screen's telemetry choice takes effect without a restart the
+/// same way Settings' toggle does. Takes `env_override` as a parameter,
+/// rather than reading `SKILL_STUDIO_TELEMETRY` itself, so a test can drive
+/// `resolve_consent`'s env-off case without touching the real process env.
+fn save_harnesses_choice_at(
+    write_lease: &super::write_lease::WriteLease,
+    home: &std::path::Path,
+    choice: HarnessesChoice,
+    telemetry_enabled: bool,
+    consent: &skill_studio_host::telemetry::Consent,
+    env_override: Option<String>,
+) -> Result<(), String> {
+    let guard = write_lease.try_acquire(home)?;
+    let mut registry = super::skill_fork_registry::read_fork_registry(home)?;
+    registry.harnesses = Some(choice);
+    registry.telemetry_enabled = telemetry_enabled;
+    super::skill_fork_registry::write_fork_registry_locked(&guard, home, &registry)?;
+    consent.set(skill_studio_host::telemetry::resolve_consent(
+        env_override,
+        telemetry_enabled,
+    ));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -244,6 +291,107 @@ mod tests {
             reloaded.harnesses.map(|c| c.kept),
             Some(vec!["claude-code".to_string()]),
             "a saved choice must round-trip so the next launch skips the screen"
+        );
+    }
+
+    /// `a_first_run_save_writes_the_telemetry_choice_or_leaves_the_registrys_default`:
+    /// `save_harnesses_choice_at` must write `telemetry_enabled`
+    /// alongside `harnesses` in the same locked write, not leave it at
+    /// whatever `ForkRegistry::default()` picked, and must flip the live
+    /// `Consent` passed in so the choice takes effect without a restart.
+    /// Fails if the telemetry switch's value never reaches the registry or
+    /// the `Consent`. Uses `WriteLease::with_lease_root` rooted inside the
+    /// tempdir so this test never touches the real data root's lock files.
+    #[test]
+    fn a_first_run_save_writes_the_telemetry_choice_or_leaves_the_registrys_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        let write_lease =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
+        let consent = skill_studio_host::telemetry::Consent::new(false);
+
+        super::save_harnesses_choice_at(
+            &write_lease,
+            &home,
+            HarnessesChoice {
+                kept: vec!["claude-code".to_string()],
+                search_project_folders: false,
+                saved_at: "2026-09-28T00:00:00Z".to_string(),
+            },
+            false,
+            &consent,
+            None,
+        )
+        .unwrap();
+        let after_off = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert!(
+            !after_off.telemetry_enabled,
+            "a save with false must turn telemetry off in the registry"
+        );
+
+        super::save_harnesses_choice_at(
+            &write_lease,
+            &home,
+            HarnessesChoice {
+                kept: vec!["claude-code".to_string()],
+                search_project_folders: false,
+                saved_at: "2026-09-28T00:01:00Z".to_string(),
+            },
+            true,
+            &consent,
+            None,
+        )
+        .unwrap();
+        let after_on = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert!(
+            after_on.telemetry_enabled,
+            "a save with true must turn telemetry on in the registry"
+        );
+        assert!(
+            consent.enabled(),
+            "a save with true must flip the live Consent, not just the registry"
+        );
+    }
+
+    /// `an_env_override_of_0_keeps_consent_off_when_the_welcome_switch_is_saved_on`:
+    /// `resolve_consent`'s env-off case must win even when the first-run
+    /// screen's own telemetry switch is saved on - `SKILL_STUDIO_TELEMETRY=0`
+    /// is an operator override, not a default the user's choice can turn
+    /// back on. Fails if `save_harnesses_choice_at` ever passes the switch's
+    /// value straight to `Consent` without going through `resolve_consent`
+    /// first.
+    #[test]
+    fn an_env_override_of_0_keeps_consent_off_when_the_welcome_switch_is_saved_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        let write_lease =
+            super::super::write_lease::WriteLease::with_lease_root(tmp.path().join("leases"));
+        let consent = skill_studio_host::telemetry::Consent::new(false);
+
+        super::save_harnesses_choice_at(
+            &write_lease,
+            &home,
+            HarnessesChoice {
+                kept: vec!["claude-code".to_string()],
+                search_project_folders: false,
+                saved_at: "2026-09-28T00:02:00Z".to_string(),
+            },
+            true,
+            &consent,
+            Some("0".to_string()),
+        )
+        .unwrap();
+
+        assert!(
+            !consent.enabled(),
+            "the env override must keep Consent off even though the welcome switch was saved on"
+        );
+        let after = super::super::skill_fork_registry::read_fork_registry(&home).unwrap();
+        assert!(
+            after.telemetry_enabled,
+            "the registry must still record the user's saved choice, only Consent is overridden"
         );
     }
 

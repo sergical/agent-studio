@@ -227,11 +227,18 @@ pub struct ForkRegistry {
     /// the desktop app, the CLI, and the MCP server honour the same choice.
     #[serde(default, skip_serializing_if = "DiscoverySources::is_empty")]
     pub discovery: DiscoverySources,
-    /// Opt-in error reporting (Settings' "Error reporting" toggle) - see
-    /// `error_reporting`. Off by default: a panic or a command failure is
-    /// sanitized and sent to Sentry only once this is `true`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub error_reporting_enabled: bool,
+    /// The telemetry switch: whether crash reports, operation timings, and
+    /// `WebView` errors leave this Mac. Off in the registry by default; the
+    /// welcome screen offers it on (`FIRST_RUN_TELEMETRY_DEFAULT` in
+    /// `useFirstRun.ts`) and `save_harnesses_choice` writes the user's
+    /// explicit choice here. `lib.rs` reads it on every launch; before a
+    /// choice exists it reads as off, and a registry saved by an older build
+    /// without the key reads as off too. An rc build wrote this key as
+    /// `error_reporting_enabled`; `read_fork_registry` migrates that key via
+    /// `migrate_rc_telemetry_key` before deserializing. See
+    /// `telemetry_commands`.
+    #[serde(default)]
+    pub telemetry_enabled: bool,
     /// The first-run screen's saved choice - see `harness_first_run`.
     /// Absent means the screen has never been completed, so the app shows
     /// it again on the next launch.
@@ -289,7 +296,7 @@ impl Default for ForkRegistry {
             trusted_dotagents_sources: BTreeSet::new(),
             projects: TrackedProjects::default(),
             discovery: DiscoverySources::default(),
-            error_reporting_enabled: false,
+            telemetry_enabled: false,
             harnesses: None,
             unknown: serde_json::Map::new(),
         }
@@ -312,6 +319,20 @@ pub fn fork_snapshot_dir(app_data: &Path, name: &str) -> PathBuf {
         .join("base")
 }
 
+/// An rc build saved the telemetry switch as `error_reporting_enabled`.
+/// Moves that value to `telemetry_enabled` when the new key is absent and
+/// drops the old key either way, so the next write does not carry it
+/// forward and a file an rc build rewrote after this build (both keys
+/// present) still reads.
+fn migrate_rc_telemetry_key(document: &mut serde_json::Map<String, serde_json::Value>) {
+    // `shift_remove`, not `remove`: with `preserve_order` a plain `remove`
+    // swaps the last key into the hole and reorders the user's file.
+    let Some(old) = document.shift_remove("error_reporting_enabled") else {
+        return;
+    };
+    document.entry("telemetry_enabled").or_insert(old);
+}
+
 /// Read the registry: a missing file yields a fresh default one, but an
 /// unreadable or malformed file is an `Err` - a mutating command (fork/pull/
 /// unfork/remove) must not treat a broken file as empty, since writing that
@@ -323,9 +344,20 @@ pub fn read_fork_registry(home: &Path) -> Result<ForkRegistry, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ForkRegistry::default()),
         Err(e) => return Err(format!("Failed to read {}: {e}", path.display())),
     };
-    serde_json::from_str(&content).map_err(|_| {
-        "~/.agents/skill-studio.json is malformed; fix or move it, then try again".to_string()
-    })
+    let malformed =
+        || "~/.agents/skill-studio.json is malformed; fix or move it, then try again".to_string();
+    let registry: ForkRegistry = serde_json::from_str(&content).map_err(|_| malformed())?;
+    if !registry.unknown.contains_key("error_reporting_enabled") {
+        return Ok(registry);
+    }
+    // Only a file that still holds the rc key takes the second pass: read as
+    // a map, where the new key's presence is visible, then migrate. The
+    // direct parse above stays the common path and keeps serde's rejection
+    // of a duplicated known key, which a `Value` parse would collapse.
+    let mut document: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&content).map_err(|_| malformed())?;
+    migrate_rc_telemetry_key(&mut document);
+    serde_json::from_value(serde_json::Value::Object(document)).map_err(|_| malformed())
 }
 
 /// `read_fork_registry`, but for read-only snapshot/candidate building: an
@@ -543,6 +575,8 @@ mod tests {
             discovery: None,
             tools: None,
             catalog: std::sync::Arc::new(skill_studio_core::harness::HarnessCatalog::builtin()),
+
+            telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
         };
         let rt = skill_studio_core::ports::Runtime::new(
             &skill_studio_core::scope::RuntimeScope::fixture(home),
@@ -715,6 +749,123 @@ mod tests {
         let content =
             std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
         assert!(!content.contains("\"discovery\""));
+    }
+
+    #[test]
+    fn a_registry_with_a_saved_first_run_and_no_telemetry_key_reads_as_off_or_opts_the_user_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".agents")).unwrap();
+        std::fs::write(
+            tmp.path().join(".agents/skill-studio.json"),
+            r#"{"version":4,"write_version":0,"harnesses":{"kept":["claude-code"],"search_project_folders":false,"saved_at":"2026-09-28T00:00:00Z"}}"#,
+        )
+        .unwrap();
+
+        let reg = read_fork_registry(tmp.path()).unwrap();
+        assert!(
+            !reg.telemetry_enabled,
+            "an absent key must read as off - only the welcome screen or Settings may turn it on"
+        );
+    }
+
+    #[test]
+    fn a_saved_false_for_telemetry_survives_a_round_trip_or_names_the_dropped_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = ForkRegistry {
+            telemetry_enabled: false,
+            ..ForkRegistry::default()
+        };
+        write_fork_registry(tmp.path(), &reg).unwrap();
+
+        let content =
+            std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
+        assert!(
+            content.contains(r#""telemetry_enabled": false"#),
+            "a saved false must be written, not dropped by skip_serializing_if: {content}"
+        );
+
+        let reloaded = read_fork_registry(tmp.path()).unwrap();
+        assert!(
+            !reloaded.telemetry_enabled,
+            "a saved false must still read back as false after the round trip"
+        );
+    }
+
+    /// Flow: an rc build wrote `error_reporting_enabled: true` into
+    /// `~/.agents/skill-studio.json` before this rename. Expectation:
+    /// `migrate_rc_telemetry_key` reads that opt-in as `telemetry_enabled:
+    /// true`, and a subsequent write migrates the key rather than carrying
+    /// the old name forward.
+    #[test]
+    fn an_rc_registry_saved_under_error_reporting_enabled_still_reads_as_telemetry_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".agents")).unwrap();
+        std::fs::write(
+            tmp.path().join(".agents/skill-studio.json"),
+            r#"{"version":4,"write_version":0,"error_reporting_enabled":true}"#,
+        )
+        .unwrap();
+
+        let reg = read_fork_registry(tmp.path()).unwrap();
+        assert!(
+            reg.telemetry_enabled,
+            "an rc user's opt-in under the old key must not be lost by the rename"
+        );
+
+        write_fork_registry(tmp.path(), &reg).unwrap();
+        let content =
+            std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
+        assert!(
+            content.contains(r#""telemetry_enabled": true"#)
+                && !content.contains("error_reporting_enabled"),
+            "a rewrite must migrate the key, not carry the old name forward"
+        );
+
+        // A later rc build could rewrite the file with both keys present -
+        // the new key it doesn't understand round-trips through `unknown`,
+        // and it writes its own `error_reporting_enabled` alongside it.
+        std::fs::write(
+            tmp.path().join(".agents/skill-studio.json"),
+            r#"{"version":4,"write_version":0,"telemetry_enabled":false,"error_reporting_enabled":true,"trials":{},"later_key":1}"#,
+        )
+        .unwrap();
+
+        let reg = read_fork_registry(tmp.path());
+        assert!(
+            reg.is_ok(),
+            "a file an rc build rewrote after this build must still read, not fail as malformed"
+        );
+        let reg = reg.unwrap();
+        assert!(
+            !reg.telemetry_enabled,
+            "when both keys exist the new key wins; an OR merge would reopen consent from the old key"
+        );
+        assert_eq!(
+            reg.unknown.keys().collect::<Vec<_>>(),
+            ["trials", "later_key"],
+            "dropping the old key must not reorder the other unknown keys"
+        );
+
+        write_fork_registry(tmp.path(), &reg).unwrap();
+        let content =
+            std::fs::read_to_string(tmp.path().join(".agents/skill-studio.json")).unwrap();
+        assert!(
+            !content.contains("error_reporting_enabled"),
+            "a rewrite must drop the old key even when both were present: {content}"
+        );
+
+        // An rc opt-out under the old key alone must stay off, not be
+        // replaced by a hard-coded true.
+        std::fs::write(
+            tmp.path().join(".agents/skill-studio.json"),
+            r#"{"version":4,"write_version":0,"error_reporting_enabled":false}"#,
+        )
+        .unwrap();
+        let reg = read_fork_registry(tmp.path()).unwrap();
+        assert!(
+            !reg.telemetry_enabled,
+            "an rc user's opt-out under the old key must read as off"
+        );
     }
 
     #[test]

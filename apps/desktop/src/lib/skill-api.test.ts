@@ -95,8 +95,6 @@ const EXPECTED_WRAPPER_COMMANDS = {
     command: "save_harnesses_choice",
     registeredInLibRs: true,
   },
-  runDoctor: { kind: "command", command: "doctor", registeredInLibRs: true },
-  onDoctorReport: { kind: "event", event: "skills://doctor" },
   listProjectFolders: {
     kind: "command",
     command: "list_project_folders",
@@ -129,16 +127,15 @@ const EXPECTED_WRAPPER_COMMANDS = {
     command: "set_preferred_editor",
     registeredInLibRs: true,
   },
-  commandHealth: { kind: "command", command: "command_health", registeredInLibRs: true },
   dataFolderStatus: { kind: "command", command: "data_folder_status", registeredInLibRs: true },
-  getErrorReportingEnabled: {
+  getTelemetryEnabled: {
     kind: "command",
-    command: "get_error_reporting_enabled",
+    command: "get_telemetry_enabled",
     registeredInLibRs: true,
   },
-  setErrorReportingEnabled: {
+  setTelemetryEnabled: {
     kind: "command",
-    command: "set_error_reporting_enabled",
+    command: "set_telemetry_enabled",
     registeredInLibRs: true,
   },
   forkSkill: { kind: "command", command: "fork_skill", registeredInLibRs: true },

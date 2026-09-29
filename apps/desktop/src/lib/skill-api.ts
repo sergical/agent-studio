@@ -15,9 +15,7 @@ import type {
   AddSkillsRequest,
   AgentId,
   AppVersion,
-  CommandHealth,
   DiscoverySourceSetting,
-  DoctorReport,
   ImportResult,
   InstallPreferences,
   InstallScope,
@@ -251,34 +249,14 @@ export async function getHarnessesChoice(): Promise<HarnessesChoice | null> {
 }
 
 /**
- * Saves the first-run screen's choice so the next launch skips it.
+ * Saves the first-run screen's choice so the next launch skips it, along
+ * with the same screen's telemetry switch.
  */
-export async function saveHarnessesChoice(choice: HarnessesChoice): Promise<void> {
-  return callCommand("save_harnesses_choice", { choice });
-}
-
-// ============================================================================
-// Doctor: every lifecycle invariant, over the whole scope (unit 5.3)
-// ============================================================================
-
-/**
- * Runs `ops::doctor` off the UI thread (`spawn_blocking`, see
- * `skill_doctor.rs`) and returns every invariant violation found.
- */
-export async function runDoctor(): Promise<DoctorReport> {
-  return callCommand("doctor");
-}
-
-/**
- * Subscribe to `skills://doctor`, emitted once after the app's first scan
- * finishes (the automatic startup pass, not `runDoctor`'s on-demand calls) -
- * the way a Settings card that was already open sees that pass's result
- * without asking the backend to rerun it. Returns an unlisten function.
- */
-export function onDoctorReport(cb: (report: DoctorReport) => void): Promise<() => void> {
-  return listen<DoctorReport>("skills://doctor", (event) => {
-    cb(event.payload);
-  });
+export async function saveHarnessesChoice(
+  choice: HarnessesChoice,
+  telemetryEnabled: boolean,
+): Promise<void> {
+  return callCommand("save_harnesses_choice", { choice, telemetryEnabled });
 }
 
 /**
@@ -395,19 +373,14 @@ export async function setPreferredEditor(value: string | null): Promise<void> {
   return callCommand("set_preferred_editor", { appName: value });
 }
 
-/** The Settings "Command health" card's rollup: one row per command, folded from `timing.jsonl`. */
-export async function commandHealth(): Promise<CommandHealth[]> {
-  return callCommand("command_health");
+/** Reads the telemetry switch (crash reports, timings, WebView errors) from the registry. */
+export async function getTelemetryEnabled(): Promise<boolean> {
+  return callCommand("get_telemetry_enabled");
 }
 
-/** The saved "Error reporting" switch (Settings), off unless the user turned it on. */
-export async function getErrorReportingEnabled(): Promise<boolean> {
-  return callCommand("get_error_reporting_enabled");
-}
-
-/** Saves the switch and takes effect immediately - see the Rust `error_reporting`. */
-export async function setErrorReportingEnabled(enabled: boolean): Promise<boolean> {
-  return callCommand("set_error_reporting_enabled", { enabled });
+/** Saves the telemetry switch; takes effect without a restart - see the Rust `telemetry_commands`. */
+export async function setTelemetryEnabled(enabled: boolean): Promise<boolean> {
+  return callCommand("set_telemetry_enabled", { enabled });
 }
 
 // ============================================================================

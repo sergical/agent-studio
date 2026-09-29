@@ -58,6 +58,7 @@ use crate::events::{EventDraft, EventKind, EventStatus};
 use crate::fsops::{self, Root};
 use crate::identity::{AgentId, RootScope, SkillName, UNIVERSAL_ROOT_RELATIVE};
 use crate::journal::{FsJournal, PlanWriter};
+use crate::ops::Operation;
 use crate::ops_install_cli::{install_via_cli, validate_cli_project_path};
 use crate::ports::{
     self, ExclusiveGuard, FileKind, MutationSession, OpContext, PlanStatus, Runtime, ScopeFs,
@@ -297,7 +298,16 @@ pub(crate) fn copy_deployment_id(
 /// (`npx ...`) can run at all.
 pub fn install_preferences(
     rt: &Runtime,
-    _ctx: &OpContext,
+    ctx: &OpContext,
+    scope: &RootScope,
+) -> Result<InstallPreferences, CoreError> {
+    rt.run(Operation::InstallPreferences, ctx, || {
+        install_preferences_body(rt, scope)
+    })
+}
+
+fn install_preferences_body(
+    rt: &Runtime,
     scope: &RootScope,
 ) -> Result<InstallPreferences, CoreError> {
     let root = scope_root(rt, scope);
@@ -350,6 +360,14 @@ struct InstallTargets<'a> {
 /// `req.scope`'s root - see the module doc for the write shape each method
 /// takes.
 pub fn install(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &InstallRequest,
+) -> Result<InstallOutcome, CoreError> {
+    rt.run(Operation::Install, ctx, || install_body(rt, ctx, req))
+}
+
+fn install_body(
     rt: &Runtime,
     ctx: &OpContext,
     req: &InstallRequest,

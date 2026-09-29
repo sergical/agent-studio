@@ -225,8 +225,9 @@ function InvocationCostCard({
           {inv.both > 0 && (
             <TooltipControl content="Open in Skills">
               <Button
+                variant="secondary"
                 size="sm"
-                className="gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
+                className="gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary hover:bg-accent-soft-hover active:bg-accent-soft-hover aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
                 style={{ flex: `${inv.both} 0 auto` }}
                 onClick={() => goToInvocation("both")}
               >
@@ -239,7 +240,7 @@ function InvocationCostCard({
               <Button
                 variant="secondary"
                 size="sm"
-                className="gap-1 overflow-hidden rounded-xs bg-accent-softer px-2.5 text-small whitespace-nowrap text-text-secondary hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
+                className="gap-1 overflow-hidden rounded-xs bg-accent-softer px-2.5 text-small whitespace-nowrap text-text-secondary hover:bg-accent-softer-hover active:bg-accent-softer-hover aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
                 style={{ flex: `${inv.modelOnly} 0 auto` }}
                 onClick={() => goToInvocation("model-only")}
               >
@@ -252,7 +253,7 @@ function InvocationCostCard({
               <Button
                 variant="secondary"
                 size="sm"
-                className="gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary hover:brightness-115 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
+                className="gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary hover:bg-bg-tertiary-hover active:bg-bg-tertiary-hover aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-pressed:text-text-primary"
                 style={{ flex: `${inv.userOnly} 0 auto` }}
                 onClick={() => goToInvocation("user-only")}
               >
@@ -291,8 +292,9 @@ function InvocationCostCard({
             <>
               <TooltipControl content="Open in Skills">
                 <Button
+                  variant="secondary"
                   size="sm"
-                  className="gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary hover:brightness-115"
+                  className="gap-1 overflow-hidden rounded-xs bg-accent-soft px-2.5 text-small whitespace-nowrap text-text-primary hover:bg-accent-soft-hover active:bg-accent-soft-hover"
                   style={{ flex: `${cost.usedTokens} 0 auto` }}
                   onClick={() => goToSkills({ usage: "used-30d" })}
                 >
@@ -304,7 +306,7 @@ function InvocationCostCard({
                 <Button
                   variant="secondary"
                   size="sm"
-                  className="gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary hover:brightness-115 aria-pressed:text-text-primary aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
+                  className="gap-1 overflow-hidden rounded-xs bg-bg-tertiary px-2.5 text-small whitespace-nowrap text-text-secondary hover:bg-bg-tertiary-hover active:bg-bg-tertiary-hover aria-pressed:text-text-primary aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent)]"
                   style={{ flex: `${cost.idleTokens} 0 auto` }}
                   aria-pressed={filter === "unused"}
                   onClick={() => toggleFilter("unused")}

@@ -25,6 +25,8 @@ import type {
   UpdateAllOutcome,
 } from "@skill-studio/lib";
 import { lifecycleTargetForPark, skillUpdateOwnerTargets } from "../../lib/skill-lifecycle-target";
+import { issueRowState, rowState, updateRowState } from "../SkillList/skill-row-state";
+import type { RowState } from "../SkillList/skill-row-state";
 
 /** How many of "Recently used" to show. */
 export const RECENTLY_USED_COUNT = 5;
@@ -50,6 +52,27 @@ export function issueKey(groupId: GroupId, issue: HealthIssue): string {
 }
 export function skillKey(groupId: GroupId, skill: InstalledSkill): string {
   return `${groupId}:${skill.name}`;
+}
+
+/** The state a row shows, by which group it sits in - so a Broken/Warnings row always matches the
+ * group's own severity instead of `rowState`'s ladder over the skill's other conditions (an
+ * unrelated update, or nothing at all for a warning kind the ladder doesn't know about). `issue`
+ * is required for "broken"/"warn" (every row in those groups has one) and ignored elsewhere. */
+export function homeRowState(
+  group: GroupId,
+  skill: InstalledSkill,
+  issue: HealthIssue | null,
+): RowState | null {
+  switch (group) {
+    case "broken":
+    case "warn":
+      return issue ? issueRowState(issue) : null;
+    case "upd":
+      return updateRowState(skill);
+    case "unused":
+    case "rec":
+      return rowState(skill);
+  }
 }
 
 /** The row-level action label for one health issue kind - see NeedsAttentionCard's former mapping. */

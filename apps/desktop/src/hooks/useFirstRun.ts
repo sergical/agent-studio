@@ -57,9 +57,44 @@ interface FirstRunScreenState {
   toggleRow: (id: string, checked: boolean) => void;
   searchProjectFolders: boolean;
   setSearchProjectFolders: (value: boolean) => void;
+  telemetryEnabled: boolean;
+  setTelemetryEnabled: (value: boolean) => void;
+  /** Why harness detection failed; the screen still lets the user continue. */
   error: string | null;
+  /** Why the last save failed, kept apart from `error` so a save cannot hide or replace the detection reason. */
+  saveError: string | null;
   saving: boolean;
   continue: () => void;
+}
+
+/** The welcome screen's telemetry switch starts on; the registry itself
+ * defaults to off (`skill_fork_registry.rs`) so a build that never shows
+ * this screen never opts a user in. `save_harnesses_choice` writes
+ * whatever the user leaves the switch at when they continue. */
+export const FIRST_RUN_TELEMETRY_DEFAULT = true;
+
+export interface FirstRunSave {
+  choice: HarnessesChoice;
+  telemetryEnabled: boolean;
+}
+
+/** Builds `saveHarnessesChoice`'s arguments from the screen's state, kept
+ * apart from `continueToApp` so a test can check the save without a
+ * `tauri::AppHandle`-backed `saveHarnessesChoice` call. */
+export function buildFirstRunSave(
+  kept: Set<string>,
+  searchProjectFolders: boolean,
+  telemetryEnabled: boolean,
+  savedAt: string,
+): FirstRunSave {
+  return {
+    choice: {
+      kept: Array.from(kept),
+      search_project_folders: searchProjectFolders,
+      saved_at: savedAt,
+    },
+    telemetryEnabled,
+  };
 }
 
 /** Continue waits only for detection still in flight or a save in
@@ -76,6 +111,21 @@ export function continueIsBlocked(state: {
   return detecting || state.saving;
 }
 
+/** Saves the welcome-screen choice and then opens the app. A save that fails keeps the
+ *  welcome screen: `onSaved` is not called and `onSaveFailed` gets the reason text. */
+export async function saveChoiceThenOpenApp(
+  save: () => Promise<void>,
+  effects: { onSaved: () => void; onSaveFailed: (reason: string) => void },
+): Promise<void> {
+  try {
+    await save();
+  } catch (cause) {
+    effects.onSaveFailed(invokeErrorMessage(cause));
+    return;
+  }
+  effects.onSaved();
+}
+
 /** Detects harnesses once on mount, tracks which rows the user keeps
  * (defaulting every non-"not_found" row to kept once detection resolves),
  * and exposes `continue` to persist the choice through
@@ -84,7 +134,9 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
   const [rows, setRows] = useState<HarnessDetection[] | null>(null);
   const [kept, setKept] = useState<Set<string>>(new Set());
   const [searchProjectFolders, setSearchProjectFolders] = useState(true);
+  const [telemetryEnabled, setTelemetryEnabled] = useState(FIRST_RUN_TELEMETRY_DEFAULT);
   const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -115,19 +167,21 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
   }
 
   function continueToApp() {
+    setSaveError(null);
     setSaving(true);
-    const choice: HarnessesChoice = {
-      kept: Array.from(kept),
-      search_project_folders: searchProjectFolders,
-      saved_at: new Date().toISOString(),
-    };
-    saveHarnessesChoice(choice)
-      .then(onSaved)
-      .catch((cause: unknown) => {
-        // eslint-disable-next-line no-console
-        console.error(invokeErrorMessage(cause));
-        onSaved();
-      });
+    const { choice, telemetryEnabled: savedTelemetryEnabled } = buildFirstRunSave(
+      kept,
+      searchProjectFolders,
+      telemetryEnabled,
+      new Date().toISOString(),
+    );
+    void saveChoiceThenOpenApp(() => saveHarnessesChoice(choice, savedTelemetryEnabled), {
+      onSaved,
+      onSaveFailed: (reason) => {
+        setSaveError(`Couldn't save your choice. ${reason}`);
+        setSaving(false);
+      },
+    });
   }
 
   return {
@@ -136,7 +190,10 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
     toggleRow,
     searchProjectFolders,
     setSearchProjectFolders,
+    telemetryEnabled,
+    setTelemetryEnabled,
     error,
+    saveError,
     saving,
     continue: continueToApp,
   };

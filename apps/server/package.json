@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
+    "@sentry/cloudflare": "^10.75.3",
     "hono": "^4.13.5"
   },
   "devDependencies": {

@@ -21,6 +21,12 @@ pub struct StepTiming {
     pub name: String,
     /// Elapsed milliseconds.
     pub elapsed_ms: u64,
+    /// Name of the step this one is a cumulative sub-time of, when it is
+    /// one (e.g. `dir_walk` is time already counted inside `roots_walk`).
+    /// `#[serde(default, ...)]` so `timing.jsonl` written before this field
+    /// existed still deserializes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 /// Elapsed time for one whole op call, plus the named steps inside it.
@@ -38,11 +44,15 @@ pub struct OpTiming {
 }
 
 /// Measures one named section: `since` is an earlier `clock.monotonic()`
-/// reading taken where the section started.
-pub fn step(clock: &dyn Clock, name: &str, since: Duration) -> StepTiming {
+/// reading taken where the section started. `name` takes only `&'static
+/// str`, not `&str`, so every call site is a literal a reader can grep for -
+/// the same guarantee `StepTiming.name` (kept as `String` for `timing.jsonl`)
+/// cannot make by itself.
+pub fn step(clock: &dyn Clock, name: &'static str, since: Duration) -> StepTiming {
     StepTiming {
         name: name.to_string(),
         elapsed_ms: clock.monotonic().saturating_sub(since).as_millis() as u64,
+        parent: None,
     }
 }
 

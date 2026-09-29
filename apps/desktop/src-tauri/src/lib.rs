@@ -277,14 +277,33 @@ fn apply_fixture_home_override() {
 #[allow(clippy::expect_used)]
 pub fn run() {
     apply_fixture_home_override();
-    // Before Tauri's own setup, so a panic during setup itself is still
-    // caught once `set_global_state` below registers the state to report
-    // through.
-    skills::error_reporting::install_panic_hook();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // Reads `~/.agents/skill-studio.json`, not `app_data_dir` -
+            // independent of the data-folder migration below - so this runs
+            // first: a panic anywhere else in setup, including that
+            // migration and `skill_refresh::init`, is still caught by the
+            // hook `telemetry::init` installs.
+            let registry_telemetry_enabled = dirs::home_dir()
+                .and_then(|home| skills::skill_fork_registry::read_fork_registry(&home).ok())
+                .is_some_and(|registry| registry.telemetry_enabled);
+            let telemetry_enabled = skill_studio_host::telemetry::resolve_consent(
+                std::env::var("SKILL_STUDIO_TELEMETRY").ok(),
+                registry_telemetry_enabled,
+            );
+            let consent = skill_studio_host::telemetry::Consent::new(telemetry_enabled);
+            let telemetry_guard = skill_studio_host::telemetry::init(
+                skill_studio_host::telemetry::Surface::Desktop,
+                env!("CARGO_PKG_VERSION"),
+                consent.clone(),
+            );
+            app.manage(skills::telemetry_commands::TelemetryState {
+                consent,
+                guard: std::sync::Mutex::new(telemetry_guard),
+            });
+
             // Unit 6.3: check the data folder's schema_version before
             // anything else in setup - every branch below either spawns a
             // background thread or manages state a Tauri command can read,
@@ -316,14 +335,6 @@ pub fn run() {
             }
             app.manage(skills::skill_agent_runner::SkillAgentRunnerState::default());
             app.manage(skills::skill_run_target::SkillRunTargetState::default());
-            let error_reporting_enabled = dirs::home_dir()
-                .and_then(|home| skills::skill_fork_registry::read_fork_registry(&home).ok())
-                .is_some_and(|registry| registry.error_reporting_enabled);
-            let reporting_state = std::sync::Arc::new(
-                skills::error_reporting::ReportingState::new(error_reporting_enabled),
-            );
-            skills::error_reporting::set_global_state(reporting_state.clone());
-            app.manage(reporting_state);
             skills::skill_update_check::spawn_update_check_loop(app.handle().clone());
             // Unit 6.2: in-app update through tauri-plugin-updater. The
             // engine is managed state so the launch check below, the
@@ -393,9 +404,9 @@ pub fn run() {
             skills::commands::open_skill_path,
             skills::commands::get_editor_choices,
             skills::commands::set_preferred_editor,
-            skills::commands::command_health,
-            skills::error_reporting::get_error_reporting_enabled,
-            skills::error_reporting::set_error_reporting_enabled,
+            skills::telemetry_commands::get_telemetry_enabled,
+            skills::telemetry_commands::set_telemetry_enabled,
+            skills::telemetry_commands::report_frontend_error,
             // Fork / Pull upstream / Un-fork
             skills::skill_fork::fork_skill,
             skills::skill_fork::pull_fork_upstream,
@@ -435,8 +446,6 @@ pub fn run() {
             skills::skill_refresh::get_discovery_sources,
             skills::skill_refresh::set_discovery_source,
             skills::skill_project_folders::list_project_folders,
-            // Doctor pass over every lifecycle invariant (unit 5.3)
-            skills::skill_doctor::doctor,
             // First-run harness detection (unit 3.2)
             skills::harness_first_run::detect_harnesses,
             skills::harness_first_run::get_harnesses_choice,
@@ -445,6 +454,26 @@ pub fn run() {
             // skill_run_target, skill_run_history, skill_pack, and skill_process still
             // compile and test, but none of their commands are registered here.
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(move |app, event| {
+            if let tauri::RunEvent::Exit = event {
+                let Some(state) = app.try_state::<skills::telemetry_commands::TelemetryState>()
+                else {
+                    return;
+                };
+                let taken_guard = state
+                    .guard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(guard) = taken_guard {
+                    let flushed = skill_studio_host::telemetry::shutdown(guard);
+                    #[cfg(debug_assertions)]
+                    eprintln!("[telemetry] shutdown flush complete: {flushed}");
+                    #[cfg(not(debug_assertions))]
+                    let _ = flushed;
+                }
+            }
+        });
 }

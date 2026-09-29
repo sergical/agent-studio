@@ -11,7 +11,6 @@ pub mod commands;
 pub mod core_content_hash;
 pub mod core_runtime;
 pub mod data_folder_status;
-pub mod error_reporting;
 pub mod event_commands;
 pub mod event_store;
 pub mod frontmatter;
@@ -49,6 +48,7 @@ pub mod skill_run_target;
 pub mod skill_trust_policy;
 pub mod skill_update;
 pub mod skill_update_check;
+pub mod telemetry_commands;
 #[cfg(any(test, feature = "testing"))]
 pub mod test_support;
 pub mod write_lease;
