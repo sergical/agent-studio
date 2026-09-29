@@ -317,11 +317,16 @@ fn remove_links_the_cli_added(
             fs.remove_file(guard, &scoped)
                 .map_err(|e| CoreError::io(&entry, e))?;
         } else {
-            eprintln!(
+            // The core has no warning channel on `UpdateOutcome`; stderr is
+            // the only place a CLI or desktop log picks this up.
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!(
                 "warning: skills update added {} in a harness that did not have {}; it is a real folder, so it stays",
                 entry.display(),
                 skill.0
             );
+            }
         }
     }
     Ok(())
@@ -451,6 +456,7 @@ fn write_copy_registry(
 /// `Failed`, matching `ops_install`'s F9. `copy_registry` is `Some` only for
 /// `Copy` - `update` reads it before the first write (U4) and hands it here
 /// to be written back once the swap has landed.
+#[allow(clippy::too_many_arguments)]
 fn update_write(
     rt: &Runtime,
     ctx: &OpContext,
