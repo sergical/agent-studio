@@ -48,7 +48,7 @@ fn splittable_home(home: &Path) {
     }
 }
 
-fn runtime_with_scope(home: &Path, scope: RuntimeScope) -> Runtime {
+fn runtime_with_scope(home: &Path, scope: &RuntimeScope) -> Runtime {
     let ports = Ports {
         fs: Arc::new(RealFs::new()),
         clock: Arc::new(FakeClock::at(0)),
@@ -64,11 +64,11 @@ fn runtime_with_scope(home: &Path, scope: RuntimeScope) -> Runtime {
         catalog: Arc::new(HarnessCatalog::builtin()),
         telemetry: Arc::new(skill_studio_core::ports::NoopTelemetry),
     };
-    Runtime::new(&scope, ports).unwrap()
+    Runtime::new(scope, ports).unwrap()
 }
 
 fn runtime_for(home: &Path) -> Runtime {
-    runtime_with_scope(home, RuntimeScope::fixture(home))
+    runtime_with_scope(home, &RuntimeScope::fixture(home))
 }
 
 fn universal_deployment_id(rt: &Runtime) -> DeploymentId {
@@ -321,7 +321,7 @@ fn split_opencode_copy_follows_the_configured_opencode_root() {
     std::fs::create_dir_all(&custom_root).unwrap();
     let mut scope = RuntimeScope::fixture(&home);
     scope.opencode_config_root = Some(custom_root.clone());
-    let rt = runtime_with_scope(&home, scope);
+    let rt = runtime_with_scope(&home, &scope);
     let deployment_id = universal_deployment_id(&rt);
 
     let outcome = ops::split(

@@ -35,15 +35,17 @@ import {
 /** Mirrors the core's `split_target_root` with default `CODEX_HOME` and OpenCode config root. */
 function splitCopyPath(harness: string, skillName: string, projectPath: string | null): string {
   const global = projectPath === null;
-  const root: Record<string, string> = {
-    "claude-code": ".claude/skills",
-    codex: ".codex/skills",
-    "open-code": global ? ".config/opencode/skills" : ".opencode/skills",
-    pi: global ? ".pi/agent/skills" : ".pi/skills",
-    "grok-build": ".grok/skills",
-    cursor: ".cursor/skills",
-  };
-  return `${projectPath ?? HARNESS_HOME}/${root[harness] ?? `.${harness}/skills`}/${skillName}`;
+  const root =
+    harness === "open-code"
+      ? global
+        ? ".config/opencode/skills"
+        : ".opencode/skills"
+      : harness === "pi"
+        ? global
+          ? ".pi/agent/skills"
+          : ".pi/skills"
+        : `.${harness.replace(/-code$|-build$/, "")}/skills`;
+  return `${projectPath ?? HARNESS_HOME}/${root}/${skillName}`;
 }
 
 /** What the harness exposes on `window.__harness` for an agent driving the app. */

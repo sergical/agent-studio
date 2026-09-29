@@ -5,7 +5,7 @@
 // and its links go away; Activity holds the undo.
 // ============================================================================
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Button,
   Checkbox,
@@ -17,8 +17,8 @@ import {
   DialogTitle,
 } from "@skill-studio/ui";
 import { deploymentLabelFromAgentId, homeRelativePath } from "@skill-studio/lib";
-import type { AgentId, LifecycleTarget, SplitCopy } from "@skill-studio/lib";
-import { requestSkillRescan, splitSkill, splitSkillTargets } from "../../lib/skill-api";
+import type { AgentId, LifecycleTarget } from "@skill-studio/lib";
+import { useSkillSplit } from "../../hooks/useSkillSplit";
 import { useAppStore } from "../../store/appStore";
 import { SPLIT_HARNESSES, SPLIT_UPDATE_NOTE, splitFolderRows } from "./skill-split-model";
 
@@ -42,27 +42,8 @@ export function SplitSkillDialog({
 }: SplitSkillDialogProps) {
   const addToast = useAppStore((state) => state.addToast);
   const [checked, setChecked] = useState<ReadonlySet<AgentId>>(() => new Set(readers));
-  const [targets, setTargets] = useState<SplitCopy[] | null>(null);
   const [isSplitting, setIsSplitting] = useState(false);
-
-  useEffect(() => {
-    let ignore = false;
-    splitSkillTargets(skillName, projectPath, SPLIT_HARNESSES)
-      .then((copies) => {
-        if (!ignore) setTargets(copies);
-      })
-      .catch((err) => {
-        if (ignore) return;
-        addToast({
-          type: "error",
-          title: "Couldn't find the harness folders",
-          message: err instanceof Error ? err.message : String(err),
-        });
-      });
-    return () => {
-      ignore = true;
-    };
-  }, [skillName, projectPath, addToast]);
+  const { targets, split } = useSkillSplit(skillName, projectPath, SPLIT_HARNESSES);
 
   const folders = targets ? splitFolderRows(targets, checked) : [];
 
@@ -77,11 +58,10 @@ export function SplitSkillDialog({
 
   const handleSplit = () => {
     setIsSplitting(true);
-    splitSkill(
+    split(
       target,
       SPLIT_HARNESSES.filter((harness) => checked.has(harness)),
     )
-      .then(() => requestSkillRescan())
       .then(onClose)
       .catch((err) => {
         addToast({

@@ -72,11 +72,10 @@ pub async fn split_skill_targets(
         harnesses
             .into_iter()
             .map(|harness| {
-                let root =
-                    skill_studio_core::ops_split::split_target_root(&rt, &scope, &harness)
-                        .ok_or_else(|| {
-                            format!("Split cannot write a copy for {}", harness.as_str())
-                        })?;
+                let root = skill_studio_core::ops_split::split_target_root(&rt, &scope, &harness)
+                    .ok_or_else(|| {
+                    format!("Split cannot write a copy for {}", harness.as_str())
+                })?;
                 Ok(SplitCopy {
                     harness,
                     path: root.join(&skill_name),
