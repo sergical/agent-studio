@@ -193,6 +193,16 @@ impl InstallPlan {
         })
     }
 
+    /// The harnesses this install serves, in request order, without the
+    /// skipped ones.
+    pub fn served_harnesses(&self) -> Vec<AgentId> {
+        self.steps
+            .iter()
+            .filter(|s| !matches!(s.action, StepAction::Skip { .. }))
+            .map(|s| s.harness.clone())
+            .collect()
+    }
+
     /// Every path this install creates, shared copy first.
     pub fn written_paths(&self) -> Vec<PathBuf> {
         let mut out: Vec<PathBuf> = self.shared.iter().cloned().collect();

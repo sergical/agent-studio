@@ -552,7 +552,12 @@ fn split_refuses_a_skill_with_a_nested_link_before_its_backup() {
 
     let backups = home.join(".history/backups");
     let left = std::fs::read_dir(&backups).map_or(0, Iterator::count);
-    assert_eq!(left, 0, "a refused split left a backup in {}", backups.display());
+    assert_eq!(
+        left,
+        0,
+        "a refused split left a backup in {}",
+        backups.display()
+    );
     assert_eq!(split_event_count(&rt), 0);
     assert!(
         err.message.contains(&nested.display().to_string()),

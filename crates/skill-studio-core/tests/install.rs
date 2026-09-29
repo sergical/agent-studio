@@ -728,6 +728,48 @@ fn skills_sh_project_install_runs_npx_in_the_project_dir_not_via_a_cwd_flag_or_n
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// `skills_sh_project_install_leaves_a_skipped_pi_out_of_the_cli_agents_or_names_the_agent_it_passed`:
+/// in a project with no `.pi` folder, the plan skips pi, so the `npx skills`
+/// argv names Claude Code and not pi. Fails when `--agent pi` reaches the
+/// CLI, which would then make the `.pi` folder the plan refused to make.
+#[test]
+fn skills_sh_project_install_leaves_a_skipped_pi_out_of_the_cli_agents_or_names_the_agent_it_passed(
+) {
+    let home = unique_temp_dir("install_skills_sh_skipped_pi");
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner.clone()));
+    let mut req = cli_request("pi-skip", InstallMethod::SkillsSh);
+    req.harnesses = vec![
+        AgentId::from(AgentId::CLAUDE_CODE),
+        AgentId::from(AgentId::PI),
+    ];
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+
+    let (_, results) = harness_results(ops::install(&rt, &ctx(), &req).unwrap());
+
+    let recorded = spawner.recorded.lock().unwrap();
+    let agents: Vec<&str> = recorded[0]
+        .0
+        .windows(2)
+        .filter(|w| w[0] == "--agent")
+        .map(|w| w[1].as_str())
+        .collect();
+    assert_eq!(
+        agents,
+        vec!["claude-code"],
+        "the CLI argv: {:?}",
+        recorded[0].0
+    );
+    assert!(
+        matches!(&results[1], InstallHarnessResult::Skipped { harness, .. } if harness.as_str() == AgentId::PI),
+        "pi must be reported as skipped: {results:?}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `skills_sh_global_install_keeps_the_global_flag_and_no_process_cwd_or_names_the_over_eager_fix`:
 /// a global-scope skills.sh install must still pass `--global` and run with
 /// no process cwd override - guards against the project-scope `--cwd` fix

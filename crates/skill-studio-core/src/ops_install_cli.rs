@@ -130,10 +130,13 @@ pub(crate) fn validate_cli_project_path(
 /// [`cli_args_and_cwd`]) through the process-spawner port and checks the
 /// destination now exists. The CLI writes its own files directly - see
 /// `ops_install`'s module doc for why this op does not stage-and-swap them.
+/// `harnesses` is the plan's served set, not `req.harnesses`: a harness the
+/// plan skipped must not reach the CLI, or the CLI would make its folder.
 pub(crate) fn install_via_cli(
     rt: &Runtime,
     ctx: &OpContext,
     req: &InstallRequest,
+    harnesses: &[AgentId],
     destination: &Path,
 ) -> Result<(), CoreError> {
     let Some(source) = req.source.as_deref() else {
@@ -159,7 +162,7 @@ pub(crate) fn install_via_cli(
         source,
         &req.skill,
         &req.scope,
-        &req.harnesses,
+        harnesses,
         req.link_mode,
     );
     // For a project-scope install, `home_fallback` is where a `--cwd`-less

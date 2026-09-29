@@ -598,7 +598,7 @@ fn install_and_link(
     }
 
     if !native {
-        install_via_cli(rt, ctx, req, targets.destination)?;
+        install_via_cli(rt, ctx, req, &plan.served_harnesses(), targets.destination)?;
     } else if plan.shared.is_some() {
         install_copy(
             rt,
