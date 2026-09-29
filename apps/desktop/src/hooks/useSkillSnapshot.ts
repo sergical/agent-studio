@@ -68,9 +68,15 @@ interface UseSkillSnapshotResult {
   emittedSnapshotRevision: number | undefined;
   isLoading: boolean;
   error: string | null;
-  /** Ask the background refresh thread to rebuild; resolves once the request lands, not once the new snapshot arrives. */
+  /** Loads the list again. After a failed first load it runs the subscription again; once
+   *  subscribed it asks the background refresh thread to rebuild and resolves when that request
+   *  lands, not when the new snapshot arrives. */
   requestRescan: () => Promise<void>;
 }
+
+/** Where the `skills://snapshot` subscription stands. A failed one has disposed its listener,
+ *  so a backend rebuild would go unheard until the subscription is started again. */
+type SnapshotSubscriptionState = "starting" | "live" | "failed";
 
 /**
  * Reads the current skill snapshot on mount and stays subscribed to
@@ -84,6 +90,8 @@ export function useSkillSnapshot(): UseSkillSnapshotResult {
   );
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const subscriptionRef = useRef<SnapshotSubscriptionState>("starting");
+  const restartSubscriptionRef = useRef<(() => void) | undefined>(undefined);
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -99,29 +107,46 @@ export function useSkillSnapshot(): UseSkillSnapshotResult {
       }
     };
 
-    void startSkillSnapshotSubscription({
-      isCancelled: () => cancelled,
-      listen: onSkillSnapshot,
-      read: getSkillSnapshot,
-      onSnapshot: applySnapshot,
-      onError: setError,
-      onSettled: () => setIsLoading(false),
-    }).then((registeredUnlisten) => {
-      if (cancelled) {
-        registeredUnlisten?.();
-      } else {
+    const subscribe = () => {
+      subscriptionRef.current = "starting";
+      void startSkillSnapshotSubscription({
+        isCancelled: () => cancelled,
+        listen: onSkillSnapshot,
+        read: getSkillSnapshot,
+        onSnapshot: applySnapshot,
+        onError: setError,
+        onSettled: () => setIsLoading(false),
+      }).then((registeredUnlisten) => {
+        if (cancelled) {
+          registeredUnlisten?.();
+          return;
+        }
         unlisten = registeredUnlisten;
-      }
-    });
+        subscriptionRef.current = registeredUnlisten ? "live" : "failed";
+      });
+    };
+
+    subscribe();
+    restartSubscriptionRef.current = subscribe;
 
     return () => {
       cancelled = true;
       isMountedRef.current = false;
+      restartSubscriptionRef.current = undefined;
       unlisten?.();
     };
   }, []);
 
-  const requestRescan = async () => {
+  // The React Compiler keeps this function stable across renders, so the load-error
+  // toast effect in App, keyed on it, runs once per failure. A retry starts clean:
+  // a stale reason would otherwise hide a repeat of the same failure.
+  async function requestRescan(): Promise<void> {
+    setError(null);
+    if (subscriptionRef.current === "failed") {
+      setIsLoading(true);
+      restartSubscriptionRef.current?.();
+      return;
+    }
     try {
       await requestSkillRescan();
     } catch (err) {
@@ -130,7 +155,7 @@ export function useSkillSnapshot(): UseSkillSnapshotResult {
       }
       throw err;
     }
-  };
+  }
 
   return { snapshot, emittedSnapshotRevision, isLoading, error, requestRescan };
 }

@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildFirstRunSave,
   continueIsBlocked,
   FIRST_RUN_TELEMETRY_DEFAULT,
+  saveChoiceThenOpenApp,
   showScreenForChoiceRead,
 } from "./useFirstRun";
 
@@ -40,6 +41,28 @@ describe("continueIsBlocked", () => {
 describe("FIRST_RUN_TELEMETRY_DEFAULT", () => {
   it("the welcome screen starts the telemetry switch on or the registry's off default silently opts users out", () => {
     expect(FIRST_RUN_TELEMETRY_DEFAULT).toBe(true);
+  });
+});
+
+describe("saveChoiceThenOpenApp", () => {
+  it("a failed welcome save keeps the screen and names the reason instead of opening the app", async () => {
+    const onSaved = vi.fn();
+    const onSaveFailed = vi.fn();
+    await saveChoiceThenOpenApp(() => Promise.reject(new Error("registry is read-only")), {
+      onSaved,
+      onSaveFailed,
+    });
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onSaveFailed).toHaveBeenCalledOnce();
+    expect(onSaveFailed.mock.calls[0]?.[0]).toContain("registry is read-only");
+  });
+
+  it("a successful welcome save opens the app exactly once", async () => {
+    const onSaved = vi.fn();
+    const onSaveFailed = vi.fn();
+    await saveChoiceThenOpenApp(() => Promise.resolve(), { onSaved, onSaveFailed });
+    expect(onSaved).toHaveBeenCalledOnce();
+    expect(onSaveFailed).not.toHaveBeenCalled();
   });
 });
 
