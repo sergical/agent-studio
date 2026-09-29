@@ -353,37 +353,79 @@ fn scan_never_descends_into_node_modules_inside_a_plugin_cache_or_names_the_path
     );
 }
 
-/// A cached plugin's enabled state is keyed `<plugin>@<marketplace>` with
-/// no version in the key (`docs/research/harness-primitives.md`), and an
-/// orphaned version is pruned about 14 days after it stops being used
-/// (`docs/action-map/harnesses/plugins.md`). Two version folders on disk
-/// are therefore one live plugin, so one skill row with one deployment -
-/// not the same skill counted once per stale copy.
-#[test]
-#[ignore = "follow-up #273 section 1: enumerate_plugin_skills reports every cached version \
-            folder, and no doc names which one is live (plugins.md leaves the Codex cache \
-            layout open and gives Claude only the ~14-day orphan prune), so the dedupe \
-            needs a liveness source rather than a version-string compare"]
-fn scan_picks_one_version_per_cached_plugin_or_names_the_duplicate() {
-    let inventory = scan_shape(shapes::with_plugin_cache_nesting(FixtureBuilder::new()));
-
+/// The Claude Code plugin rows `inventory` reports for
+/// [`shapes::PLUGIN_SKILL_NAME`], as deployment paths.
+fn claude_cached_plugin_paths(inventory: &Inventory) -> Vec<String> {
     let claude_cache = format!("{HOME}/.claude/plugins/cache/vendor-1/plugin-1");
-    let from_claude_cache: Vec<String> = inventory
-        .skills
-        .iter()
-        .filter(|skill| skill.name.0 == shapes::PLUGIN_SKILL_NAME)
-        .flat_map(|skill| &skill.deployments)
-        .map(|deployment| deployment.path.display().to_string())
+    deployment_paths(inventory)
+        .into_iter()
         .filter(|path| path.starts_with(&claude_cache))
-        .collect();
-    assert_eq!(
-        from_claude_cache.len(),
-        1,
-        "versions {:?} of plugin-1 are cached side by side but only one is live, so \
-         `{}` must be reported once: {from_claude_cache:?}",
-        shapes::PLUGIN_VERSIONS,
-        shapes::PLUGIN_SKILL_NAME
-    );
+        .filter(|path| path.ends_with(shapes::PLUGIN_SKILL_NAME))
+        .collect()
+}
+
+/// Claude Code keeps an updated plugin's old version folder in the cache
+/// until its ~14-day orphan prune (`docs/action-map/harnesses/plugins.md`),
+/// and its enabled state is keyed `<plugin>@<marketplace>` with no version
+/// (`docs/research/harness-primitives.md`). `installed_plugins.json`
+/// (version 2) names the `installPath` Claude Code loads, so one skill row
+/// comes from that folder only - whichever version string it carries, so
+/// the lower version is also tried as the live one.
+#[test]
+fn scan_picks_one_version_per_cached_plugin_or_names_the_duplicate() {
+    for live in shapes::PLUGIN_VERSIONS {
+        let inventory = scan_shape(shapes::with_claude_installed_plugin(
+            shapes::with_plugin_cache_nesting(FixtureBuilder::new()),
+            HOME,
+            live,
+        ));
+
+        let from_claude_cache = claude_cached_plugin_paths(&inventory);
+        assert_eq!(
+            from_claude_cache.len(),
+            1,
+            "versions {:?} of plugin-1 are cached side by side but installed_plugins.json \
+             names only {live}, so `{}` must be reported once: {from_claude_cache:?}",
+            shapes::PLUGIN_VERSIONS,
+            shapes::PLUGIN_SKILL_NAME
+        );
+        assert!(
+            from_claude_cache[0].contains(&format!("/plugin-1/{live}/")),
+            "the row must come from the installPath folder {live}, got {from_claude_cache:?}"
+        );
+    }
+}
+
+/// Without a usable `installed_plugins.json`, or when its `installPath` is
+/// not a cached folder, nothing says which version folder is live. Every
+/// cached version then stays, so the plugin is never hidden.
+#[test]
+fn scan_without_a_matching_installed_plugins_record_keeps_every_cached_version_or_names_the_hidden_plugin(
+) {
+    let cases = [
+        ("no installed_plugins.json", FixtureBuilder::new()),
+        (
+            "installPath names a version that is not cached",
+            shapes::with_claude_installed_plugin(FixtureBuilder::new(), HOME, "9.9.9"),
+        ),
+        (
+            "installed_plugins.json is version 1",
+            FixtureBuilder::new().file(
+                ".claude/plugins/installed_plugins.json",
+                br#"{"version":1,"plugins":{}}"#,
+            ),
+        ),
+    ];
+    for (case, builder) in cases {
+        let inventory = scan_shape(shapes::with_plugin_cache_nesting(builder));
+        let from_claude_cache = claude_cached_plugin_paths(&inventory);
+        assert_eq!(
+            from_claude_cache.len(),
+            shapes::PLUGIN_VERSIONS.len(),
+            "{case}: no record names a cached folder, so every cached version must stay \
+             listed: {from_claude_cache:?}"
+        );
+    }
 }
 
 /// The lock file belongs to `npx skills`, which writes keys this reader
