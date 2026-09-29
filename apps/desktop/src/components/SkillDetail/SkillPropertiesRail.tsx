@@ -43,6 +43,7 @@ import {
 } from "./skill-location-status";
 import type { AgentLocationRow } from "./skill-location-status";
 import type { SkillPageAction } from "./skill-page-actions";
+import { railHarnessEntries, readerToggleAction } from "./skill-properties-rail-model";
 
 interface SkillPropertiesRailProps {
   skill: InstalledSkill;
@@ -101,15 +102,9 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
   const hasDrift = scopeGroupsHaveDrift(groups);
 
   const reach = whereFacts(skill, DEFAULT_HARNESS_LIST);
-  const reachedHarnesses = reach.harnesses.filter((h) => h.reached);
-  const harnessCount = reachedHarnesses.length + (reach.universal.present ? 1 : 0);
-  const allRows: AgentLocationRow[] = groups.flatMap((group) =>
-    group.rows.filter((row): row is AgentLocationRow => row.kind !== "shared"),
-  );
-  const rowForHarness = (harness: AgentId): AgentLocationRow | null =>
-    allRows.find((row) => row.harness === harness && row.hasSwitch) ??
-    allRows.find((row) => row.harness === harness) ??
-    null;
+  const harnessCount =
+    reach.harnesses.filter((h) => h.reached).length + (reach.universal.present ? 1 : 0);
+  const harnessEntries = railHarnessEntries(skill, groups);
 
   const announceError = (title: string, message: string) => {
     setAnnouncement({ kind: "alert", text: message });
@@ -131,8 +126,9 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
     }
     setPendingHarness(harness);
     try {
-      if (row.kind === "reader") {
-        await setHarnessEnabled(row.lifecycleTarget, harness, enabled);
+      const readerAction = readerToggleAction(row, enabled);
+      if (readerAction) {
+        await setHarnessEnabled(readerAction.target, readerAction.agent, readerAction.enabled);
       } else if (row.deployment) {
         if (row.deployment.disabled_by === "studio-moved") {
           await restoreMovedDeployment({ deployment_id: row.deployment.id });
@@ -205,21 +201,21 @@ export function SkillPropertiesRail({ skill, updateAction }: SkillPropertiesRail
               <span className="tabular-nums text-text-tertiary">{harnessCount}</span>
             </PopoverTrigger>
             <PopoverContent align="start" aria-label="Harnesses" className="w-64 gap-1.5">
-              {reachedHarnesses.length === 0 ? (
+              {harnessEntries.length === 0 ? (
                 <p className="m-0 text-small text-text-tertiary">
                   {reach.universal.present
                     ? "Only in the shared Universal folder."
                     : "No harness reaches this skill."}
                 </p>
               ) : (
-                reachedHarnesses.map((h) => {
-                  const row = rowForHarness(h.harness);
+                harnessEntries.map((h) => {
+                  const row = h.row;
                   const offerSwitch = row != null && canOfferHarnessSwitchForRow(row);
                   return (
                     <div key={h.harness} className="flex h-7 items-center justify-between gap-2">
                       <span className="truncate text-small text-text-secondary">{h.label}</span>
                       <SwitchControl
-                        checked={row?.switchOn ?? true}
+                        checked={row?.switchOn ?? false}
                         disabled={!offerSwitch || pendingHarness === h.harness}
                         onCheckedChange={(next) => row && toggleHarness(h.harness, row, next)}
                         ariaLabel={`Enabled for ${h.label}`}
