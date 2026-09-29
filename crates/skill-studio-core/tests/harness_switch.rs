@@ -188,11 +188,12 @@ fn claude_deployment(
         .cloned()
 }
 
-/// `each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_names_the_wrong_file`:
+/// `each_of_the_three_harness_switch_tests_passes_against_its_fixture_home_or_names_the_wrong_file`:
 /// one case per harness, each asserting the exact file `enable-and-links.md`
 /// names for that harness.
 #[test]
-fn each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_names_the_wrong_file() {
+fn each_of_the_three_harness_switch_tests_passes_against_its_fixture_home_or_names_the_wrong_file()
+{
     // Claude Code: `skillOverrides.<name>` is set to `"off"` in
     // `~/.claude/settings.json`, then removed again; the per-skill link is
     // left alone both ways.
@@ -293,40 +294,10 @@ fn each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_name
         );
         std::fs::remove_dir_all(&home).ok();
     }
-
-    // pi: this build's stand-in switch, `skill-studio.disabledSkills` in
-    // pi's own settings file.
-    {
-        let home = unique_temp_dir("switch_pi");
-        install_universal_skill(&home, "gamma");
-        let rt = runtime_for(&home);
-        ops::set_harness_enabled(
-            &rt,
-            &ctx(),
-            &SetHarnessEnabledRequest {
-                skill: SkillName("gamma".into()),
-                harness: AgentId::from(AgentId::PI),
-                enabled: false,
-                project_path: None,
-            },
-        )
-        .unwrap();
-        let config_path = home.join(".pi/agent/settings.json");
-        let text = std::fs::read_to_string(&config_path)
-            .unwrap_or_else(|e| panic!("pi disable should write {}: {e}", config_path.display()));
-        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(
-            value["skill-studio"]["disabledSkills"][0],
-            "gamma",
-            "expected skill-studio.disabledSkills to include gamma in {}, got: {text}",
-            config_path.display()
-        );
-        std::fs::remove_dir_all(&home).ok();
-    }
 }
 
 /// `set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_names_the_missing_step`:
-/// a failure on pi's single write still leaves a durable journal row - the
+/// a failure on `OpenCode`'s single write still leaves a durable journal row - the
 /// row was recorded before the write, not after.
 #[test]
 fn set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_names_the_missing_step(
@@ -342,7 +313,7 @@ fn set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_nam
         &ctx(),
         &SetHarnessEnabledRequest {
             skill: SkillName("gamma".into()),
-            harness: AgentId::from(AgentId::PI),
+            harness: AgentId::from(AgentId::OPEN_CODE),
             enabled: false,
             project_path: None,
         },
@@ -365,8 +336,8 @@ fn set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_nam
 }
 
 /// `any_error_after_the_event_is_recorded_marks_it_failed_or_names_the_row_left_pending`:
-/// pi's `ensure_dir_all`, called after the journal row is recorded to create
-/// `~/.pi/agent` on a fresh home but before `write_atomic`, fails. That row
+/// `OpenCode`'s `ensure_dir_all`, called after the journal row is recorded to create
+/// `~/.config/opencode` on a fresh home but before `write_atomic`, fails. That row
 /// must finish `failed`, not stay `pending` - `recover_interrupted` would
 /// later read a `pending` row as a crash mid-write rather than a plain,
 /// retryable failure the caller already saw returned as an error.
@@ -383,7 +354,7 @@ fn any_error_after_the_event_is_recorded_marks_it_failed_or_names_the_row_left_p
         &ctx(),
         &SetHarnessEnabledRequest {
             skill: SkillName("gamma".into()),
-            harness: AgentId::from(AgentId::PI),
+            harness: AgentId::from(AgentId::OPEN_CODE),
             enabled: false,
             project_path: None,
         },

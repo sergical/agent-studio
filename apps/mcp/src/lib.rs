@@ -482,7 +482,7 @@ impl SkillStudioServer {
     }
 
     #[tool(
-        description = "Enable or disable a skill for one harness, by whatever mechanism that harness supports natively."
+        description = "Enable or disable a skill for one harness, by whatever mechanism that harness supports natively (Claude Code, Codex, OpenCode). pi, Cursor, and Grok Build have none and return unsupported; use park to turn a skill off for every harness."
     )]
     async fn set_harness_enabled(
         &self,

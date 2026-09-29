@@ -19,6 +19,7 @@ import {
 } from "@skill-studio/ui";
 import type { DropdownMenuHandle } from "@skill-studio/ui";
 import type { InstalledSkill } from "@skill-studio/lib";
+import { skillParkVerb } from "../../lib/skill-lifecycle-target";
 import { DEFAULT_POPUP_CLASS, MenuControl, MenuItem, MenuSeparator } from "../ui/MenuControl";
 import { fixesFor } from "./skill-row-state";
 import type { RowState } from "./skill-row-state";
@@ -63,6 +64,7 @@ function SkillRowMenuItems({
   onToggleSelect,
 }: Pick<SkillRowMenuPayload, "skill" | "state" | "onOpen" | "onAct" | "onToggleSelect">) {
   const fixes = state ? fixesFor(state) : [];
+  const parkVerb = skillParkVerb(skill);
   return (
     <>
       <div className="px-2 py-1.5 text-small text-text-primary">
@@ -92,9 +94,7 @@ function SkillRowMenuItems({
           <Kbd>X</Kbd>
         </MenuItem>
       )}
-      <MenuItem onClick={() => onAct(skill.parked ? "Unpark" : "Park")}>
-        {skill.parked ? "Unpark" : "Park"}
-      </MenuItem>
+      {parkVerb && <MenuItem onClick={() => onAct(parkVerb)}>{parkVerb}</MenuItem>}
     </>
   );
 }

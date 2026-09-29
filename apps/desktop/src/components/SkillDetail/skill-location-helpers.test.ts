@@ -237,3 +237,44 @@ describe("harness rail switch (canOfferHarnessSwitchForRow + NO_OFF_SWITCH_TITLE
     expect(markup).toContain("disabled=");
   });
 });
+
+describe("per-harness reader switches", () => {
+  it("pi, Cursor and Grok Build reader rows show a disabled switch whose title says to Park", () => {
+    const [global] = buildScopeGroups(skillWithDeployments([sharedDeployment()]));
+    for (const harness of ["pi", "cursor", "grok-build"] as const) {
+      const row = global.rows.find((r): r is AgentLocationRow => r.harness === harness);
+      expect(row, `the Global group lost the ${harness} reader row`).toBeDefined();
+      expect(
+        canOfferHarnessSwitchForRow(row!),
+        `${harness} has no per-skill switch, but its row offers one`,
+      ).toBe(false);
+      expect(
+        harnessSwitchOffTitle(row!),
+        `the ${harness} switch title does not point at Park as the off path`,
+      ).toContain("Park the skill to turn it off for every harness");
+    }
+  });
+
+  it("a project reader row hides the Codex and OpenCode switches and the Global reader row keeps them", () => {
+    const projectShared = sharedDeployment({
+      id: "dep:v1/project/universal/find-bugs",
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.agents/skills/find-bugs",
+    });
+    const groups = buildScopeGroups(skillWithDeployments([sharedDeployment(), projectShared]));
+    const global = groups.find((g) => g.isGlobal)!;
+    const project = groups.find((g) => !g.isGlobal)!;
+    for (const harness of ["codex", "open-code"] as const) {
+      const globalRow = global.rows.find((r) => r.harness === harness);
+      const projectRow = project.rows.find((r) => r.harness === harness);
+      expect(globalRow?.kind).toBe("reader");
+      expect(projectRow?.kind).toBe("reader");
+      expect(globalRow?.hasSwitch, `the Global ${harness} reader row lost its switch`).toBe(true);
+      expect(
+        projectRow?.hasSwitch,
+        `the project ${harness} reader row offers a switch that writes the Global config`,
+      ).toBe(false);
+    }
+  });
+});

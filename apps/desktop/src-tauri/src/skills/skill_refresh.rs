@@ -1433,35 +1433,6 @@ pub(crate) fn opencode_config_root(home: &Path) -> PathBuf {
     }
 }
 
-/// Every canonical `SKILL.md` path Codex's own config disables, read from
-/// `<codex_home>/config.toml` `[[skills.config]]` rows with `enabled =
-/// false`. Honors `CODEX_HOME` like every other Codex path
-/// (`skill_studio_host::codex_home`). A missing or unparsable file yields an
-/// empty set - this overlay must not fail a refresh over a config Codex
-/// itself would presumably also reject. Once `skill_refresh` reads its
-/// snapshot from `ops::scan` directly rather than this legacy assembly
-/// path, this duplicate read goes away in favor of `ops::scan`'s own
-/// `DisabledBy::CodexConfig` (`docs/action-map/harnesses/codex.md`).
-fn read_codex_disabled_skill_md_paths(home: &Path) -> Vec<PathBuf> {
-    let path = skill_studio_host::codex_home(home).join("config.toml");
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-    let Ok(table) = content.parse::<toml::Table>() else {
-        return Vec::new();
-    };
-    toml::Value::Table(table)
-        .get("skills")
-        .and_then(|s| s.get("config"))
-        .and_then(|c| c.as_array())
-        .into_iter()
-        .flatten()
-        .filter(|row| row.get("enabled").and_then(toml::Value::as_bool) == Some(false))
-        .filter_map(|row| row.get("path").and_then(toml::Value::as_str))
-        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p)))
-        .collect()
-}
-
 /// Recompute registry, update, disable, and invocation fields on freshly
 /// assembled skills. Both full and targeted discovery use this same path.
 /// `pub(crate)` (rather than private) so a `commands.rs` test can rebuild
@@ -1605,15 +1576,22 @@ pub(crate) fn apply_skill_snapshot_overlays(
     // too). Claude links an older build removed as its off switch leave no
     // Claude Code row; the Universal row lists `claude-code` as a disabled
     // reader instead, like any skill Claude Code cannot see.
-    let codex_disabled_paths: BTreeSet<PathBuf> = read_codex_disabled_skill_md_paths(home)
-        .into_iter()
-        .collect();
-    let config_fs = skill_studio_host::RealFs::new();
+    let real_fs = skill_studio_host::RealFs::new();
+    let codex_disabled_paths = skill_studio_core::ops::codex_disabled_skill_md_paths(
+        &real_fs,
+        &skill_studio_host::codex_home(home),
+    );
+    let codex_disables = |deployment_path: &str| {
+        let skill_md = PathBuf::from(deployment_path).join("SKILL.md");
+        codex_disabled_paths.contains(&skill_studio_core::ops::codex_path_form(
+            &real_fs, &skill_md,
+        ))
+    };
     let opencode_config_dir = opencode_config_root(home);
     let opencode_rules =
-        skill_studio_core::opencode_config::read_skill_rules(&config_fs, &opencode_config_dir);
+        skill_studio_core::opencode_config::read_skill_rules(&real_fs, &opencode_config_dir);
     let claude_overrides =
-        skill_studio_core::harness::read_claude_skill_overrides(&config_fs, home, None);
+        skill_studio_core::harness::read_claude_skill_overrides(&real_fs, home, None);
     let claude_skills_dir = home.join(".claude").join("skills");
     for skill in skills.iter_mut() {
         let open_code_deployment_count = skill
@@ -1629,9 +1607,7 @@ pub(crate) fn apply_skill_snapshot_overlays(
             std::fs::symlink_metadata(claude_skills_dir.join(&skill.name)).is_err();
         for deployment in &mut skill.deployments {
             if deployment.agent == "Codex" {
-                let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
-                let canonical = std::fs::canonicalize(&skill_md).unwrap_or(skill_md);
-                if codex_disabled_paths.contains(&canonical) {
+                if codex_disables(&deployment.path) {
                     deployment.disabled = true;
                     deployment.disabled_by = Some(super::skill_dto::DisabledBy::CodexConfig);
                 }
@@ -1652,9 +1628,7 @@ pub(crate) fn apply_skill_snapshot_overlays(
                 if deployment.scope == "global" && claude_cannot_see {
                     deployment.disabled_readers.push("claude-code".to_string());
                 }
-                let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
-                let canonical = std::fs::canonicalize(&skill_md).unwrap_or(skill_md);
-                if codex_disabled_paths.contains(&canonical) {
+                if codex_disables(&deployment.path) {
                     deployment.disabled_readers.push("codex".to_string());
                 }
                 if opencode_rules.is_denied(&skill.name) {

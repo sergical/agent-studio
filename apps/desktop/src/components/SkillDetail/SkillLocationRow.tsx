@@ -66,7 +66,8 @@ function LocationRowSwitch({
       <TooltipControl
         content={
           row.switchOn
-            ? `Always on because ${row.harnessLabel} has no per-skill switch.`
+            ? (row.switchDisabledReason ??
+              `Always on because ${row.harnessLabel} has no per-skill switch.`)
             : `Off because this skill is disabled in the Universal folder.`
         }
       >

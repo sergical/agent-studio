@@ -460,7 +460,6 @@ const PI_SKILLS_DOC: &str =
     "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md";
 const PI_PACKAGES_DOC: &str =
     "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/packages.md";
-const PI_SETTINGS_DOC: &str = "https://pi.dev/docs/latest/settings";
 const CODE_SURVEY: &str = "apps/desktop/src-tauri/src/skills/agents.rs";
 const CLAUDE_TRANSCRIPT_READER: &str = "crates/skill-studio-host/src/skill_uses.rs";
 const CODEX_TRANSCRIPT_READER: &str = "crates/skill-studio-core/src/skill_uses/codex.rs";
@@ -788,9 +787,10 @@ fn pi() -> HarnessFacts {
             mechanism: DisableMechanism::PiSettings,
             scopes: vec![ScopeLevel::Global, ScopeLevel::Project],
             // The `settings.json` `skills` array accepts `!pattern` and
-            // `-path` exclusions; the exact entry the interactive
-            // `pi config` writes is undocumented.
-            writable: Support::Partial(Evidence::verified(PI_SETTINGS_DOC)),
+            // `-path` exclusions, but the exact entry the interactive
+            // `pi config` writes is undocumented, so Skill Studio writes
+            // none: `set_harness_enabled` refuses pi and Park is the off path.
+            writable: Support::Unknown,
             disabled_by: DisabledBy::PiSettings,
             evidence: Evidence::verified(PI_PACKAGES_DOC),
         }),

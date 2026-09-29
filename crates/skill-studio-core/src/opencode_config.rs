@@ -342,11 +342,37 @@ pub fn set_skill_denied_with(
     })?;
     let scope = home_only_scope(home, fs)?;
 
-    let mut root: Map<String, Value> = match fs.read_capped(&path, OPENCODE_CONFIG_MAX_BYTES) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|e| CoreError::new(ErrorCode::Io, format!("not valid JSON: {e}")).at(&path))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Map::new(),
+    let existing = match fs.read_capped(&path, OPENCODE_CONFIG_MAX_BYTES) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(CoreError::io(&path, e)),
+    };
+    let bytes = skill_denied_text(existing.as_deref(), &path, name, denied)?;
+
+    if let Some(parent) = path.parent() {
+        let scoped_parent = confine(&scope, fs, parent)?;
+        fs.create_dir_all(guard, &scoped_parent)
+            .map_err(|e| CoreError::io(parent, e))?;
+    }
+    let scoped = confine(&scope, fs, &path)?;
+    fs.write_atomic(guard, &scoped, &bytes)
+        .map_err(|e| CoreError::io(&path, e))
+}
+
+/// The edit [`set_skill_denied_with`] writes, as bytes in and bytes out:
+/// `existing` is the current `opencode.json` (`None` when missing) and
+/// `path` only labels errors. Refuses an enable that a remaining v1 glob or
+/// a v2 `permissions[]` rule would still deny.
+pub(crate) fn skill_denied_text(
+    existing: Option<&[u8]>,
+    path: &Path,
+    name: &str,
+    denied: bool,
+) -> Result<Vec<u8>, CoreError> {
+    let mut root: Map<String, Value> = match existing {
+        Some(bytes) => serde_json::from_slice(bytes)
+            .map_err(|e| CoreError::new(ErrorCode::Io, format!("not valid JSON: {e}")).at(path))?,
+        None => Map::new(),
     };
     if !root.contains_key("$schema") {
         root.insert(
@@ -375,21 +401,21 @@ pub fn set_skill_denied_with(
                 rule.pattern
             ),
         )
-        .at(&path));
+        .at(path));
     }
 
     let permission = root
         .entry("permission")
         .or_insert_with(|| Value::Object(Map::new()));
     let Value::Object(permission) = permission else {
-        return Err(CoreError::new(ErrorCode::Io, "has a non-object `permission` key").at(&path));
+        return Err(CoreError::new(ErrorCode::Io, "has a non-object `permission` key").at(path));
     };
     let skill = permission
         .entry("skill")
         .or_insert_with(|| Value::Object(Map::new()));
     let Value::Object(skill) = skill else {
         return Err(
-            CoreError::new(ErrorCode::Io, "has a non-object `permission.skill` key").at(&path),
+            CoreError::new(ErrorCode::Io, "has a non-object `permission.skill` key").at(path),
         );
     };
 
@@ -428,7 +454,7 @@ pub fn set_skill_denied_with(
                     rule.pattern
                 ),
             )
-            .at(&path));
+            .at(path));
         }
 
         if skill.is_empty() {
@@ -439,17 +465,8 @@ pub fn set_skill_denied_with(
         }
     }
 
-    if let Some(parent) = path.parent() {
-        let scoped_parent = confine(&scope, fs, parent)?;
-        fs.create_dir_all(guard, &scoped_parent)
-            .map_err(|e| CoreError::io(parent, e))?;
-    }
-    let bytes = serde_json::to_vec_pretty(&Value::Object(root)).map_err(|e| {
-        CoreError::new(ErrorCode::Io, format!("failed to serialize: {e}")).at(&path)
-    })?;
-    let scoped = confine(&scope, fs, &path)?;
-    fs.write_atomic(guard, &scoped, &bytes)
-        .map_err(|e| CoreError::io(&path, e))
+    serde_json::to_vec_pretty(&Value::Object(root))
+        .map_err(|e| CoreError::new(ErrorCode::Io, format!("failed to serialize: {e}")).at(path))
 }
 
 #[cfg(test)]

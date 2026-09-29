@@ -496,13 +496,12 @@ fn scan_ignores_project_root_skills_dir_and_cursor_root_or_names_the_row() {
     }
 }
 
-/// pi has no native per-skill switch, so this build keeps its own
-/// exclusion list under a `skill-studio` key in pi's `settings.json`
+/// pi has no per-skill switch Skill Studio writes
 /// (`docs/agent-skill-conventions.md`: "pi, Cursor, Grok Build: no
-/// per-skill disable"). Writing that key back must leave every other key in
-/// the file untouched - the file belongs to pi, not to Skill Studio.
+/// per-skill disable"), so a pi disable is refused and Park is the off path.
+/// The refusal must leave pi's own `settings.json` exactly as it was.
 #[test]
-fn harness_toggle_preserves_unknown_settings_keys_or_names_the_lost_key() {
+fn pi_disable_is_refused_as_unsupported_and_leaves_pi_settings_byte_for_byte_unchanged() {
     let home = unique_temp_dir("real_home_shapes_pi_settings");
     std::fs::create_dir_all(&home).unwrap();
     let home = home.canonicalize().unwrap();
@@ -538,7 +537,7 @@ fn harness_toggle_preserves_unknown_settings_keys_or_names_the_lost_key() {
     };
     let rt = Runtime::new(&scope, ports).expect("runtime");
 
-    ops::set_harness_enabled(
+    let err = ops::set_harness_enabled(
         &rt,
         &ctx(),
         &SetHarnessEnabledRequest {
@@ -548,25 +547,24 @@ fn harness_toggle_preserves_unknown_settings_keys_or_names_the_lost_key() {
             project_path: None,
         },
     )
-    .expect("pi switch");
+    .expect_err("the pi disable reported success, but nothing turns the skill off in pi");
 
-    let after: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
-    for (key, value) in [
-        ("theme", serde_json::json!("dark")),
-        ("telemetry", serde_json::json!(false)),
-        ("editor", serde_json::json!({"tabWidth": 2})),
-    ] {
-        assert_eq!(
-            after.get(key),
-            Some(&value),
-            "the pi switch rewrote {} and lost `{key}`; got {after}",
-            settings_path.display()
-        );
-    }
     assert_eq!(
-        after["skill-studio"]["disabledSkills"][0], "toggle-me",
-        "the switch itself must still be written; got {after}"
+        err.code,
+        skill_studio_core::ErrorCode::Unsupported,
+        "the pi disable failed for the wrong reason: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("Park"),
+        "the refusal does not point at Park as the off path: {}",
+        err.message
+    );
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).unwrap(),
+        before,
+        "the refused pi disable still rewrote {}",
+        settings_path.display()
     );
 
     std::fs::remove_dir_all(&home).ok();

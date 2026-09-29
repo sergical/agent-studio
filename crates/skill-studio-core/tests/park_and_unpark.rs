@@ -166,6 +166,61 @@ fn park_then_unpark_restores_the_universal_skill_and_the_claude_link() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+#[cfg(unix)]
+#[test]
+fn park_removes_a_pi_per_skill_link_into_universal_and_unpark_restores_it() {
+    let home = unique_temp_dir("park_pi_link");
+    parkable_home(&home);
+    let pi_skills = home.join(".pi/agent/skills");
+    std::fs::create_dir_all(&pi_skills).unwrap();
+    let pi_link = pi_skills.join("gamma");
+    std::os::unix::fs::symlink(home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma"), &pi_link).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+
+    let park_outcome = ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap();
+    assert!(
+        std::fs::symlink_metadata(&pi_link).is_err(),
+        "park left pi's per-skill link dangling at {}",
+        pi_link.display()
+    );
+
+    let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+    let parked_id = inventory
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "gamma")
+        .and_then(|s| {
+            s.deployments
+                .iter()
+                .find(|d| d.root.kind == RootKind::Parked)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the rescan lost the parked gamma at {:?}",
+                park_outcome.parked_path
+            )
+        })
+        .id
+        .clone();
+    ops::unpark(
+        &rt,
+        &ctx(),
+        &UnparkRequest {
+            deployment_id: parked_id,
+        },
+    )
+    .unwrap();
+
+    let restored_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
+    assert_eq!(
+        std::fs::canonicalize(&pi_link).ok(),
+        std::fs::canonicalize(&restored_dir).ok(),
+        "unpark did not restore pi's per-skill link to the Universal folder"
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `park_journal_row_is_durable_before_the_directory_moves`: `record` runs
 /// before any filesystem step. Proven by failing the rename after `record`
 /// already ran: the row exists (and, once recovery runs, reads
