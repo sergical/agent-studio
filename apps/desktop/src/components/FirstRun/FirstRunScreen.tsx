@@ -60,6 +60,7 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
     telemetryEnabled,
     setTelemetryEnabled,
     error,
+    saveError,
     saving,
     continue: onContinue,
   } = useFirstRunScreen(onComplete);
@@ -127,6 +128,8 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
             Settings.
           </p>
         </div>
+
+        {saveError != null && <p className="text-sm text-destructive">{saveError}</p>}
 
         <Button
           onClick={onContinue}

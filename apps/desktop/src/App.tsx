@@ -67,7 +67,13 @@ function App() {
       .then((message) => setDataFolderStatusState({ kind: "ready", message }))
       .catch(() => setDataFolderStatusState({ kind: "ready", message: null }));
   }, []);
-  const { snapshot, emittedSnapshotRevision, isLoading, requestRescan } = useSkillSnapshot();
+  const {
+    snapshot,
+    emittedSnapshotRevision,
+    isLoading,
+    error: snapshotError,
+    requestRescan,
+  } = useSkillSnapshot();
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const activeView = useAppStore((state) => state.activeView);
   const openSkill = useAppStore((state) => state.openSkill);
@@ -104,6 +110,25 @@ function App() {
       }
     })();
   }, [setTrackedProjects, addToast]);
+
+  // This toast is the only place on screen that shows a failed load or refresh.
+  useEffect(() => {
+    if (snapshotError == null) return;
+    addToast({
+      type: "error",
+      title: "Couldn't load your skills",
+      message: snapshotError,
+      // Stays until the user acts; sonner removes it when "Try again" is clicked.
+      duration: Infinity,
+      action: {
+        label: "Try again",
+        onClick: () => {
+          // The hook stores a failed retry in `error`; this effect shows it.
+          requestRescan().catch(() => undefined);
+        },
+      },
+    });
+  }, [snapshotError, addToast, requestRescan]);
 
   /** One skill view - the page it opens, standalone (no kept-alive list underneath). */
   function renderSkillPage(view: Extract<ActiveView, { kind: "skill" }>): React.ReactNode {

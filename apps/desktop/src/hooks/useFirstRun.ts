@@ -59,7 +59,10 @@ interface FirstRunScreenState {
   setSearchProjectFolders: (value: boolean) => void;
   telemetryEnabled: boolean;
   setTelemetryEnabled: (value: boolean) => void;
+  /** Why harness detection failed; the screen still lets the user continue. */
   error: string | null;
+  /** Why the last save failed, kept apart from `error` so a save cannot hide or replace the detection reason. */
+  saveError: string | null;
   saving: boolean;
   continue: () => void;
 }
@@ -108,6 +111,21 @@ export function continueIsBlocked(state: {
   return detecting || state.saving;
 }
 
+/** Saves the welcome-screen choice and then opens the app. A save that fails keeps the
+ *  welcome screen: `onSaved` is not called and `onSaveFailed` gets the reason text. */
+export async function saveChoiceThenOpenApp(
+  save: () => Promise<void>,
+  effects: { onSaved: () => void; onSaveFailed: (reason: string) => void },
+): Promise<void> {
+  try {
+    await save();
+  } catch (cause) {
+    effects.onSaveFailed(invokeErrorMessage(cause));
+    return;
+  }
+  effects.onSaved();
+}
+
 /** Detects harnesses once on mount, tracks which rows the user keeps
  * (defaulting every non-"not_found" row to kept once detection resolves),
  * and exposes `continue` to persist the choice through
@@ -118,6 +136,7 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
   const [searchProjectFolders, setSearchProjectFolders] = useState(true);
   const [telemetryEnabled, setTelemetryEnabled] = useState(FIRST_RUN_TELEMETRY_DEFAULT);
   const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -148,6 +167,7 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
   }
 
   function continueToApp() {
+    setSaveError(null);
     setSaving(true);
     const { choice, telemetryEnabled: savedTelemetryEnabled } = buildFirstRunSave(
       kept,
@@ -155,13 +175,13 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
       telemetryEnabled,
       new Date().toISOString(),
     );
-    saveHarnessesChoice(choice, savedTelemetryEnabled)
-      .then(onSaved)
-      .catch((cause: unknown) => {
-        // eslint-disable-next-line no-console
-        console.error(invokeErrorMessage(cause));
-        onSaved();
-      });
+    void saveChoiceThenOpenApp(() => saveHarnessesChoice(choice, savedTelemetryEnabled), {
+      onSaved,
+      onSaveFailed: (reason) => {
+        setSaveError(`Couldn't save your choice. ${reason}`);
+        setSaving(false);
+      },
+    });
   }
 
   return {
@@ -173,6 +193,7 @@ export function useFirstRunScreen(onSaved: () => void): FirstRunScreenState {
     telemetryEnabled,
     setTelemetryEnabled,
     error,
+    saveError,
     saving,
     continue: continueToApp,
   };
