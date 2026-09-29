@@ -861,6 +861,11 @@ export function promoteToGlobal(groups: ScopeGroup[]): PromoteSource | null {
   return { path: source.path, agents };
 }
 
+/** The Invocation files of one skill, exactly as the properties rail lists them - the rail and the list's bulk Invocation action both edit these. */
+export function invocationFilesForSkill(skill: InstalledSkill): InvocationFile[] {
+  return buildInvocationFiles(buildScopeGroups(skill), skill);
+}
+
 /** Build Invocation rows for the Universal folder and each copy or plugin. Links share the Universal SKILL.md and do not get a row. */
 export function buildInvocationFiles(
   groups: ScopeGroup[],
