@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use skill_studio_core::dto::{
     InstallFile, InstallHarnessResult, InstallLinkMode, InstallMethod, InstallOutcome,
-    InstallRequest, ListEventsRequest,
+    InstallRequest, ListEventsRequest, RestoreRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::{AgentId, RootScope, SkillName};
@@ -508,7 +508,8 @@ fn install_confirmed_dotagents_source_records_trust_and_installs_or_names_the_mi
 /// (F10): when the registry write after a `Dotagents`/`SkillsSh` CLI call
 /// fails, the journal row is marked `Failed`, not left `Pending` - F9's
 /// unified write-and-link step must cover the registry write too, not just
-/// the skill's own bytes.
+/// the skill's own bytes. The folder the CLI wrote is removed again, so no
+/// unowned folder stays behind.
 #[test]
 fn install_crash_after_the_cli_wrote_the_folder_marks_the_row_failed_or_names_the_unowned_folder() {
     let home = unique_temp_dir("install_crash_after_cli_write");
@@ -527,8 +528,8 @@ fn install_crash_after_the_cli_wrote_the_folder_marks_the_row_failed_or_names_th
 
     let deployment = home.join(UNIVERSAL_ROOT_RELATIVE).join("eta");
     assert!(
-        deployment.join("SKILL.md").exists(),
-        "the CLI's own write already landed before the registry write failed"
+        std::fs::symlink_metadata(&deployment).is_err(),
+        "the failed install must remove the folder the CLI wrote"
     );
 
     let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
@@ -549,6 +550,128 @@ fn install_crash_after_the_cli_wrote_the_folder_marks_the_row_failed_or_names_th
     );
 
     std::fs::remove_dir_all(&home).ok();
+}
+
+/// `link_install_for_claude_code_and_pi_then_undo_removes_the_shared_folder_and_both_links_or_names_the_orphan`:
+/// a global Link install for Claude Code and pi writes three paths; undoing
+/// it with no force removes all three. Fails when undo reports drift on the
+/// folder it wrote, or leaves a link or the shared folder behind.
+#[test]
+fn link_install_for_claude_code_and_pi_then_undo_removes_the_shared_folder_and_both_links_or_names_the_orphan(
+) {
+    let home = unique_temp_dir("install_link_then_undo");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let req = harness_set_request(
+        "sigma",
+        &[AgentId::CLAUDE_CODE, AgentId::PI],
+        InstallLinkMode::Link,
+    );
+    let InstallOutcome::Installed { event_id, .. } = ops::install(&rt, &ctx(), &req).unwrap()
+    else {
+        panic!("expected Installed");
+    };
+    let written = [
+        home.join(UNIVERSAL_ROOT_RELATIVE).join("sigma"),
+        home.join(".claude/skills/sigma"),
+        home.join(".pi/agent/skills/sigma"),
+    ];
+    for path in &written {
+        assert!(
+            std::fs::symlink_metadata(path).is_ok(),
+            "installed: {path:?}"
+        );
+    }
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    for path in &written {
+        assert!(
+            std::fs::symlink_metadata(path).is_err(),
+            "undo must remove {path:?}"
+        );
+    }
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `install_that_fails_part_way_removes_the_shared_copy_and_the_link_it_wrote_or_names_the_orphan`:
+/// with `~/.pi/agent` a regular file, a Link install for Claude Code and pi
+/// writes the shared copy and Claude Code's link, then fails on pi's
+/// folder. Both written paths must be gone and the row `failed`. Fails when
+/// the shared copy or the Claude Code link stays behind.
+#[test]
+fn install_that_fails_part_way_removes_the_shared_copy_and_the_link_it_wrote_or_names_the_orphan() {
+    let home = unique_temp_dir("install_part_way_cleanup");
+    std::fs::create_dir_all(home.join(".pi")).unwrap();
+    std::fs::write(home.join(".pi/agent"), b"not a folder").unwrap();
+    let rt = runtime_for(&home);
+    let req = harness_set_request(
+        "tau",
+        &[AgentId::CLAUDE_CODE, AgentId::PI],
+        InstallLinkMode::Link,
+    );
+
+    ops::install(&rt, &ctx(), &req).unwrap_err();
+
+    for path in [
+        home.join(UNIVERSAL_ROOT_RELATIVE).join("tau"),
+        home.join(".claude/skills/tau"),
+    ] {
+        assert!(
+            std::fs::symlink_metadata(&path).is_err(),
+            "a failed install must remove {path:?}"
+        );
+    }
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].status, "failed");
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `install_for_a_harness_folder_linked_out_of_the_scope_is_refused_before_its_journal_row_or_names_the_write`:
+/// with `~/.pi` a link to a folder outside the scope, a Link install for
+/// Claude Code and pi is refused before it records a row or writes a byte.
+/// Fails when the refusal comes only after the shared copy was written.
+#[test]
+fn install_for_a_harness_folder_linked_out_of_the_scope_is_refused_before_its_journal_row_or_names_the_write(
+) {
+    let home = unique_temp_dir("install_pi_linked_out");
+    let outside = unique_temp_dir("install_pi_linked_out_target");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(outside.join("agent/skills")).unwrap();
+    std::os::unix::fs::symlink(&outside, home.join(".pi")).unwrap();
+    let rt = runtime_for(&home);
+    let req = harness_set_request(
+        "upsilon",
+        &[AgentId::CLAUDE_CODE, AgentId::PI],
+        InstallLinkMode::Link,
+    );
+
+    let err = ops::install(&rt, &ctx(), &req).unwrap_err();
+
+    assert_eq!(err.code, skill_studio_core::ErrorCode::InvalidRequest);
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert!(
+        events.is_empty(),
+        "no journal row may be recorded: {events:?}"
+    );
+    assert!(
+        !home.join(UNIVERSAL_ROOT_RELATIVE).join("upsilon").exists(),
+        "no shared copy may be written"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&outside).ok();
 }
 
 /// `copy_install_under_a_project_scope_is_classified_as_owned_or_names_the_deployment_left_manual`
@@ -723,6 +846,48 @@ fn skills_sh_project_install_runs_npx_in_the_project_dir_not_via_a_cwd_flag_or_n
     assert!(
         !home.join(".claude").join("skills").join("kappa").exists(),
         "the Claude Code link must not also land in the process's original cwd"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `skills_sh_project_install_leaves_a_skipped_pi_out_of_the_cli_agents_or_names_the_agent_it_passed`:
+/// in a project with no `.pi` folder, the plan skips pi, so the `npx skills`
+/// argv names Claude Code and not pi. Fails when `--agent pi` reaches the
+/// CLI, which would then make the `.pi` folder the plan refused to make.
+#[test]
+fn skills_sh_project_install_leaves_a_skipped_pi_out_of_the_cli_agents_or_names_the_agent_it_passed(
+) {
+    let home = unique_temp_dir("install_skills_sh_skipped_pi");
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner.clone()));
+    let mut req = cli_request("pi-skip", InstallMethod::SkillsSh);
+    req.harnesses = vec![
+        AgentId::from(AgentId::CLAUDE_CODE),
+        AgentId::from(AgentId::PI),
+    ];
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+
+    let (_, results) = harness_results(ops::install(&rt, &ctx(), &req).unwrap());
+
+    let recorded = spawner.recorded.lock().unwrap();
+    let agents: Vec<&str> = recorded[0]
+        .0
+        .windows(2)
+        .filter(|w| w[0] == "--agent")
+        .map(|w| w[1].as_str())
+        .collect();
+    assert_eq!(
+        agents,
+        vec!["claude-code"],
+        "the CLI argv: {:?}",
+        recorded[0].0
+    );
+    assert!(
+        matches!(&results[1], InstallHarnessResult::Skipped { harness, .. } if harness.as_str() == AgentId::PI),
+        "pi must be reported as skipped: {results:?}"
     );
 
     std::fs::remove_dir_all(&home).ok();
@@ -1382,6 +1547,52 @@ fn install_for_pi_at_project_scope_without_a_pi_folder_skips_pi_and_says_why_or_
             InstallHarnessResult::Linked {
                 harness: AgentId::from(AgentId::CLAUDE_CODE),
                 path: project.join(".claude/skills/mu"),
+            },
+            InstallHarnessResult::Skipped {
+                harness: AgentId::from(AgentId::PI),
+                reason: "pi has no .pi folder in this project".to_string(),
+            },
+        ]
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `copy_mode_install_for_pi_at_project_scope_without_a_pi_folder_skips_pi_or_names_the_folder_it_made`:
+/// the missing-folder skip does not depend on the mode. A Copy install for
+/// Claude Code and pi in a project with no `.pi` folder copies for Claude
+/// Code and skips pi. Fails when Copy mode creates `.pi/skills`.
+#[test]
+fn copy_mode_install_for_pi_at_project_scope_without_a_pi_folder_skips_pi_or_names_the_folder_it_made(
+) {
+    let home = unique_temp_dir("install_pi_project_copy_skip");
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut scope = RuntimeScope::fixture(&home);
+    scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
+        paths: vec![project.clone()],
+    };
+    let rt = runtime_in(&scope, &home, Arc::new(RealFs::new()), None);
+    let mut req = harness_set_request(
+        "mu",
+        &[AgentId::CLAUDE_CODE, AgentId::PI],
+        InstallLinkMode::Copy,
+    );
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+
+    let (_, results) = harness_results(ops::install(&rt, &ctx(), &req).unwrap());
+
+    assert!(
+        !project.join(".pi").exists(),
+        "Copy mode may not create a .pi folder either"
+    );
+    assert_eq!(
+        results,
+        vec![
+            InstallHarnessResult::Copied {
+                harness: AgentId::from(AgentId::CLAUDE_CODE),
+                path: project.join(".claude/skills/mu"),
+                link_failed: false,
             },
             InstallHarnessResult::Skipped {
                 harness: AgentId::from(AgentId::PI),

@@ -735,6 +735,16 @@ impl ScopeFs for FixtureFs {
         Ok(())
     }
 
+    /// The fixture does not model permission bits.
+    fn fsops_write_new_file_with_mode(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        _mode: u32,
+    ) -> std::io::Result<()> {
+        self.fsops_write_new_file(path, bytes)
+    }
+
     fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         let from = &self.resolve_leaf(from);
         let to = &self.resolve_leaf(to);
@@ -1243,6 +1253,14 @@ impl ScopeFs for FailingFs {
     }
     fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         self.inner.fsops_write_new_file(path, bytes)
+    }
+    fn fsops_write_new_file_with_mode(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        mode: u32,
+    ) -> std::io::Result<()> {
+        self.inner.fsops_write_new_file_with_mode(path, bytes, mode)
     }
     fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         if self.fail_next_fsops_rename.swap(false, Ordering::SeqCst) {

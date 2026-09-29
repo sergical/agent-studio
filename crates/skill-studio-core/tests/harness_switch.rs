@@ -1473,6 +1473,7 @@ fn undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_
 fn codex_switch_writes_the_config_under_codex_home_or_names_the_file_it_wrote_instead() {
     let home = unique_temp_dir("switch_codex_home");
     let codex_home = unique_temp_dir("switch_codex_home_custom");
+    std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&codex_home).unwrap();
     // `RuntimeScope::codex_home` has no canonical form and is checked
     // lexically only (see its doc comment): canonicalize here so a
@@ -1482,8 +1483,9 @@ fn codex_switch_writes_the_config_under_codex_home_or_names_the_file_it_wrote_in
     let codex_home = codex_home.canonicalize().unwrap();
     // Codex's own harness root, not the universal root: `native_disabled_by`
     // only attributes `DisabledBy::CodexConfig` to a `RootKind::Harness`
-    // (Codex) deployment, so the scan assertion below needs one.
-    let codex_dir = home.join(CODEX_ROOT_RELATIVE).join("gamma");
+    // (Codex) deployment, so the scan assertion below needs one. With
+    // `CODEX_HOME` set, Codex reads `$CODEX_HOME/skills`, not `~/.codex/skills`.
+    let codex_dir = codex_home.join("skills").join("gamma");
     std::fs::create_dir_all(&codex_dir).unwrap();
     std::fs::write(
         codex_dir.join("SKILL.md"),
@@ -1955,6 +1957,142 @@ fn undo_of_a_claude_code_off_restores_settings_json_byte_for_byte_or_names_the_b
         std::fs::read_to_string(claude_settings_path(&home)).unwrap(),
         before,
         "undo of the off should restore settings.json exactly"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: gamma is off in `settings.json` and Claude Code has no link to it;
+/// the user turns it on (which edits settings and creates the link), then
+/// undoes that. Expect `settings.json` back byte for byte and the link
+/// gone. Catches an undo that restores only the settings and leaves the
+/// link the on created.
+#[test]
+fn undo_of_a_claude_code_on_that_linked_the_skill_removes_the_link_too() {
+    let home = unique_temp_dir("claude_undo_on_link");
+    install_universal_skill(&home, "gamma");
+    std::fs::create_dir_all(home.join(CLAUDE_ROOT_RELATIVE)).unwrap();
+    std::fs::write(
+        claude_settings_path(&home),
+        "{\n  \"skillOverrides\": {\n    \"gamma\": \"off\"\n  }\n}\n",
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(claude_settings_path(&home)).unwrap();
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    let rt = runtime_for(&home);
+
+    let on = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "fixture setup: on must create the link"
+    );
+    assert_ne!(
+        std::fs::read_to_string(claude_settings_path(&home)).unwrap(),
+        before,
+        "fixture setup: on must edit settings.json"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: on.event_id,
+            force: false,
+        },
+    )
+    .unwrap_or_else(|e| panic!("undo of the on should succeed, got: {}", e.message));
+
+    assert_eq!(
+        std::fs::read_to_string(claude_settings_path(&home)).unwrap(),
+        before
+    );
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "undo left the link the on created at {}",
+        link.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: `~/.claude/settings.json` is a link into a dotfiles folder, and
+/// the user turns a skill off in Claude Code, then undoes it. Expect the
+/// write and the undo to land in the dotfiles file, the link to stay a link,
+/// and the file to keep its 0600 mode. Catches a rename that replaces the
+/// link with a regular file (0755, copied from the link), which cuts the
+/// settings off from the user's dotfiles.
+#[test]
+fn claude_code_off_writes_through_a_linked_settings_json_and_keeps_the_link_and_its_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = unique_temp_dir("claude_linked_settings");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    let dotfiles = home.join("dotfiles/claude-settings.json");
+    std::fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
+    let before = "{\"permissions\":{\"allow\":[\"Bash(ls)\"]}}";
+    std::fs::write(&dotfiles, before).unwrap();
+    std::fs::set_permissions(&dotfiles, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&dotfiles, claude_settings_path(&home)).unwrap();
+    let rt = runtime_for(&home);
+
+    let off = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap();
+
+    let settings = claude_settings_path(&home);
+    assert!(
+        std::fs::symlink_metadata(&settings)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "settings.json must still be a link"
+    );
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dotfiles).unwrap()).unwrap();
+    assert_eq!(written["skillOverrides"]["gamma"], "off");
+    assert_eq!(
+        std::fs::metadata(&dotfiles).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "the linked file must keep its own mode"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: off.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+    assert!(std::fs::symlink_metadata(&settings)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&dotfiles).unwrap(), before);
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: `~/.claude/settings.json` is a link to a file that no longer
+/// exists, and the user turns a skill off. Expect a refusal that names the
+/// dangling link, with the link left in place. Catches a write that turns
+/// the dangling link into a new regular file.
+#[test]
+fn claude_code_off_refuses_a_dangling_settings_json_link_and_leaves_it() {
+    let home = unique_temp_dir("claude_dangling_settings");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    let missing = home.join("dotfiles/missing.json");
+    std::os::unix::fs::symlink(&missing, claude_settings_path(&home)).unwrap();
+    let rt = runtime_for(&home);
+
+    let err = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap_err();
+
+    assert!(err.message.contains("does not exist"), "{}", err.message);
+    assert_eq!(
+        std::fs::read_link(claude_settings_path(&home)).unwrap(),
+        missing
     );
 
     std::fs::remove_dir_all(&home).ok();

@@ -1513,6 +1513,23 @@ struct ScanTarget {
     harness: Option<AgentId>,
 }
 
+/// A catalog global root under the scope's own Codex home and `OpenCode`
+/// config root, the same folders `split` writes to (see
+/// [`crate::ops_split::split_target_root`]); every other root sits under
+/// the home.
+fn global_root_path(rt: &Runtime, relative: &Path) -> PathBuf {
+    if let Ok(rest) = relative.strip_prefix(".codex") {
+        return rt.scope.codex_home.join(rest);
+    }
+    if let (Some(root), Ok(rest)) = (
+        &rt.scope.raw.opencode_config_root,
+        relative.strip_prefix(".config/opencode"),
+    ) {
+        return root.join(rest);
+    }
+    rt.scope.home.lexical.join(relative)
+}
+
 fn scan_targets(rt: &Runtime) -> Vec<ScanTarget> {
     let mut seen: HashSet<(RootScope, RootKind, PathBuf)> = HashSet::new();
     let mut targets = Vec::new();
@@ -1539,7 +1556,7 @@ fn scan_targets(rt: &Runtime) -> Vec<ScanTarget> {
                 ScopeLevel::Global => {
                     push_target(
                         RootScope::Global,
-                        rt.scope.home.lexical.join(&root_spec.relative_path),
+                        global_root_path(rt, Path::new(&root_spec.relative_path)),
                     );
                 }
                 ScopeLevel::Project => {
@@ -4419,10 +4436,33 @@ enum RestorePlan {
     Write(Vec<u8>),
     /// A directory's files to write back, read from the original event's
     /// backup, paths relative to the directory itself. Applied through
-    /// [`fsops::stage`]/[`fsops::swap`] (see [`restore_event`]'s mutation
-    /// step) rather than [`ScopeFs::write_atomic`], which only ever writes
-    /// one file.
-    WriteDir(Vec<(PathBuf, Vec<u8>)>),
+    /// [`fsops::stage_files`]/[`fsops::swap`] (see [`restore_event`]'s
+    /// mutation step) rather than [`ScopeFs::write_atomic`], which only ever
+    /// writes one file.
+    WriteDir(Vec<fsops::StageFile>),
+}
+
+/// Puts back a link an op took down, with the target text `read_link`
+/// returned before it did. A relative target stays relative, so a link the
+/// skills CLI wrote keeps working when the user moves the home. The target
+/// is confined as resolved from `link_path`'s parent.
+pub(crate) fn recreate_link(
+    rt: &Runtime,
+    guard: &ExclusiveGuard,
+    link_path: &Path,
+    recorded_target: &Path,
+) -> Result<(), CoreError> {
+    let fs = rt.ports.fs.as_ref();
+    let resolved_target =
+        crate::fsops::join_lexical(link_path.parent().unwrap_or(link_path), recorded_target);
+    let scoped_link = crate::ports::confine(&rt.scope, fs, link_path)?;
+    let scoped_target = crate::ports::confine(&rt.scope, fs, &resolved_target)?;
+    if recorded_target.is_relative() {
+        fs.symlink_relative(guard, &scoped_target, recorded_target, &scoped_link)
+    } else {
+        fs.symlink(guard, &scoped_target, &scoped_link)
+    }
+    .map_err(|e| CoreError::io(link_path, e))
 }
 
 /// [`RestorePlan::WriteDir`]'s mutation step: stages `files` beside `path`
@@ -4436,7 +4476,7 @@ pub(crate) fn restore_write_dir(
     rt: &Runtime,
     guard: &ExclusiveGuard,
     path: &Path,
-    files: &[(PathBuf, Vec<u8>)],
+    files: &[fsops::StageFile],
 ) -> Result<(), CoreError> {
     let universal_root = path.parent().ok_or_else(|| {
         CoreError::new(ErrorCode::Io, "restore target has no parent directory").at(path)
@@ -4463,7 +4503,7 @@ pub(crate) fn restore_write_dir(
     )
     .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()))?;
 
-    let staged = fsops::stage(&root, &plan, files)
+    let staged = fsops::stage_files(&root, &plan, files)
         .map_err(|e| CoreError::new(ErrorCode::Io, e.to_string()).at(universal_root))?;
     // Same directory the doctor prune and check sweep, not a
     // restore-specific name - see `ops_update`'s module doc for the same
@@ -4823,8 +4863,13 @@ fn restore_event_body(
 
     // Every fallible, non-mutating step runs before the claim below: a
     // failure here must leave the target event revertible, not stuck behind
-    // a claim nothing ever undoes.
-    let scoped = crate::ports::confine(&rt.scope, fs, &path)?;
+    // a claim nothing ever undoes. A path to write back goes through a
+    // linked config file; a path to remove is the link itself.
+    let scoped = if pre.is_some() {
+        crate::ports::confine_write_through(&rt.scope, fs, &path)?
+    } else {
+        crate::ports::confine(&rt.scope, fs, &path)?
+    };
     // Every manifest entry besides `path` itself - e.g. `remove`'s own
     // registry.json backup, next to its deployment tree - restores
     // best-effort alongside the primary path below, keyed by its own
@@ -4914,14 +4959,26 @@ fn restore_event_body(
     }
 
     let mutation_result = match &plan {
-        RestorePlan::RemoveIfPresent => {
-            if fs.symlink_metadata(&path).is_ok() {
-                fs.remove_file(&session.guard, &scoped)
-                    .map_err(|e| CoreError::io(&path, e))
-            } else {
-                Ok(())
+        RestorePlan::RemoveIfPresent => match fs.symlink_metadata(&path) {
+            // An install's folder: the drift check above already matched
+            // its whole tree, or `force` was given and the backup holds it.
+            Ok(facts) if facts.kind == FileKind::Dir => {
+                crate::ops_remove::remove_tree_best_effort(fs, &path);
+                if fs.symlink_metadata(&path).is_ok() {
+                    Err(CoreError::new(
+                        ErrorCode::Io,
+                        "could not remove the folder this event wrote",
+                    )
+                    .at(&path))
+                } else {
+                    Ok(())
+                }
             }
-        }
+            Ok(_) => fs
+                .remove_file(&session.guard, &scoped)
+                .map_err(|e| CoreError::io(&path, e)),
+            Err(_) => Ok(()),
+        },
         RestorePlan::Write(bytes) => fs
             .write_atomic(&session.guard, &scoped, bytes)
             .map_err(|e| CoreError::io(&path, e)),
@@ -4949,7 +5006,7 @@ fn restore_event_body(
     // reporting only `path`, rather than failing a restore that otherwise
     // succeeded. See `extra_plans`' own comment above.
     for (other_path, other_plan) in &extra_plans {
-        if let Ok(other_scoped) = crate::ports::confine(&rt.scope, fs, other_path) {
+        if let Ok(other_scoped) = crate::ports::confine_write_through(&rt.scope, fs, other_path) {
             // `extra_plans` only ever receives `Write`/`WriteDir` (see the
             // loop that builds it above, in the `Some(_pre_fingerprint)` arm
             // of `match &pre`) - a secondary manifest entry is always a
@@ -5014,14 +5071,7 @@ fn restore_event_body(
         if fs.symlink_metadata(&link_path).is_ok() {
             continue;
         }
-        let resolved_target =
-            crate::fsops::join_lexical(link_path.parent().unwrap_or(&link_path), &target);
-        if let (Ok(scoped_link), Ok(scoped_target)) = (
-            crate::ports::confine(&rt.scope, fs, &link_path),
-            crate::ports::confine(&rt.scope, fs, &resolved_target),
-        ) {
-            let _ = fs.symlink(&session.guard, &scoped_target, &scoped_link);
-        }
+        let _ = recreate_link(rt, &session.guard, &link_path, &target);
     }
     // The `.skill-lock.json` row `ops::remove` saved before the real CLI
     // dropped it (`SkillsSh` only - see `restore_backup_inverse_with_links_and_lock`'s
@@ -5101,6 +5151,11 @@ pub(crate) fn resolve_skill<'a>(
 /// both sides go through the same filesystem, and not, for example, when
 /// `target_path`'s ancestry crosses a symlink the test host (or the user's
 /// `$HOME`) happens to have, like macOS's `/tmp` -> `/private/tmp`.
+///
+/// An entry seen through a whole-folder link (`~/.claude/skills ->
+/// ~/.agents/skills`) is left out: its path names the Universal entry
+/// itself, so unlinking it would remove the Universal link, not a
+/// per-harness one.
 pub(crate) fn find_all_links<'a>(
     skill: &'a InstalledSkillDto,
     target_path: &Path,
@@ -5114,6 +5169,7 @@ pub(crate) fn find_all_links<'a>(
         .iter()
         .filter(|d| {
             d.backing == BackingRelationship::LinkedTo
+                && !d.shared_via_whole_dir_link
                 && d.link_target.as_deref() == Some(canonical_target.as_path())
         })
         .collect()
@@ -5175,6 +5231,16 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
         .iter()
         .map(|link| crate::ports::confine(&rt.scope, fs, link))
         .collect::<Result<Vec<_>, _>>()?;
+    let link_targets: serde_json::Map<String, serde_json::Value> = links
+        .iter()
+        .filter_map(|link| {
+            let target = fs.read_link(link).ok()?;
+            Some((
+                link.to_string_lossy().into_owned(),
+                serde_json::Value::String(target.to_string_lossy().into_owned()),
+            ))
+        })
+        .collect();
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
 
     let step_start = clock.monotonic();
@@ -5209,6 +5275,7 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
             "from": deployment.path,
             "to": parked_dir,
             "links": links,
+            "link_targets": link_targets,
         }),
         // Undo of a directory move is out of this build's scope: `Park`
         // deliberately carries no inverse.
@@ -5217,29 +5284,40 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
     };
     session.store.record(&session.guard, &id, &draft)?;
 
-    for (link, scoped_link) in links.iter().zip(&scoped_links) {
-        fs.remove_file(&session.guard, scoped_link)
-            .map_err(|e| CoreError::io(link, e))?;
+    let write_result = (|| -> Result<(), CoreError> {
+        for (link, scoped_link) in links.iter().zip(&scoped_links) {
+            fs.remove_file(&session.guard, scoped_link)
+                .map_err(|e| CoreError::io(link, e))?;
+        }
+        let parent = parked_dir.parent().unwrap_or(&parked_dir).to_path_buf();
+        let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
+        fs.create_dir_all(&session.guard, &scoped_parent)
+            .map_err(|e| CoreError::io(&parent, e))?;
+        let scoped_from = crate::ports::confine(&rt.scope, fs, &deployment.path)?;
+        let scoped_to = crate::ports::confine(&rt.scope, fs, &parked_dir)?;
+        fs.rename(&session.guard, &scoped_from, &scoped_to)
+            .map_err(|e| CoreError::io(&deployment.path, e))?;
+        // Codex reads the universal root directly rather than through a link,
+        // so a `[[skills.config]]` row disabling this skill names the moved
+        // path itself; without this, park would leave that row pointing at a
+        // directory that no longer exists (docs/action-map/harnesses/codex.md).
+        codex_rewrite_skill_path(
+            rt,
+            ctx,
+            &session.guard,
+            &deployment.path.join("SKILL.md"),
+            &parked_dir.join("SKILL.md"),
+        )
+    })();
+    if let Err(e) = write_result {
+        let _ = session.store.finish(
+            &session.guard,
+            &id,
+            crate::events::EventStatus::Failed,
+            None,
+        );
+        return Err(e);
     }
-    let parent = parked_dir.parent().unwrap_or(&parked_dir).to_path_buf();
-    let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
-    fs.create_dir_all(&session.guard, &scoped_parent)
-        .map_err(|e| CoreError::io(&parent, e))?;
-    let scoped_from = crate::ports::confine(&rt.scope, fs, &deployment.path)?;
-    let scoped_to = crate::ports::confine(&rt.scope, fs, &parked_dir)?;
-    fs.rename(&session.guard, &scoped_from, &scoped_to)
-        .map_err(|e| CoreError::io(&deployment.path, e))?;
-    // Codex reads the universal root directly rather than through a link,
-    // so a `[[skills.config]]` row disabling this skill names the moved
-    // path itself; without this, park would leave that row pointing at a
-    // directory that no longer exists (docs/action-map/harnesses/codex.md).
-    codex_rewrite_skill_path(
-        rt,
-        ctx,
-        &session.guard,
-        &deployment.path.join("SKILL.md"),
-        &parked_dir.join("SKILL.md"),
-    )?;
 
     session
         .store
@@ -5324,6 +5402,10 @@ fn unpark_body(
         .as_ref()
         .map(|row| park_row_links(&row.payload))
         .unwrap_or_default();
+    let recorded_targets = park_row
+        .as_ref()
+        .and_then(|row| row.payload.get("link_targets").cloned())
+        .unwrap_or_default();
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
 
     let step_start = clock.monotonic();
@@ -5374,6 +5456,15 @@ fn unpark_body(
     fs.rename(&session.guard, &scoped_from, &scoped_to)
         .map_err(|e| CoreError::io(&deployment.path, e))?;
     for link_path in &links {
+        let relative_target = recorded_targets
+            .get(link_path.to_string_lossy().as_ref())
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .filter(|target| target.is_relative());
+        if let Some(target) = relative_target {
+            recreate_link(rt, &session.guard, link_path, &target)?;
+            continue;
+        }
         let scoped_target = crate::ports::confine(&rt.scope, fs, &restored_dir)?;
         let scoped_link = crate::ports::confine(&rt.scope, fs, link_path)?;
         fs.symlink(&session.guard, &scoped_target, &scoped_link)
@@ -5615,7 +5706,7 @@ fn set_claude_code_switch(
         Some(project) => RootScope::Project(ProjectRef(project.to_path_buf())),
         None => RootScope::Global,
     };
-    let settings_path = home.join(".claude/settings.json");
+    let settings_path = crate::ports::resolve_config_link(fs, &home.join(".claude/settings.json"))?;
     let existing_settings = read_optional_text(fs, &settings_path)?;
     let current = match existing_settings.as_deref() {
         Some(text) => {
@@ -5669,10 +5760,16 @@ fn set_claude_code_switch(
                 .backup_paths(&session.guard, id, std::slice::from_ref(&settings_path))?;
         let pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.clone());
         backup_dir = Some(manifest.backup_dir.clone());
-        Some(crate::events::restore_backup_inverse(
-            &settings_path,
-            pre_fingerprint.as_ref(),
-            None,
+        let settings_inverse =
+            crate::events::restore_backup_inverse(&settings_path, pre_fingerprint.as_ref(), None);
+        // Undo must also take down the link this event creates below.
+        let created_link: Vec<(PathBuf, Fingerprint)> = link_target
+            .iter()
+            .map(|target| (link_path.clone(), crate::events::link_fingerprint(target)))
+            .collect();
+        Some(crate::events::with_remove_copies(
+            settings_inverse,
+            &created_link,
         ))
     } else {
         link_target
@@ -5719,7 +5816,8 @@ fn set_claude_code_switch(
                 .unwrap_or(&settings_path)
                 .to_path_buf();
             ensure_dir_all(rt, session, fs, &settings_dir)?;
-            let scoped_settings = crate::ports::confine(&rt.scope, fs, &settings_path)?;
+            let scoped_settings =
+                crate::ports::confine_write_through(&rt.scope, fs, &settings_path)?;
             fs.write_atomic(&session.guard, &scoped_settings, text.as_bytes())
                 .map_err(|e| CoreError::io(&settings_path, e))?;
             post_fingerprint = crate::events::fingerprint_path(fs, &settings_path)?;
@@ -5866,7 +5964,8 @@ fn set_codex_switch(
             "no Codex-visible SKILL.md paths for this skill",
         ));
     }
-    let config_path = codex_config_path(&rt.scope.codex_home);
+    let config_path =
+        crate::ports::resolve_config_link(fs, &codex_config_path(&rt.scope.codex_home))?;
     let scope = Some(
         if project_path.is_some() {
             "project"
@@ -5941,7 +6040,7 @@ fn set_codex_switch(
     let mutate: Result<(u32, Option<Fingerprint>), CoreError> = (|| {
         let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
         ensure_dir_all(rt, session, fs, &config_parent)?;
-        let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
+        let scoped_config = crate::ports::confine_write_through(&rt.scope, fs, &config_path)?;
         let mut toggled: u32 = 0;
         for path in &paths {
             let existing =
@@ -6077,7 +6176,10 @@ fn set_opencode_switch(
         .opencode_config_root
         .clone()
         .unwrap_or_else(|| home.join(".config").join("opencode"));
-    let config_path = crate::opencode_config::opencode_json_path(&config_dir);
+    let config_path = crate::ports::resolve_config_link(
+        fs,
+        &crate::opencode_config::opencode_json_path(&config_dir),
+    )?;
     let jsonc_path = crate::opencode_config::opencode_jsonc_path(&config_dir);
     crate::harness_switch::opencode_refuses_jsonc(
         fs.symlink_metadata(&config_path).is_ok(),
@@ -6126,7 +6228,7 @@ fn set_opencode_switch(
     let mutate: Result<Option<Fingerprint>, CoreError> = (|| {
         let config_parent = config_path.parent().unwrap_or(&config_path).to_path_buf();
         ensure_dir_all(rt, session, fs, &config_parent)?;
-        let scoped_config = crate::ports::confine(&rt.scope, fs, &config_path)?;
+        let scoped_config = crate::ports::confine_write_through(&rt.scope, fs, &config_path)?;
         fs.write_atomic(&session.guard, &scoped_config, &new_text)
             .map_err(|e| CoreError::io(&config_path, e))?;
         crate::events::fingerprint_path(fs, &config_path)

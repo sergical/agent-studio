@@ -151,11 +151,18 @@ export function offeredInstallHarnesses(
 
 /** A harness that reads the shared folder and has no off switch cannot be
  * left out, and Claude Code cannot be left out when its whole folder points
- * at the shared folder. */
-export function installHarnessLocked(id: AgentId, claudeReadsShared: boolean): boolean {
+ * at the shared folder. The off switch lives in the harness's global config,
+ * so at project scope it would turn the skill off in every project: there,
+ * a harness with no own folder cannot be left out either. */
+export function installHarnessLocked(
+  id: AgentId,
+  claudeReadsShared: boolean,
+  scope: InstallScope,
+): boolean {
   if (id === "claude-code") return claudeReadsShared;
   const harness = HARNESS_BY_ID.get(id);
-  return !!harness && harness.readsSharedFolder && !harness.ownFolder && !harness.hasOffSwitch;
+  if (!harness || !harness.readsSharedFolder || harness.ownFolder) return false;
+  return scope === "project" || !harness.hasOffSwitch;
 }
 
 /** The first choice: every offered harness, except pi and Grok Build, which
@@ -173,9 +180,12 @@ export function chosenInstallHarnesses(
   offered: readonly AgentId[],
   picked: readonly AgentId[] | null,
   claudeReadsShared: boolean,
+  scope: InstallScope,
 ): AgentId[] {
   const pickedSet = new Set(picked ?? defaultInstallHarnesses(offered));
-  return offered.filter((id) => pickedSet.has(id) || installHarnessLocked(id, claudeReadsShared));
+  return offered.filter(
+    (id) => pickedSet.has(id) || installHarnessLocked(id, claudeReadsShared, scope),
+  );
 }
 
 /** Turn one harness on or off, keeping `offered`'s order. */
@@ -190,11 +200,14 @@ export function toggleInstallHarness(
 }
 
 /** Detected harnesses left out that still read the shared folder, so the
- * install turns the skill off in their own config. */
+ * install turns the skill off in their own config. That config is global,
+ * so a project install turns nothing off. */
 export function installDisabledHarnesses(
   detected: readonly AgentId[],
   chosen: readonly AgentId[],
+  scope: InstallScope,
 ): AgentId[] {
+  if (scope === "project") return [];
   const chosenSet = new Set(chosen);
   return detected.filter((id) => HARNESS_BY_ID.get(id)?.hasOffSwitch && !chosenSet.has(id));
 }

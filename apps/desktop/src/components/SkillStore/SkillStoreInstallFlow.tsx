@@ -78,9 +78,10 @@ export function SkillStoreInstallFlow({
   const setTrackedProjects = useAppStore((state) => state.setTrackedProjects);
   const addToast = useAppStore((state) => state.addToast);
 
+  const defaultsProject = installScope === "project" ? selectedProject : null;
   useEffect(() => {
     let cancelled = false;
-    getAddMethodDefaults()
+    getAddMethodDefaults(defaultsProject)
       .then((defaults) => {
         if (cancelled) return;
         setDetected(defaults.installed_harnesses);
@@ -90,7 +91,7 @@ export function SkillStoreInstallFlow({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [defaultsProject]);
 
   useEffect(() => {
     return () => {
@@ -149,6 +150,7 @@ export function SkillStoreInstallFlow({
     offeredHarnesses,
     pickedHarnesses,
     claudeReadsUniversal,
+    installScope,
   );
 
   const handleInstallScopeChange = (scope: InstallScope) => {
@@ -218,7 +220,7 @@ export function SkillStoreInstallFlow({
           scope: installScope,
           destination: "universal",
           agents: chosenHarnesses,
-          disabled_harnesses: installDisabledHarnesses(detected, chosenHarnesses),
+          disabled_harnesses: installDisabledHarnesses(detected, chosenHarnesses, installScope),
           link_mode: linkMode,
           project_path: installScope === "project" ? (selectedProject ?? null) : null,
         },

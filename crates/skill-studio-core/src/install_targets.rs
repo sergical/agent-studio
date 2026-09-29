@@ -193,6 +193,16 @@ impl InstallPlan {
         })
     }
 
+    /// The harnesses this install serves, in request order, without the
+    /// skipped ones.
+    pub fn served_harnesses(&self) -> Vec<AgentId> {
+        self.steps
+            .iter()
+            .filter(|s| !matches!(s.action, StepAction::Skip { .. }))
+            .map(|s| s.harness.clone())
+            .collect()
+    }
+
     /// Every path this install creates, shared copy first.
     pub fn written_paths(&self) -> Vec<PathBuf> {
         let mut out: Vec<PathBuf> = self.shared.iter().cloned().collect();
@@ -238,7 +248,7 @@ pub(crate) fn plan_install(
                 let dir = root.join(relative);
                 let marker_missing = matches!(scope, RootScope::Project(_))
                     && project_marker.is_some_and(|m| fs.symlink_metadata(&root.join(m)).is_err());
-                if mode == InstallLinkMode::Link && marker_missing {
+                if marker_missing {
                     StepAction::Skip {
                         reason: format!(
                             "{harness} has no {} folder in this project",

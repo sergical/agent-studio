@@ -354,7 +354,7 @@ pub fn set_skill_denied_with(
         fs.create_dir_all(guard, &scoped_parent)
             .map_err(|e| CoreError::io(parent, e))?;
     }
-    let scoped = confine(&scope, fs, &path)?;
+    let scoped = crate::ports::confine_write_through(&scope, fs, &path)?;
     fs.write_atomic(guard, &scoped, &bytes)
         .map_err(|e| CoreError::io(&path, e))
 }

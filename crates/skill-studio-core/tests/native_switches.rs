@@ -231,10 +231,10 @@ fn try_switch(
 #[test]
 fn opencode_disable_writes_the_config_root_the_scan_reads_and_the_rescan_shows_the_skill_off() {
     let home = unique_temp_dir("opencode_config_root");
-    write_skill(&home.join(".config/opencode/skills/delta"), "delta");
-    // An adapter that honours `XDG_CONFIG_HOME` hands the core this root.
+    // An adapter that honours `XDG_CONFIG_HOME` hands the core this root,
+    // and OpenCode then reads its skills from under it too.
     let config_root = home.join("xdg/opencode");
-    std::fs::create_dir_all(&config_root).unwrap();
+    write_skill(&config_root.join("skills/delta"), "delta");
     let mut scope = RuntimeScope::fixture(&home);
     scope.opencode_config_root = Some(config_root.clone());
     let rt = runtime_with_scope(&home, &scope);

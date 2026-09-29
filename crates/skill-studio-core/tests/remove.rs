@@ -630,22 +630,14 @@ fn undo_after_remove_restores_the_links_and_the_provenance_state_or_names_the_mi
         )
         .unwrap();
 
-        let raw_target = std::fs::read_link(&claude_link).unwrap_or_else(|e| {
+        std::fs::read_link(&claude_link).unwrap_or_else(|e| {
             panic!("{kind:?}: the Claude Code link must be back after restore: {e}")
         });
-        // `restore_event` always recreates the link with an absolute target
-        // (see `ScopeFs::symlink`'s own doc), even when the original target
-        // it is restoring from was relative - so this asserts the recorded
-        // target is absolute rather than resolving it against the link's
-        // own parent: that resolution would keep any `..` components a
-        // relative target had, giving a path that only accidentally matches
-        // `universal_path`.
-        assert!(
-            raw_target.is_absolute(),
-            "{kind:?}: the restored link's target must be absolute"
-        );
+        // `restore_event` keeps the recorded target's form (relative stays
+        // relative), so compare where the link lands, not its raw text.
         assert_eq!(
-            raw_target, universal_path,
+            std::fs::canonicalize(&claude_link).ok(),
+            std::fs::canonicalize(&universal_path).ok(),
             "{kind:?}: the restored link must resolve to the restored tree"
         );
 

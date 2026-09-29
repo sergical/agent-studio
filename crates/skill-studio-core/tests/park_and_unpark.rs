@@ -221,6 +221,94 @@ fn park_removes_a_pi_per_skill_link_into_universal_and_unpark_restores_it() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// Flow: Claude Code links to gamma with a relative target; the user parks
+/// and then unparks gamma. Expect the Claude link back with the same
+/// relative target. Catches an unpark that recreates the link as absolute,
+/// which breaks when the user moves or syncs their home.
+#[cfg(unix)]
+#[test]
+fn park_then_unpark_recreates_a_relative_claude_link_as_relative() {
+    let home = unique_temp_dir("park_relative_link");
+    parkable_home(&home);
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    let relative = std::path::PathBuf::from("../../.agents/skills/gamma");
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&relative, &link).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+    ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap();
+    let parked_id = ops::scan(&rt, &ctx(), &ScanRequest::default())
+        .unwrap()
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "gamma")
+        .and_then(|s| {
+            s.deployments
+                .iter()
+                .find(|d| d.root.kind == RootKind::Parked)
+        })
+        .unwrap()
+        .id
+        .clone();
+
+    ops::unpark(
+        &rt,
+        &ctx(),
+        &UnparkRequest {
+            deployment_id: parked_id,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(std::fs::read_link(&link).unwrap(), relative);
+    assert!(link.join("SKILL.md").exists());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the Universal entry is a dev link (`~/.agents/skills/gamma ->
+/// ~/src/gamma`) and Claude Code's whole skills folder links to
+/// `~/.agents/skills`; the user parks gamma. Expect the park to succeed,
+/// the parked entry to still reach `~/src/gamma`, and the Claude folder
+/// link to survive. Catches a park that takes `~/.claude/skills/gamma` for
+/// a per-skill link and unlinks the Universal entry through it, so the
+/// rename then fails half-way.
+#[cfg(unix)]
+#[test]
+fn park_of_a_dev_linked_skill_leaves_a_whole_folder_claude_link_alone() {
+    let home = unique_temp_dir("park_whole_folder_dev_link");
+    let source = home.join("src/gamma");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("SKILL.md"),
+        b"---\nname: gamma\ndescription: a dev-linked skill\n---\nBody.\n",
+    )
+    .unwrap();
+    let universal_root = home.join(UNIVERSAL_ROOT_RELATIVE);
+    std::fs::create_dir_all(&universal_root).unwrap();
+    std::os::unix::fs::symlink(&source, universal_root.join("gamma")).unwrap();
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&universal_root, home.join(CLAUDE_ROOT_RELATIVE)).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+
+    let outcome = ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap();
+
+    assert_eq!(
+        std::fs::canonicalize(&outcome.parked_path).unwrap(),
+        std::fs::canonicalize(&source).unwrap()
+    );
+    assert!(source.join("SKILL.md").exists());
+    assert!(std::fs::symlink_metadata(home.join(CLAUDE_ROOT_RELATIVE))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert_eq!(events[0].status, "done");
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `park_journal_row_is_durable_before_the_directory_moves`: `record` runs
 /// before any filesystem step. Proven by failing the rename after `record`
 /// already ran: the row exists (and, once recovery runs, reads
@@ -255,14 +343,9 @@ fn park_journal_row_is_durable_before_the_directory_moves() {
         "the park row must be recorded before the rename step runs"
     );
     assert_eq!(events[0].kind, "park");
-    assert_eq!(events[0].status, "pending");
-
-    // The next mutation session recovers it to `interrupted`, the same
-    // startup recovery every other op relies on.
-    let session = skill_studio_core::ports::MutationSession::begin(&rt, &ctx()).unwrap();
-    session.finish(&rt, &ctx());
-    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
-    assert_eq!(events[0].status, "interrupted");
+    // The op saw its own error, so it closes the row itself rather than
+    // leaving it for startup recovery.
+    assert_eq!(events[0].status, "failed");
 
     // A retry, with the filesystem working again, finishes the job the
     // crashed attempt started.

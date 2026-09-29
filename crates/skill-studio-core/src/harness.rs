@@ -1589,7 +1589,7 @@ pub fn write_claude_skill_overrides(
     let doc = serde_json::Value::Object(map);
     let bytes = serde_json::to_vec_pretty(&doc)
         .map_err(|e| CoreError::new(crate::error::ErrorCode::Io, e.to_string()).at(&path))?;
-    let scoped = crate::ports::confine(scope, fs, &path)?;
+    let scoped = crate::ports::confine_write_through(scope, fs, &path)?;
     fs.write_atomic(guard, &scoped, &bytes)
         .map_err(|e| CoreError::io(&path, e))
 }

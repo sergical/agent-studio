@@ -12,6 +12,7 @@ import {
   installHarnessLocked,
   linkModeChoiceVisible,
   toggleInstallHarness,
+  universalDestinationPath,
 } from "@skill-studio/lib";
 import type { AgentId, InstallLinkMode, InstallScope } from "@skill-studio/lib";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
@@ -35,7 +36,9 @@ function harnessCaption(
   if (id === "claude-code" && claudeReadsShared) {
     return `Reads the shared folder through ${folder}`;
   }
-  if (installHarnessLocked(id, claudeReadsShared)) return "Always reads the shared folder";
+  if (installHarnessLocked(id, claudeReadsShared, scope)) {
+    return `Always reads ${universalDestinationPath(scope)}`;
+  }
   if (chosen) {
     if (!folder) return "Reads the shared folder";
     return `${linkMode === "copy" ? "Copy" : "Link"} in ${folder}`;
@@ -97,7 +100,7 @@ export function InstallHarnessSelector({
                 onCheckedChange={(on) =>
                   onChosenChange(toggleInstallHarness(offered, chosen, id, on))
                 }
-                disabled={locked || installHarnessLocked(id, claudeReadsShared)}
+                disabled={locked || installHarnessLocked(id, claudeReadsShared, scope)}
                 ariaLabel={`Install for ${label}`}
               />
             </div>
