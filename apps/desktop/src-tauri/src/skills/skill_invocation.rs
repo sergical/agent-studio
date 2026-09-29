@@ -19,12 +19,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 use super::commands::canonicalize_skill_md;
 use super::frontmatter::{invocation_policy, parse_frontmatter, InvocationPolicy};
 use super::skill_deployment::parse_deployment_id;
-use super::skill_dto::Deployment;
+use super::skill_dto::{BulkTargetResult, Deployment};
 use super::skill_md_write::begin_skill_md_write_transaction;
 use super::skill_refresh::{self, SkillRefreshState, SkillSnapshot};
 
@@ -369,6 +371,101 @@ fn exact_snapshot_invocation_deployment<'a>(
     Ok(deployment)
 }
 
+/// Validates `path` against `snapshot` the way every invocation write must,
+/// then writes it. Shared by the single and the batch command so both refuse
+/// the same stale, plugin-owned and non-SKILL.md targets.
+fn write_invocation_target(
+    snapshot: &SkillSnapshot,
+    name: &str,
+    path: &str,
+    policy: InvocationPolicy,
+) -> Result<(), String> {
+    let path_buf = PathBuf::from(path);
+    let deployment = exact_snapshot_invocation_deployment(snapshot, name, &path_buf)?;
+    if deployment.plugin.is_some() {
+        return Err("Skill is managed by a plugin and cannot be edited here".to_string());
+    }
+    let is_codex_deployment = deployment.agent == "Codex";
+    let canonical = canonicalize_skill_md(&path_buf, path)?;
+    set_skill_invocation_with(&canonical, policy, is_codex_deployment)
+}
+
+fn read_snapshot(state: &SkillRefreshState, path: &str) -> Result<SkillSnapshot, String> {
+    state
+        .snapshot
+        .read()
+        .map_err(|error| format!("Snapshot lock poisoned: {error}"))?
+        .clone()
+        .ok_or_else(|| format!("Invocation target is stale: {path} is not an installed skill"))
+}
+
+/// One SKILL.md a batch invocation change should write.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct InvocationTarget {
+    pub name: String,
+    pub path: String,
+}
+
+/// Writes every target against one `snapshot`, then hands the names that were
+/// written to `reconcile` exactly once. A failing target is reported on its
+/// own result and does not stop the rest; with no successful write there is
+/// nothing to reconcile.
+fn apply_invocation_targets(
+    snapshot: &SkillSnapshot,
+    targets: &[InvocationTarget],
+    policy: InvocationPolicy,
+    reconcile: impl FnOnce(Vec<String>) -> Result<(), String>,
+) -> Vec<BulkTargetResult> {
+    let mut written: Vec<String> = Vec::new();
+    let results = BulkTargetResult::collect(targets, |target| {
+        write_invocation_target(snapshot, &target.name, &target.path, policy)?;
+        written.push(target.name.clone());
+        Ok(())
+    });
+    if !written.is_empty() {
+        if let Err(error) = reconcile(written) {
+            eprintln!("[set_skills_invocation] targeted snapshot reconciliation failed: {error}");
+        }
+    }
+    results
+}
+
+/// `set_skill_invocation` for many SKILL.md files at once. One reconcile at
+/// the end replaces one per file: each reconcile takes `rebuild_lock`, so a
+/// per-file call queued behind whatever rebuild the previous write triggered.
+#[tauri::command]
+pub async fn set_skills_invocation(
+    targets: Vec<InvocationTarget>,
+    policy: InvocationPolicy,
+    app: tauri::AppHandle,
+) -> Result<Vec<BulkTargetResult>, String> {
+    let timing_app = app.clone();
+    crate::timing_log::time_command_blocking(&timing_app, "set_skills_invocation", move || {
+        let refresh_state = app.state::<SkillRefreshState>();
+        let start = std::time::Instant::now();
+        let first_path = targets.first().map_or("", |target| target.path.as_str());
+        let snapshot = read_snapshot(&refresh_state, first_path)?;
+        let mut reconcile_ms = 0;
+        let results = apply_invocation_targets(&snapshot, &targets, policy, |names| {
+            let reconcile_start = std::time::Instant::now();
+            let outcome =
+                skill_refresh::reconcile_skill_names_and_emit(&app, &refresh_state, names, &[]);
+            reconcile_ms = reconcile_start.elapsed().as_millis();
+            if outcome.is_err() {
+                refresh_state.mark_skills_dirty();
+            }
+            outcome
+        });
+        eprintln!(
+            "skill refresh: batch invocation {} targets in {} ms (reconcile {reconcile_ms} ms)",
+            targets.len(),
+            start.elapsed().as_millis()
+        );
+        Ok(results)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn set_skill_invocation(
     name: String,
@@ -379,23 +476,9 @@ pub async fn set_skill_invocation(
     let timing_app = app.clone();
     crate::timing_log::time_command_blocking(&timing_app, "set_skill_invocation", move || {
         let refresh_state = app.state::<SkillRefreshState>();
-        let path_buf = PathBuf::from(&path);
-        let snapshot = refresh_state
-            .snapshot
-            .read()
-            .map_err(|error| format!("Snapshot lock poisoned: {error}"))?
-            .clone()
-            .ok_or_else(|| {
-                format!("Invocation target is stale: {path} is not an installed skill")
-            })?;
-        let deployment = exact_snapshot_invocation_deployment(&snapshot, &name, &path_buf)?;
-        if deployment.plugin.is_some() {
-            return Err("Skill is managed by a plugin and cannot be edited here".to_string());
-        }
-        let is_codex_deployment = deployment.agent == "Codex";
-        let canonical = canonicalize_skill_md(&path_buf, &path)?;
+        let snapshot = read_snapshot(&refresh_state, &path)?;
 
-        let result = set_skill_invocation_with(&canonical, policy, is_codex_deployment);
+        let result = write_invocation_target(&snapshot, &name, &path, policy);
         if result.is_ok() {
             if let Err(error) =
                 skill_refresh::reconcile_skill_names_and_emit(&app, &refresh_state, [name], &[])
@@ -818,6 +901,141 @@ mod tests {
             fs::read_to_string(codex_openai_yaml_path(&universal_dir)).unwrap(),
             shipped,
             "a Both edit rewrote a sidecar that had no invocation key to clear"
+        );
+    }
+
+    /// Three deployments of `find-bugs` (Claude Code, Cursor, pi) under one
+    /// temp home, each with a SKILL.md, and the snapshot that lists them.
+    fn batch_fixture(home: &Path) -> (SkillSnapshot, Vec<InvocationTarget>) {
+        use super::super::skill_deployment::SkillDestination;
+
+        let dirs = [
+            (".claude/skills/find-bugs", "Claude Code", "claude-code"),
+            (".cursor/skills/find-bugs", "Cursor", "cursor"),
+            (".pi/skills/find-bugs", "pi", "pi"),
+        ];
+        let mut deployments = Vec::new();
+        let mut targets = Vec::new();
+        for (relative, agent, slot) in dirs {
+            let dir = home.join(relative);
+            let skill_md = write_invocation_skill(&dir);
+            deployments.push(invocation_deployment(
+                &dir,
+                agent,
+                slot,
+                SkillDestination::PerHarness,
+            ));
+            targets.push(InvocationTarget {
+                name: "find-bugs".to_string(),
+                path: skill_md.to_string_lossy().into_owned(),
+            });
+        }
+        (invocation_snapshot(deployments), targets)
+    }
+
+    #[test]
+    fn batch_invocation_writes_every_target_and_reconciles_once_with_all_written_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (snapshot, targets) = batch_fixture(tmp.path());
+
+        let mut reconcile_calls: Vec<Vec<String>> = Vec::new();
+        let results =
+            apply_invocation_targets(&snapshot, &targets, InvocationPolicy::UserOnly, |names| {
+                reconcile_calls.push(names);
+                Ok(())
+            });
+
+        assert!(
+            results.iter().all(|result| result.error.is_none()),
+            "{results:?}"
+        );
+        for target in &targets {
+            let written = fs::read_to_string(&target.path).unwrap();
+            assert!(
+                written.contains("disable-model-invocation: true"),
+                "{} was not written",
+                target.path
+            );
+        }
+        assert_eq!(
+            reconcile_calls.len(),
+            1,
+            "one reconcile per batch; one per file queues each write behind the last rebuild"
+        );
+        assert_eq!(reconcile_calls[0].len(), targets.len());
+    }
+
+    #[test]
+    fn batch_invocation_failing_target_reports_its_own_error_and_the_others_are_still_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (snapshot, mut targets) = batch_fixture(tmp.path());
+        let stale = tmp.path().join(".codex/skills/find-bugs/SKILL.md");
+        write_invocation_skill(stale.parent().unwrap());
+        targets.insert(
+            1,
+            InvocationTarget {
+                name: "find-bugs".to_string(),
+                path: stale.to_string_lossy().into_owned(),
+            },
+        );
+
+        let mut reconciled_names = Vec::new();
+        let results =
+            apply_invocation_targets(&snapshot, &targets, InvocationPolicy::UserOnly, |names| {
+                reconciled_names = names;
+                Ok(())
+            });
+
+        assert_eq!(results.len(), targets.len());
+        let error = results[1]
+            .error
+            .as_deref()
+            .expect("the stale target must fail");
+        assert!(error.contains("stale"), "{error}");
+        for (index, target) in targets.iter().enumerate() {
+            if index == 1 {
+                continue;
+            }
+            assert!(results[index].error.is_none(), "{:?}", results[index]);
+            assert!(fs::read_to_string(&target.path)
+                .unwrap()
+                .contains("disable-model-invocation: true"));
+        }
+        assert!(!fs::read_to_string(&stale)
+            .unwrap()
+            .contains("disable-model-invocation"));
+        assert_eq!(
+            reconciled_names.len(),
+            3,
+            "only written targets are reconciled"
+        );
+    }
+
+    #[test]
+    fn batch_invocation_with_no_successful_write_skips_the_reconcile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (snapshot, mut targets) = batch_fixture(tmp.path());
+        targets.retain(|_| false);
+        targets.push(InvocationTarget {
+            name: "find-bugs".to_string(),
+            path: tmp
+                .path()
+                .join("elsewhere/SKILL.md")
+                .to_string_lossy()
+                .into_owned(),
+        });
+
+        let mut reconciles = 0;
+        let results =
+            apply_invocation_targets(&snapshot, &targets, InvocationPolicy::UserOnly, |_| {
+                reconciles += 1;
+                Ok(())
+            });
+
+        assert!(results[0].error.is_some());
+        assert_eq!(
+            reconciles, 0,
+            "nothing changed on disk, so there is nothing to reconcile"
         );
     }
 

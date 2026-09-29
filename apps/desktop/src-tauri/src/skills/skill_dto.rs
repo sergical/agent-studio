@@ -510,6 +510,27 @@ pub struct LifecycleTarget {
     pub owner_id: Option<String>,
 }
 
+/// One target's outcome inside a batch command. Results come back in the
+/// order the targets were sent, so the caller pairs them by index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BulkTargetResult {
+    /// `None` when the target was written; otherwise why it was not.
+    pub error: Option<String>,
+}
+
+impl BulkTargetResult {
+    /// Runs `apply` on every target in order. A failure is recorded on its own
+    /// target and never stops the rest.
+    pub fn collect<T>(targets: &[T], mut apply: impl FnMut(&T) -> Result<(), String>) -> Vec<Self> {
+        targets
+            .iter()
+            .map(|target| Self {
+                error: apply(target).err(),
+            })
+            .collect()
+    }
+}
+
 /// Exact deployment plus the harness whose visibility will change. Universal
 /// deployments are valid for readers that discover that scope directly.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -21,13 +21,14 @@ use skill_studio_lib::skills::agents::AgentTarget;
 use skill_studio_lib::skills::github_skill_listing::GithubSkillListing;
 use skill_studio_lib::skills::harness_first_run::HarnessesChoice;
 use skill_studio_lib::skills::skill_dto::{
-    AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, HarnessVisibilityTarget,
-    InstallResult, LifecycleTarget, PaginatedSkillsResponse, SkillDetails, SkillEventDto,
-    SkillsShAccessInfo,
+    AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, BulkTargetResult,
+    HarnessVisibilityTarget, InstallResult, LifecycleTarget, PaginatedSkillsResponse, SkillDetails,
+    SkillEventDto, SkillsShAccessInfo,
 };
 use skill_studio_lib::skills::skill_fork::PullResult;
 use skill_studio_lib::skills::skill_fork_registry::{ForkRecord, PackMember};
 use skill_studio_lib::skills::skill_frontmatter_repair::FrontmatterRepairPreview;
+use skill_studio_lib::skills::skill_invocation::InvocationTarget;
 use skill_studio_lib::skills::skill_pack::{
     ImportResult, PackImportPreflightResult, PackImportRequest, PackInfo, UpdatePackResult,
 };
@@ -81,6 +82,8 @@ struct WireTypes {
     update_outcome: UpdateOutcome,
     update_all_outcome: UpdateAllOutcome,
     doctor_report: DoctorReport,
+    bulk_target_result: BulkTargetResult,
+    invocation_target: InvocationTarget,
 }
 
 // This bin's entire job is writing the generated schema JSON to stdout for

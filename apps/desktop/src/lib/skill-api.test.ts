@@ -210,6 +210,13 @@ const EXPECTED_WRAPPER_COMMANDS = {
     command: "set_skill_invocation",
     registeredInLibRs: true,
   },
+  setSkillsInvocation: {
+    kind: "command",
+    command: "set_skills_invocation",
+    registeredInLibRs: true,
+  },
+  parkSkills: { kind: "command", command: "park_skills", registeredInLibRs: true },
+  unparkSkills: { kind: "command", command: "unpark_skills", registeredInLibRs: true },
   setPluginEnabled: { kind: "command", command: "set_plugin_enabled", registeredInLibRs: true },
   uninstallPlugin: { kind: "command", command: "uninstall_plugin", registeredInLibRs: true },
   listSkillEvents: { kind: "command", command: "list_skill_events", registeredInLibRs: true },

@@ -161,7 +161,7 @@ function skillCount(count: number): string {
   return `${count} skill${count === 1 ? "" : "s"}`;
 }
 
-/** "Parking 2 of 5…" while a sequential action runs. */
+/** "Parking 5 skills…" for a batched action; "Removing 2 of 5…" while removal runs one by one. */
 export function bulkProgressLabel(action: BulkAction, current: number, total: number): string {
   const verb = {
     park: "Parking",
@@ -170,9 +170,9 @@ export function bulkProgressLabel(action: BulkAction, current: number, total: nu
     update: "Updating",
     remove: "Removing",
   }[action.kind];
-  return action.kind === "update"
-    ? `${verb} ${skillCount(total)}…`
-    : `${verb} ${current} of ${total}…`;
+  return action.kind === "remove"
+    ? `${verb} ${current} of ${total}…`
+    : `${verb} ${skillCount(total)}…`;
 }
 
 /** "2 already parked, 1 no editable file" - the skipped skills grouped by reason. */

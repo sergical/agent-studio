@@ -16,6 +16,7 @@ import {
 import type {
   AgentId,
   Deployment,
+  ForkRecord,
   InstalledSkill,
   InvocationPolicy,
   LifecycleTarget,
@@ -43,6 +44,7 @@ import {
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import { canOfferHarnessSwitch } from "./skill-location-helpers";
+import { hasUpstreamOwner } from "./skill-location-status";
 import type { InvocationFile, LocationAction } from "./skill-location-status";
 
 interface UseLocationActionsResult {
@@ -328,9 +330,16 @@ export async function setInvocationForFile(
   file: InvocationFile,
   policy: InvocationPolicy,
 ): Promise<void> {
-  const isManaged = skill.source_kind === "dotagents" || skill.source_kind === "skills-sh";
-  if (isManaged && file.kind === "shared") {
-    await forkSkill(lifecycleTargetForDeployment(file.deployment));
-  }
+  await forkBeforeInvocationEdit(file);
   await setSkillInvocation(skill.name, `${file.path}/SKILL.md`, policy);
+}
+
+/** Forks a shared folder an update would write over, so the edit stays. Ambiguous and manual folders have no upstream, so they are edited in place. */
+export async function forkBeforeInvocationEdit(
+  file: InvocationFile,
+  fork: (target: LifecycleTarget) => Promise<ForkRecord | void> = forkSkill,
+): Promise<void> {
+  if (file.kind === "shared" && hasUpstreamOwner(file.deployment)) {
+    await fork(lifecycleTargetForDeployment(file.deployment));
+  }
 }

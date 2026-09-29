@@ -423,11 +423,14 @@ pub fn run() {
             // Park (disable globally) / per-harness disable / invocation policy
             skills::skill_park::park_skill,
             skills::skill_park::unpark_skill,
+            skills::skill_park::park_skills,
+            skills::skill_park::unpark_skills,
             skills::skill_split::split_skill,
             skills::skill_split::split_skill_targets,
             skills::skill_harness_disable::set_harness_enabled,
             skills::skill_harness_disable::restore_moved_deployment,
             skills::skill_invocation::set_skill_invocation,
+            skills::skill_invocation::set_skills_invocation,
             skills::commands::set_plugin_enabled,
             skills::commands::uninstall_plugin,
             // Event store: History and per-harness materialize disable

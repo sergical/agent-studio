@@ -1492,3 +1492,20 @@ export interface DoctorViolation {
    */
   detail: string;
 }
+/**
+ * One target's outcome inside a batch command. Results come back in the
+ * order the targets were sent, so the caller pairs them by index.
+ */
+export interface BulkTargetResult {
+  /**
+   * `None` when the target was written; otherwise why it was not.
+   */
+  error: string | null;
+}
+/**
+ * One SKILL.md a batch invocation change should write.
+ */
+export interface InvocationTarget {
+  name: string;
+  path: string;
+}

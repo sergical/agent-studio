@@ -658,6 +658,48 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           }));
           return undefined;
         }
+        case "set_skills_invocation": {
+          const targets = z
+            .array(z.object({ name: z.string(), path: z.string() }))
+            .parse(payload.targets);
+          const policy =
+            payload.policy === "user-only" || payload.policy === "model-only"
+              ? payload.policy
+              : "both";
+          for (const target of targets) {
+            // react-doctor-disable-next-line react-doctor/async-await-in-loop -- each update publishes the snapshot the next one reads
+            await updateSkill(target.name, (item) => ({
+              ...item,
+              invocation: policy,
+              deployments: item.deployments.map((entry) =>
+                entry.path === target.path.replace(/\/SKILL\.md$/, "") || entry.path === target.path
+                  ? { ...entry, invocation: policy }
+                  : entry,
+              ),
+            }));
+          }
+          return targets.map(() => ({ error: null }));
+        }
+        case "park_skills":
+        case "unpark_skills": {
+          const parked = command === "park_skills";
+          const targets = z
+            .array(
+              z.object({ deployment_id: z.string().nullish(), owner_id: z.string().nullish() }),
+            )
+            .parse(payload.targets);
+          for (const target of targets) {
+            const name = skillNameForTarget(target);
+            // react-doctor-disable-next-line react-doctor/async-await-in-loop -- each update publishes the snapshot the next one reads
+            await updateSkill(name, (item) => ({
+              ...item,
+              parked,
+              parked_at: parked ? new Date().toISOString() : null,
+              deployments: item.deployments.map((d) => ({ ...d, disabled: parked })),
+            }));
+          }
+          return targets.map(() => ({ error: null }));
+        }
         case "make_skill_independent_copy":
         case "materialize_harness_root":
         case "materialize_harness_root_then_disable": {
