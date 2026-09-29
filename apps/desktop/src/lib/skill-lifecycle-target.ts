@@ -393,6 +393,14 @@ export function skillCanPark(skill: SkillLifecycleView): boolean {
   return parkableDeployment(skill) !== undefined;
 }
 
+/** The park verb a skill offers, or `null` when it has no folder `ops::park` can move. */
+export function skillParkVerb(
+  skill: SkillLifecycleView & Pick<InstalledSkill, "parked">,
+): "Park" | "Unpark" | null {
+  if (!skillCanPark(skill)) return null;
+  return skill.parked ? "Unpark" : "Park";
+}
+
 /** The Global Universal folder park/unpark may move. Project and Per harness stay independent. */
 export function lifecycleTargetForPark(skill: SkillLifecycleView): LifecycleTarget {
   const canonical = parkableDeployment(skill);

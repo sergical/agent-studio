@@ -10,7 +10,11 @@ import { Button, Collapsible, CollapsiblePanel } from "@skill-studio/ui";
 import { formatRelativeTime, formatTokens, shortSha } from "@skill-studio/lib";
 import type { HealthIssue, InstalledSkill, RecentlyUsedSkill } from "@skill-studio/lib";
 import { parkSkill, pullForkUpstream, updateAllSkills, updateSkill } from "../../lib/skill-api";
-import { lifecycleTargetForPark, updateSkillOwners } from "../../lib/skill-lifecycle-target";
+import {
+  lifecycleTargetForPark,
+  skillCanPark,
+  updateSkillOwners,
+} from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import { GroupHead } from "../SkillList/GroupHead";
 import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
@@ -439,7 +443,7 @@ function UnusedGroup({
                   </span>
                 }
                 action={
-                  modelInvocable ? (
+                  modelInvocable && skillCanPark(skill) ? (
                     <ParkButton skill={skill} />
                   ) : (
                     <Button

@@ -4,6 +4,7 @@ import {
   lifecycleTargetForHarnessRoot,
   lifecycleTargetForSkill,
   skillCanPark,
+  skillParkVerb,
   skillLifecycleScopeSelection,
   skillMutableLifecycleScopes,
   skillRemovalAvailability,
@@ -420,5 +421,20 @@ describe("skill page header removal and park choices", () => {
     expect(skillCanPark(view([parked]))).toBe(true);
     expect(skillCanPark(view([project]))).toBe(false);
     expect(skillCanPark(view([inRepo]))).toBe(false);
+  });
+
+  it("the row menu offers no Park entry for a project-only skill and Park or Unpark for a Global one", () => {
+    const menuView = (deployments: Deployment[], parked = false) => ({
+      ...view(deployments),
+      parked,
+    });
+    const parked = { ...deployment("parked"), scope: "parked" as const };
+
+    expect(
+      skillParkVerb(menuView([project])),
+      "the row menu offers Park for a project-only skill, which ops::park refuses",
+    ).toBeNull();
+    expect(skillParkVerb(menuView([global]))).toBe("Park");
+    expect(skillParkVerb(menuView([parked], true))).toBe("Unpark");
   });
 });
