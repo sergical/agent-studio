@@ -441,6 +441,13 @@ fn install_body(
         .any(|h| h.as_str() == AgentId::CLAUDE_CODE);
     let claude_link_path =
         claude_link_requested.then(|| root.join(".claude").join("skills").join(&req.skill.0));
+    if claude_link_requested {
+        refuse_foreign_claude_skills_link(
+            fs,
+            &root.join(".claude").join("skills"),
+            &universal_root,
+        )?;
+    }
 
     let step_start = clock.monotonic();
     let id = rt.ports.ids.next_event_id();
@@ -695,9 +702,55 @@ fn install_copy(
     Ok(())
 }
 
+/// Refuses an install that asks for Claude Code when `.claude/skills` is a
+/// whole-folder link to anywhere but this scope's universal root: the skill
+/// would land in the universal root, which Claude Code never reads through
+/// such a link, so reporting the harness as linked would be false. A link
+/// whose target does not exist yet is judged by its lexical target, since the
+/// universal root itself may not exist before the first install.
+fn refuse_foreign_claude_skills_link(
+    fs: &dyn ScopeFs,
+    claude_skills_dir: &Path,
+    universal_root: &Path,
+) -> Result<(), CoreError> {
+    if !fs
+        .symlink_metadata(claude_skills_dir)
+        .is_ok_and(|f| f.kind == FileKind::Symlink)
+    {
+        return Ok(());
+    }
+    let reaches_universal_root = match (
+        fs.canonicalize(claude_skills_dir),
+        fs.canonicalize(universal_root),
+    ) {
+        (Ok(link), Ok(universal)) => link == universal,
+        _ => fs.read_link(claude_skills_dir).is_ok_and(|target| {
+            let parent = claude_skills_dir.parent().unwrap_or(claude_skills_dir);
+            fsops::join_lexical(parent, &target)
+                == fsops::join_lexical(Path::new("/"), universal_root)
+        }),
+    };
+    if reaches_universal_root {
+        return Ok(());
+    }
+    Err(CoreError::new(
+        ErrorCode::InvalidRequest,
+        format!(
+            "{} is a link to another folder, not to {}, so Claude Code would not see this skill; \
+             point the link at {} or replace it with a real folder, then install again",
+            claude_skills_dir.display(),
+            universal_root.display(),
+            universal_root.display(),
+        ),
+    )
+    .at(claude_skills_dir))
+}
+
 /// Symlinks `link_path` (`<scope>/.claude/skills/<skill>`) to `destination`,
 /// unless `.claude/skills` is already a whole-directory link into the shared
-/// root (every skill is already visible through it) - mirrors the guard in
+/// root (every skill is already visible through it; `install_body` has
+/// already refused a whole-directory link that points anywhere else, via
+/// `refuse_foreign_claude_skills_link`) - mirrors the guard in
 /// `ops::set_claude_code_switch` - or `link_path` itself already exists
 /// (R3): `cli_args_and_cwd` passes `--agent claude-code` for a `SkillsSh`
 /// install that requests the Claude Code harness, so the CLI already created
