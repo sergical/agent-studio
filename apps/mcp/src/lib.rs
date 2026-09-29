@@ -469,6 +469,20 @@ impl SkillStudioServer {
         .await
     }
 
+    #[tool(
+        description = "Replace a Universal skill folder with one real copy per chosen harness. Harnesses not listed lose the skill. npx skills update then updates only a Universal copy, not these copies."
+    )]
+    async fn split(
+        &self,
+        Parameters(req): Parameters<skill_studio_core::dto::SplitRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        run_op(Operation::Split, true, &context, |rt, ctx| {
+            ops::split(rt, ctx, &req)
+        })
+        .await
+    }
+
     #[tool(description = "Move a parked deployment back to the universal root.")]
     async fn unpark(
         &self,

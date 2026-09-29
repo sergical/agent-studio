@@ -434,6 +434,23 @@ pub fn print_park_outcome_table(envelope: &ResultEnvelope<ParkOutcome>) {
     );
 }
 
+/// Prints `split`'s table: one line per copy, then the update note.
+pub fn print_split_outcome_table(envelope: &ResultEnvelope<skill_studio_core::dto::SplitOutcome>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    for copy in &outcome.copies {
+        println!(
+            "{} {} -> {}",
+            outcome.skill.0,
+            copy.harness.as_str(),
+            copy.path.display()
+        );
+    }
+    println!("{}", outcome.update_note);
+}
+
 /// Prints `unpark`'s table: the deployment and where its directory now lives.
 pub fn print_unpark_outcome_table(envelope: &ResultEnvelope<UnparkOutcome>) {
     print_errors(envelope);
@@ -583,6 +600,12 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
         }),
         ("park_outcome", || {
             schemars::schema_for!(skill_studio_core::dto::ParkOutcome)
+        }),
+        ("split_request", || {
+            schemars::schema_for!(skill_studio_core::dto::SplitRequest)
+        }),
+        ("split_outcome", || {
+            schemars::schema_for!(skill_studio_core::dto::SplitOutcome)
         }),
         ("unpark_request", || {
             schemars::schema_for!(skill_studio_core::dto::UnparkRequest)

@@ -321,6 +321,20 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Replace a Universal skill folder with one real copy per chosen
+    /// harness. Harnesses not named lose the skill.
+    Split {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Universal deployment to split, as printed by `scan`.
+        #[arg(long)]
+        deployment_id: String,
+        /// A harness that keeps the skill. Repeat for more than one.
+        #[arg(long = "harness", required = true)]
+        harnesses: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Move a parked deployment's directory back to the universal root and
     /// recreate its Claude Code link, if it had one.
     Unpark {
@@ -536,6 +550,12 @@ fn main() -> ExitCode {
             deployment_id,
             json,
         } => run_park(&scope, &deployment_id, json, time),
+        Command::Split {
+            scope,
+            deployment_id,
+            harnesses,
+            json,
+        } => run_split(&scope, &deployment_id, &harnesses, json, time),
         Command::Unpark {
             scope,
             deployment_id,
@@ -1583,6 +1603,38 @@ fn run_park(scope: &ScopeArgs, deployment_id: &str, json: bool, time: bool) -> E
     let result = ops::park(&rt, &ctx, &req);
     let envelope = ResultEnvelope::from_result(Operation::Park, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_park_outcome_table)
+}
+
+/// Splits a Universal deployment into per-harness copies, via `ops::split`.
+fn run_split(
+    scope: &ScopeArgs,
+    deployment_id: &str,
+    harnesses: &[String],
+    json: bool,
+    time: bool,
+) -> ExitCode {
+    let rt = match build_runtime_write::<skill_studio_core::dto::SplitOutcome>(
+        scope,
+        Operation::Split,
+        json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let parsed = DeploymentId::parse(deployment_id).and_then(|deployment_id| {
+        let harnesses = harnesses
+            .iter()
+            .map(|raw| AgentId::parse_harness(raw))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(skill_studio_core::dto::SplitRequest {
+            deployment_id,
+            harnesses,
+        })
+    });
+    let result = parsed.and_then(|req| ops::split(&rt, &ctx, &req));
+    let envelope = ResultEnvelope::from_result(Operation::Split, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_split_outcome_table)
 }
 
 /// Moves a parked deployment back to the universal root, via `ops::unpark`.

@@ -1210,3 +1210,42 @@ fn add_copy_with_a_symlinked_file_copies_it_as_a_file_or_names_the_missing_path(
     std::fs::remove_dir_all(&home).ok();
     std::fs::remove_dir_all(&source).ok();
 }
+
+/// Flow: `split` the universal `gamma` deployment through the CLI, keeping
+/// only Codex.
+/// Expectation: an `ok` envelope with one Codex copy, the update note, a
+/// real folder at `.codex/skills/gamma`, and no Universal folder or Claude
+/// Code link left.
+/// A failure here means `split` has no working CLI surface, or the CLI
+/// parses `--harness` differently from the core.
+#[test]
+fn split_writes_the_chosen_copy_and_drops_the_rest_or_names_the_envelope() {
+    let (_home_dir, home) = parkable_live_home();
+    let split = run(&[
+        "split",
+        "--home",
+        home.to_str().unwrap(),
+        "--deployment-id",
+        &deployment_id_in_root(&home, "gamma", "universal"),
+        "--harness",
+        "codex",
+        "--json",
+    ]);
+
+    assert_eq!(split.status, 0, "{:?}", split.json);
+    assert_eq!(split.json["operation"], "split", "{:?}", split.json);
+    assert_eq!(
+        split.json["data"]["copies"][0]["harness"], "codex",
+        "{:?}",
+        split.json
+    );
+    assert!(split.json["data"]["update_note"]
+        .as_str()
+        .is_some_and(|note| note.contains("npx skills update")));
+    assert!(home.join(".codex/skills/gamma/SKILL.md").is_file());
+    assert!(!home.join(".agents/skills/gamma").exists());
+    assert!(home
+        .join(".claude/skills/gamma")
+        .symlink_metadata()
+        .is_err());
+}
