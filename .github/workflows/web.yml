@@ -25,3 +25,4 @@ jobs:
       - run: npm run format:check
       - run: npm run doctor
       - run: npm run test
+      - run: npm run build -w @skill-studio/marketing

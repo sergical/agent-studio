@@ -2,16 +2,15 @@ import { fileURLToPath } from "node:url";
 import stylex from "@stylexjs/unplugin";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
+import { PAGE_TEMPLATES } from "./src/prerender/site-templates.ts";
 
 const PRERENDER_ENTRY = "/src/prerender/site-prerender.tsx";
 
 const pageInputs = Object.fromEntries(
-  ["index.html", "docs/index.html", "docs/cli/index.html", "docs/mcp/index.html", "404.html"].map(
-    (file) => [
-      file.replace(/\/?index\.html$|\.html$/, "") || "home",
-      fileURLToPath(new URL(file, import.meta.url)),
-    ],
-  ),
+  PAGE_TEMPLATES.map((file) => [
+    file.replace(/\/?index\.html$|\.html$/, "") || "home",
+    fileURLToPath(new URL(file, import.meta.url)),
+  ]),
 );
 
 /**
