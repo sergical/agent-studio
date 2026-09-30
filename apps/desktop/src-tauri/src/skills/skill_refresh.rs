@@ -813,6 +813,41 @@ fn reconcile_skill_names(
     affected_projects: &[PathBuf],
     queue_full_rebuild: bool,
 ) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or_else(|| {
+        state.mark_skills_dirty();
+        "Could not find home directory".to_string()
+    })?;
+    reconcile_skill_names_at(
+        &home,
+        state,
+        names,
+        affected_projects,
+        queue_full_rebuild,
+        |built| {
+            app.emit(SNAPSHOT_EVENT, built)
+                .map_err(|e| format!("failed to emit {SNAPSHOT_EVENT}: {e}"))
+        },
+    )
+}
+
+/// The body of `reconcile_skill_names`, split out so a test can drive it with
+/// a temp `home` and no `AppHandle`. `publish` receives the stored snapshot
+/// while the rebuild lock is still held.
+///
+/// A scan that comes back `Partial`, or names unread roots, is not applied:
+/// the targeted scan has no row for a skill whose `SKILL.md` it could not
+/// read, so replacing the rows at that skill's paths would delete a skill
+/// that is still on disk. Skills go dirty instead, and the full rebuild keeps
+/// the previous rows under the unread roots and sets `scan_partial` for the
+/// banner.
+fn reconcile_skill_names_at(
+    home: &Path,
+    state: &SkillRefreshState,
+    names: impl IntoIterator<Item = String>,
+    affected_projects: &[PathBuf],
+    queue_full_rebuild: bool,
+    publish: impl FnOnce(&SkillSnapshot) -> Result<(), String>,
+) -> Result<(), String> {
     let names: BTreeSet<String> = names.into_iter().collect();
     if names.is_empty()
         || names
@@ -837,13 +872,9 @@ fn reconcile_skill_names(
         state.mark_skills_dirty();
         return Ok(());
     };
-    let home = dirs::home_dir().ok_or_else(|| {
-        state.mark_skills_dirty();
-        "Could not find home directory".to_string()
-    })?;
     let mut candidates: BTreeSet<PathBuf> = current.projects.iter().map(PathBuf::from).collect();
     candidates.extend(affected_projects.iter().cloned());
-    let projects = resolve_project_paths(&home, candidates);
+    let projects = resolve_project_paths(home, candidates);
 
     // Uses the same core scan as a full rebuild (see
     // `core_scan_installed_skills`), restricted to `names` so `ops::scan`
@@ -856,8 +887,14 @@ fn reconcile_skill_names(
     // installed count: a release-mode scan over 300 fixture skills took
     // ~76ms for all of them but ~1.2ms restricted to one name.
     let names_vec: Vec<String> = names.iter().cloned().collect();
-    let core_skills =
-        core_scan_installed_skills(&home, &projects, &state.update_check_path, &names_vec).skills;
+    let scan = core_scan_installed_skills(home, &projects, &state.update_check_path, &names_vec);
+    if scan.completeness == skill_studio_core::dto::Completeness::Partial
+        || !scan.unread_roots.is_empty()
+    {
+        state.mark_skills_dirty();
+        return Ok(());
+    }
+    let core_skills = scan.skills;
 
     // `targeted_paths` still needs every root/holding-dir path the names
     // could be at, even for a name the core scan found nothing at (a
@@ -865,7 +902,7 @@ fn reconcile_skill_names(
     // that's the lexical half. The scanned deployments' own paths fill in
     // the rest (a symlink alias, a plugin skill dir, ...) that lexical
     // guessing alone wouldn't reconstruct.
-    let mut targeted_paths: BTreeSet<PathBuf> = agents::skill_roots(&home, &projects)
+    let mut targeted_paths: BTreeSet<PathBuf> = agents::skill_roots(home, &projects)
         .into_iter()
         .flat_map(|root| {
             names.iter().flat_map(move |name| {
@@ -885,13 +922,12 @@ fn reconcile_skill_names(
             .map(|deployment| deployment.path.clone()),
     );
     let lock_fs = skill_studio_host::RealFs::new();
-    let lock = lock_file::read_lock_file(&lock_fs, &lock_file::lock_file_path(&home)).map_err(
-        |error| {
+    let lock =
+        lock_file::read_lock_file(&lock_fs, &lock_file::lock_file_path(home)).map_err(|error| {
             state.mark_skills_dirty();
             format!("Targeted skill reconciliation could not read lock file: {error}")
-        },
-    )?;
-    let fork_registry = super::skill_fork_registry::read_fork_registry(&home).map_err(|error| {
+        })?;
+    let fork_registry = super::skill_fork_registry::read_fork_registry(home).map_err(|error| {
         state.mark_skills_dirty();
         format!("Targeted skill reconciliation could not read lifecycle registry: {error}")
     })?;
@@ -910,7 +946,7 @@ fn reconcile_skill_names(
         .collect();
     let update_store = skill_update_check::read_update_check_store_at(&state.update_check_path);
     apply_skill_snapshot_overlays(
-        &home,
+        home,
         &mut replacements,
         &fork_registry,
         &update_store,
@@ -924,7 +960,8 @@ fn reconcile_skill_names(
     if queue_full_rebuild {
         state.mark_skills_dirty();
     }
-    publish_skill_snapshot(app, state, built)?;
+    let built = store_skill_snapshot(state, built)?;
+    publish(&built)?;
     eprintln!(
         "skill refresh: reconciled {} skills in {} ms",
         names.len(),
@@ -4403,6 +4440,84 @@ mod tests {
         assert!(
             !snapshot_owns_path(&snapshot, &notes_link),
             "a non-SKILL.md link inside a deployment folder was accepted"
+        );
+    }
+
+    /// Flow: the watcher reports a change inside skill `alpha`, whose
+    /// `SKILL.md` is now unreadable (permission denied; iCloud eviction and a
+    /// lease timeout end the same way), so the targeted scan is `Partial`
+    /// and has no row for it. `beta` stays readable.
+    /// Expectation: the targeted refresh leaves the published snapshot alone,
+    /// so `alpha`'s row stays, and it marks skills dirty so a full rebuild
+    /// runs and sets the partial-scan banner. A skill that is still on disk
+    /// only becomes unreadable; it is not deleted.
+    /// Failure: `alpha` vanishes from the snapshot with no banner, and no
+    /// later full rebuild can bring it back while the file stays unreadable,
+    /// because the partial merge copies rows only from the previous snapshot.
+    #[cfg(unix)]
+    #[test]
+    fn targeted_refresh_of_a_skill_with_an_unreadable_skill_md_keeps_its_row_and_queues_a_full_rebuild(
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = super::super::test_support::opencode_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        for name in ["alpha", "beta"] {
+            let dir = home.join(".claude/skills").join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test\n---\nbody"),
+            )
+            .unwrap();
+        }
+        let update_check_path = tmp.path().join("update-check.json");
+        let (snapshot, _report) = build_snapshot(
+            &home,
+            &mut SkillInvocationIndex::default(),
+            BuildPaths {
+                cache_path: &tmp.path().join("cache.json"),
+                runs_root: tmp.path(),
+                update_check_path: &update_check_path,
+            },
+            Utc::now(),
+        );
+        assert_eq!(snapshot.skills.len(), 2, "both skills start out listed");
+        let mut state = SkillRefreshState::fixture(snapshot);
+        state.update_check_path = update_check_path;
+
+        let alpha_md = home.join(".claude/skills/alpha/SKILL.md");
+        fs::set_permissions(&alpha_md, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&alpha_md).is_ok() {
+            // Running as root: the file stays readable, so there is nothing to test.
+            return;
+        }
+        let result =
+            reconcile_skill_names_at(&home, &state, ["alpha".to_string()], &[], false, |_| Ok(()));
+        fs::set_permissions(&alpha_md, fs::Permissions::from_mode(0o644)).unwrap();
+        result.unwrap();
+
+        let names: Vec<String> = state
+            .snapshot
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .skills
+            .iter()
+            .map(|skill| skill.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            ["alpha", "beta"],
+            "a skill whose SKILL.md cannot be read must keep its row"
+        );
+        assert!(
+            state.is_skills_dirty(),
+            "a partial targeted scan must queue the full rebuild that sets the banner"
         );
     }
 
