@@ -46,7 +46,7 @@ const HOME_GLYPH_HIT = 28;
 const HOME_GLYPH_SIZE = 14;
 
 /** Text link style shared by every "Show all"/"Show everything"/"Learn more" affordance on Home. */
-export const LINK_CLASS = "h-auto gap-1 p-0 text-small";
+const LINK_CLASS = "h-auto gap-1 p-0 text-small";
 
 /** One inbox row's trailing action - a text button or, on the "Recently used" rows, a plain count. */
 const ROW_ACTION_CLASS =

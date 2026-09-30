@@ -313,11 +313,6 @@ export function useLocationActions(
   };
 }
 
-// `setSkillInvocation` is used by the Invocation footer's segmented control,
-// re-exported here so `SkillLocationsCard` has one import site for every
-// Locations-card write call.
-export { setSkillInvocation };
-
 /**
  * Sets `file`'s invocation policy, forking first when needed - the same rule
  * the SKILL.md editor uses: only the global Universal folder can need a fork

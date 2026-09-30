@@ -1,5 +1,9 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
+  "ignoreExportsUsedInFile": {
+    "interface": true,
+    "type": true
+  },
   "workspaces": {
     ".": {
       "entry": [
@@ -11,7 +15,8 @@
       "project": ["tools/oxlint/anti-slop/**/*.ts", "*.ts"]
     },
     "apps/desktop": {
-      "project": ["src/**/*.{ts,tsx}"]
+      "project": ["src/**/*.{ts,tsx}"],
+      "ignoreDependencies": ["tailwindcss"]
     },
     "apps/server": {
       "project": ["src/**/*.ts"]
@@ -20,14 +25,15 @@
       "project": ["src/**/*.{ts,tsx}"]
     },
     "packages/lib": {
-      "project": ["src/**/*.{ts,tsx}"]
+      "project": ["src/**/*.{ts,tsx}"],
+      "ignore": ["src/skill-types.generated.ts"]
     },
     "packages/ui": {
       "project": ["src/**/*.{ts,tsx}"]
     },
     "packages/marketing": {
       "entry": [
-        "src/remotion/Root.tsx",
+        "src/remotion/index.ts",
         "src/docs/docs-main.ts",
         "src/prerender/site-prerender.tsx"
       ],

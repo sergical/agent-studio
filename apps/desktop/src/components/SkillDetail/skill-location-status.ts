@@ -121,8 +121,6 @@ export interface Condition {
   hint?: string;
 }
 
-export type LocationKind = "shared" | "link" | "copy" | "plugin" | "reader";
-
 interface BaseLocationRow {
   harnessLabel: string;
   path: string;
@@ -257,7 +255,7 @@ function harnessId(agent: string): AgentId | null {
 }
 
 /** True when a skill parked globally still has a live copy or Universal folder outside the parked one. */
-export function liveElsewhere(skill: InstalledSkill): boolean {
+function liveElsewhere(skill: InstalledSkill): boolean {
   return skill.parked && skill.deployments.some((d) => d.scope !== "parked" && !d.disabled);
 }
 
@@ -522,7 +520,7 @@ function topLevel(conditions: Condition[]): StatusLevel | null {
 }
 
 /** The icon/dot tooltip: what's wrong, the fix, then any child sentences, then the mono path. */
-export function rowTipLines(conditions: Condition[]): string[] {
+function rowTipLines(conditions: Condition[]): string[] {
   if (!conditions.length) return [];
   const [top, ...rest] = conditions;
   return [top.what, top.fix, ...rest.map((c) => c.what), top.path].filter((line): line is string =>

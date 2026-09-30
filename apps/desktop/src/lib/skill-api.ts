@@ -482,7 +482,7 @@ export async function addSkill(request: AddSkillRequest): Promise<AddSkillResult
 }
 
 /** Event name every background Add Skill status is emitted on. */
-export const ADD_SKILL_OPERATION_EVENT = "skills://add-skill-operation";
+const ADD_SKILL_OPERATION_EVENT = "skills://add-skill-operation";
 
 /**
  * Schedule a single-skill add. Returns the queued event before `npx` or
@@ -569,6 +569,12 @@ export async function getAddMethodDefaults(
  * default when nothing has been saved yet), so the Add Skill sheet can
  * pre-fill a second install the way `getAddMethodDefaults` pre-fills the
  * first.
+ *
+ * No screen calls this yet. It stays because lib.rs registers
+ * `install_preferences` and command_registration_parity.rs requires a caller
+ * here for every registered command.
+ *
+ * @public
  */
 export async function installPreferences(
   scope: InstallScope,

@@ -2,13 +2,6 @@ import * as stylex from "@stylexjs/stylex";
 
 export type PaletteId = "mono" | "cobalt" | "ember" | "violet";
 
-export const paletteOptions = [
-  { id: "mono", label: "Mono" },
-  { id: "cobalt", label: "Cobalt" },
-  { id: "ember", label: "Ember" },
-  { id: "violet", label: "Violet" },
-] satisfies ReadonlyArray<{ id: PaletteId; label: string }>;
-
 export const paletteVars = stylex.defineVars({
   darkBackground: "oklch(0.11 0 0)",
   darkSurface: "oklch(0.15 0 0)",
@@ -138,10 +131,6 @@ const violetTheme = stylex.createTheme(paletteVars, {
   lightSecondary: "oklch(0.58 0.16 235)",
   logoFilter: "none",
 });
-
-export function isPaletteId(value: string | null): value is PaletteId {
-  return value === "mono" || value === "cobalt" || value === "ember" || value === "violet";
-}
 
 export function getPaletteTheme(palette: PaletteId) {
   switch (palette) {
