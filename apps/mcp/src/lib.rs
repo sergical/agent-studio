@@ -14,9 +14,9 @@
 //! no sessions, no subscriptions (decision D13). The one thing kept between
 //! calls is `skill_usage`'s in-memory use index, which only saves re-reading
 //! unchanged session history; it never changes an answer, so restarting the
-//! process between two calls must still give identical results. rmcp
-//! negotiates the protocol revision with the client. Input schemas are the core's
-//! request DTOs' `schemars` output directly, not redeclared types. A core
+//! process between two calls must still give identical results. Input
+//! schemas are the core's request DTOs' `schemars` output directly, not
+//! redeclared types. A core
 //! error is never a panic and never a bare string: it comes back as a tool
 //! error whose payload is the same `ResultEnvelope` the CLI prints.
 //!
@@ -338,7 +338,7 @@ impl SkillStudioServer {
     ) -> CallToolResult {
         let days = req.days.unwrap_or(skill_studio_host::DEFAULT_USAGE_DAYS);
         run_op(Operation::SkillUsage, false, &context, |rt, ctx| {
-            let inventory = ops::scan(rt, ctx, &skill_studio_core::dto::ScanRequest::default())?;
+            let inventory = ops::scan(rt, ctx, &ScanRequest::default())?;
             let mut usage = self.usage.lock().unwrap_or_else(PoisonError::into_inner);
             let usage = usage.get_or_insert_with(|| {
                 SkillUsage::load_read_only(scope::desktop_usage_cache().as_deref())
