@@ -54,6 +54,18 @@ button {
   cursor: pointer;
 }
 
+/* The prerendered homepage is drawn in the dark theme. A light-theme visitor sees nothing until
+   the client render replaces it, instead of a flash of the dark page. */
+html[data-site-theme="light"] #root[data-prerendered="dark"] {
+  visibility: hidden;
+}
+
+/* Prerendered pages ship both theme icons; show the one for the current theme. */
+html:not([data-site-theme="light"]) [data-theme-icon="light"],
+html[data-site-theme="light"] [data-theme-icon="dark"] {
+  display: none;
+}
+
 /* Safari still draws the disclosure triangle unless the marker pseudo-element is hidden. */
 summary::-webkit-details-marker {
   display: none;

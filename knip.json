@@ -26,7 +26,11 @@
       "project": ["src/**/*.{ts,tsx}"]
     },
     "packages/marketing": {
-      "entry": ["src/remotion/Root.tsx"],
+      "entry": [
+        "src/remotion/Root.tsx",
+        "src/docs/docs-main.ts",
+        "src/prerender/site-prerender.tsx"
+      ],
       "project": ["src/**/*.{ts,tsx}"]
     }
   }

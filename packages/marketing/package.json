@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host ${HOST:-localhost} --port ${PORT:-5173}",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && vite build --ssr src/prerender/site-prerender.tsx --outDir dist-ssr && node scripts/prerender-docs.mjs",
     "test": "vitest run",
     "remotion:studio": "remotion studio src/remotion/index.ts",
     "typecheck": "tsc --noEmit",
@@ -26,6 +26,7 @@
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
     "@vitejs/plugin-react": "6.1.1",
+    "marked": "^18.0.14",
     "remotion": "^4.0.520",
     "typescript": "7.0.2",
     "vite": "8.2.2",

@@ -3,14 +3,15 @@ import { BookOpen } from "lucide-react";
 
 import { AgentIcon, type AgentId } from "../AgentIcon";
 import { ProductMock, type ThemeToggleOrigin } from "../ProductMock";
-import { Arrow, LogoLockup } from "../MarketingBrand";
+import { Arrow } from "../MarketingBrand";
+import { SiteFooter, SiteHeader, siteLayout } from "../SiteChrome";
 import { lightSiteTheme, siteTokens, type SiteTheme } from "../SiteTheme.stylex";
 import { SidecarWalkthrough } from "../walkthrough/SidecarWalkthrough";
 import { FaqSection } from "../home/FaqSection";
 import { homeSectionStyles } from "../home/HomeSection.stylex";
 import { ProblemSection } from "../home/ProblemSection";
 import { UsageSection } from "../home/UsageSection";
-import { DOCS_URL, DOWNLOAD_URL, GITHUB_REPOSITORY_URL, TRUST_LINE } from "../site-links";
+import { DOCS_URL, DOWNLOAD_URL, TRUST_LINE } from "../site-links";
 
 interface CommandCenterProps {
   theme: SiteTheme;
@@ -43,24 +44,11 @@ function DownloadButton({ theme }: { theme: SiteTheme }) {
 
 export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
   return (
-    <div id="top" {...stylex.props(styles.page, theme === "light" && lightSiteTheme)}>
-      <header {...stylex.props(styles.container, styles.header)}>
-        <LogoLockup inverse={theme === "dark"} compact />
-        <nav {...stylex.props(styles.nav)} aria-label="Main navigation">
-          <a href="#how-it-works" {...stylex.props(styles.navLink)}>
-            How it works
-          </a>
-          <a href={DOCS_URL} {...stylex.props(styles.navLink)}>
-            Docs
-          </a>
-          <a href="#download" {...stylex.props(styles.navLink)}>
-            Download
-          </a>
-        </nav>
-      </header>
+    <div id="top" {...stylex.props(siteLayout.page, theme === "light" && lightSiteTheme)}>
+      <SiteHeader page="home" />
 
       <main>
-        <section {...stylex.props(styles.container, styles.hero)}>
+        <section {...stylex.props(siteLayout.container, styles.hero)}>
           <div {...stylex.props(styles.copy)}>
             <h1 {...stylex.props(styles.title)}>
               Tidy up your
@@ -117,23 +105,23 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
           </div>
         </section>
 
-        <section id="problem" {...stylex.props(styles.container, styles.problemSection)}>
+        <section id="problem" {...stylex.props(siteLayout.container, styles.problemSection)}>
           <ProblemSection />
         </section>
 
-        <section id="how-it-works" {...stylex.props(styles.container, styles.importSection)}>
+        <section id="how-it-works" {...stylex.props(siteLayout.container, styles.importSection)}>
           <SidecarWalkthrough theme={theme} />
         </section>
 
-        <section id="use-it" {...stylex.props(styles.container, homeSectionStyles.section)}>
+        <section id="use-it" {...stylex.props(siteLayout.container, homeSectionStyles.section)}>
           <UsageSection />
         </section>
 
-        <section id="faq" {...stylex.props(styles.container, homeSectionStyles.section)}>
+        <section id="faq" {...stylex.props(siteLayout.container, homeSectionStyles.section)}>
           <FaqSection />
         </section>
 
-        <section id="download" {...stylex.props(styles.container, styles.closingSection)}>
+        <section id="download" {...stylex.props(siteLayout.container, styles.closingSection)}>
           <h2 {...stylex.props(styles.closingTitle)}>Clear out your skills.</h2>
           <p {...stylex.props(styles.closingCopy)}>
             Keep the ones your agents use and park the rest.
@@ -147,59 +135,12 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
         </section>
       </main>
 
-      <footer {...stylex.props(styles.container, styles.footer)}>
-        <LogoLockup inverse={theme === "dark"} compact />
-        <nav {...stylex.props(styles.footerLinks)} aria-label="Footer navigation">
-          <a href={DOCS_URL} {...stylex.props(styles.footerLink)}>
-            Docs
-          </a>
-          <a
-            href={GITHUB_REPOSITORY_URL}
-            target="_blank"
-            rel="noreferrer"
-            {...stylex.props(styles.footerLink)}
-          >
-            Source
-          </a>
-          <a href="#top" {...stylex.props(styles.footerLink)}>
-            Back to top
-          </a>
-        </nav>
-      </footer>
+      <SiteFooter page="home" />
     </div>
   );
 }
 
 const styles = stylex.create({
-  page: {
-    backgroundColor: siteTokens.background,
-    color: siteTokens.text,
-    minHeight: "100vh",
-    overflow: "clip",
-  },
-  container: {
-    boxSizing: "border-box",
-    marginInline: "auto",
-    maxWidth: 1280,
-    paddingInline: 28,
-    width: "100%",
-    "@media (max-width: 600px)": { paddingInline: 20 },
-  },
-  header: {
-    alignItems: "center",
-    display: "flex",
-    justifyContent: "space-between",
-    paddingBlock: 22,
-    "@media (max-width: 700px)": { paddingBlock: 16 },
-  },
-  nav: { display: "flex", gap: 26, "@media (max-width: 700px)": { display: "none" } },
-  navLink: {
-    color: siteTokens.muted,
-    fontSize: 14,
-    textDecoration: "none",
-    transition: "color 150ms ease-out",
-    ":hover": { color: siteTokens.text },
-  },
   hero: {
     alignItems: "center",
     display: "grid",
@@ -454,26 +395,5 @@ const styles = stylex.create({
     lineHeight: 1.6,
     margin: "24px 0 30px",
     maxWidth: "48ch",
-  },
-  footer: {
-    alignItems: "center",
-    borderTopColor: siteTokens.border,
-    borderTopStyle: "solid",
-    borderTopWidth: 1,
-    display: "flex",
-    justifyContent: "space-between",
-    paddingBlock: 28,
-    paddingBottom: "max(28px, env(safe-area-inset-bottom))",
-  },
-  footerLinks: { alignItems: "center", display: "flex", gap: 22 },
-  footerLink: {
-    color: siteTokens.muted,
-    fontSize: 12,
-    minHeight: 44,
-    alignItems: "center",
-    display: "inline-flex",
-    textDecoration: "none",
-    transition: "color 150ms ease-out",
-    ":hover": { color: siteTokens.text },
   },
 });

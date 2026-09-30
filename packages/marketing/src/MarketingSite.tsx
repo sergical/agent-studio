@@ -4,64 +4,44 @@ import * as stylex from "@stylexjs/stylex";
 
 import { getPaletteTheme } from "./PaletteThemes.stylex";
 import type { ThemeToggleOrigin } from "./ProductMock";
+import {
+  applySiteTheme,
+  currentSiteTheme,
+  onSystemThemeChange,
+  rememberSiteTheme,
+  rememberedSiteTheme,
+  transitionSiteTheme,
+} from "./site-theme";
 import type { SiteTheme } from "./SiteTheme.stylex";
 import { CommandCenter } from "./variants/CommandCenter";
 
-function systemTheme(): SiteTheme {
-  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+interface MarketingSiteProps {
+  /** Set only by the prerender, which has no document to read the theme from. */
+  prerenderTheme?: SiteTheme;
 }
 
-export function MarketingSite() {
-  const [theme, setTheme] = useState<SiteTheme>(systemTheme);
-  const [isSystemTheme, setIsSystemTheme] = useState(true);
+export function MarketingSite({ prerenderTheme }: MarketingSiteProps) {
+  const [theme, setTheme] = useState<SiteTheme>(() => prerenderTheme ?? currentSiteTheme());
+  const [isSystemTheme, setIsSystemTheme] = useState(
+    () => prerenderTheme !== undefined || rememberedSiteTheme() === null,
+  );
 
   useEffect(() => {
-    const preference = window.matchMedia("(prefers-color-scheme: light)");
-    const followPreference = () => {
-      if (isSystemTheme) setTheme(preference.matches ? "light" : "dark");
-    };
-    preference.addEventListener("change", followPreference);
-    document.documentElement.dataset.siteTheme = theme;
-    return () => preference.removeEventListener("change", followPreference);
+    applySiteTheme(theme);
+    if (!isSystemTheme) return;
+    return onSystemThemeChange(setTheme);
   }, [isSystemTheme, theme]);
 
   const toggleTheme = (origin: ThemeToggleOrigin) => {
     const nextTheme = theme === "dark" ? "light" : "dark";
-    const commitTheme = () => {
-      setIsSystemTheme(false);
-      setTheme(nextTheme);
-      document.documentElement.dataset.siteTheme = nextTheme;
-    };
-
-    const shouldReduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (shouldReduceMotion || !("startViewTransition" in document)) {
-      commitTheme();
-      return;
-    }
-
-    const transition = document.startViewTransition(() => flushSync(commitTheme));
-    void transition.ready.then(() => {
-      const radius = Math.hypot(
-        Math.max(origin.x, window.innerWidth - origin.x),
-        Math.max(origin.y, window.innerHeight - origin.y),
-      );
-      document.documentElement.animate(
-        {
-          clipPath: [
-            `circle(0px at ${origin.x}px ${origin.y}px)`,
-            `circle(${radius}px at ${origin.x}px ${origin.y}px)`,
-          ],
-        },
-        {
-          // A near-linear start keeps the first frames inside the icon, so the reveal reads as
-          // growing out of the button. An expo-out curve reaches ~90% radius in 150ms and then
-          // crawls, which reads as a mid-way freeze.
-          duration: 560,
-          easing: "cubic-bezier(0.4, 0, 0.2, 1)",
-          pseudoElement: "::view-transition-new(root)",
-        },
-      );
-    });
+    rememberSiteTheme(nextTheme);
+    transitionSiteTheme(origin, () =>
+      flushSync(() => {
+        setIsSystemTheme(false);
+        setTheme(nextTheme);
+        applySiteTheme(nextTheme);
+      }),
+    );
   };
 
   return (

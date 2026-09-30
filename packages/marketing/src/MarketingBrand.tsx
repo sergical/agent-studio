@@ -1,18 +1,16 @@
 import * as stylex from "@stylexjs/stylex";
 
 import { paletteVars } from "./PaletteThemes.stylex";
+import { siteTokens } from "./SiteTheme.stylex";
 
 interface LogoLockupProps {
-  inverse?: boolean;
+  href: string;
   compact?: boolean;
 }
 
-export function LogoLockup({ inverse = false, compact = false }: LogoLockupProps) {
+export function LogoLockup({ href, compact = false }: LogoLockupProps) {
   return (
-    <a
-      href="#top"
-      {...stylex.props(stylex.defaultMarker(), brandStyles.lockup, inverse && brandStyles.inverse)}
-    >
+    <a href={href} {...stylex.props(stylex.defaultMarker(), brandStyles.lockup)}>
       <img
         src="/skill-studio-logo.png"
         alt=""
@@ -55,7 +53,7 @@ export function Arrow({ inverse = false }: ArrowProps) {
 const brandStyles = stylex.create({
   lockup: {
     alignItems: "center",
-    color: paletteVars.lightText,
+    color: siteTokens.text,
     display: "inline-flex",
     gap: 9,
     textDecoration: "none",

@@ -1,4 +1,5 @@
 import { StrictMode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { MarketingSite } from "./MarketingSite";
 import "./marketing-site.css";
@@ -9,8 +10,14 @@ if (!root) {
   throw new Error("Marketing site root element is missing");
 }
 
-createRoot(root).render(
-  <StrictMode>
-    <MarketingSite />
-  </StrictMode>,
-);
+// The prerendered markup is for crawlers and first paint. The client render replaces it
+// instead of hydrating, because the prerender cannot know the visitor's theme.
+const reactRoot = createRoot(root);
+flushSync(() => {
+  reactRoot.render(
+    <StrictMode>
+      <MarketingSite />
+    </StrictMode>,
+  );
+});
+delete root.dataset.prerendered;
