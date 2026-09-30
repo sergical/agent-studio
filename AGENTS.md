@@ -141,6 +141,7 @@ removed; do not list individual source files here.
 ├── packages/
 │   ├── lib/                      # Shared TypeScript library
 │   ├── marketing/                # Marketing site (Vite + StyleX) and Remotion walkthroughs
+│   ├── npm/                      # npm packages for the CLI; not workspaces (packages/* stops one level up)
 │   └── ui/                       # Shared UI primitives (@skill-studio/ui)
 ├── docs/                         # Specs and reference docs
 ├── tools/

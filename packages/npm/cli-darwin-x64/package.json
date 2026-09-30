@@ -1,0 +1,19 @@
+{
+  "name": "@skill-studio/cli-darwin-x64",
+  "version": "0.1.0",
+  "description": "The skill-studio command for macOS on Intel.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sergical/skill-studio.git"
+  },
+  "files": [
+    "bin/skill-studio"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "name": "skill-studio",
+  "version": "0.1.0",
+  "description": "Check, park and clean up the agent skills on your Mac, from the terminal or an MCP client.",
+  "keywords": [
+    "agent-skills",
+    "claude-code",
+    "codex",
+    "cursor",
+    "mcp",
+    "opencode",
+    "skills"
+  ],
+  "homepage": "https://github.com/sergical/skill-studio#readme",
+  "bugs": "https://github.com/sergical/skill-studio/issues",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sergical/skill-studio.git"
+  },
+  "bin": {
+    "skill-studio": "bin/skill-studio.js"
+  },
+  "files": [
+    "bin/skill-studio.js"
+  ],
+  "optionalDependencies": {
+    "@skill-studio/cli-darwin-arm64": "0.1.0",
+    "@skill-studio/cli-darwin-x64": "0.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
