@@ -1,11 +1,16 @@
 import * as stylex from "@stylexjs/stylex";
-import { Code2 } from "lucide-react";
+import { BookOpen } from "lucide-react";
 
 import { AgentIcon, type AgentId } from "../AgentIcon";
 import { ProductMock, type ThemeToggleOrigin } from "../ProductMock";
 import { Arrow, LogoLockup } from "../MarketingBrand";
 import { lightSiteTheme, siteTokens, type SiteTheme } from "../SiteTheme.stylex";
 import { SidecarWalkthrough } from "../walkthrough/SidecarWalkthrough";
+import { FaqSection } from "../home/FaqSection";
+import { homeSectionStyles } from "../home/HomeSection.stylex";
+import { ProblemSection } from "../home/ProblemSection";
+import { UsageSection } from "../home/UsageSection";
+import { DOCS_URL, DOWNLOAD_URL, GITHUB_REPOSITORY_URL, TRUST_LINE } from "../site-links";
 
 interface CommandCenterProps {
   theme: SiteTheme;
@@ -25,14 +30,9 @@ const marqueeMove = stylex.keyframes({
   to: { transform: "translateX(-50%)" },
 });
 
-const GITHUB_REPOSITORY_URL = "https://github.com/sergical/skill-studio";
-
-// Tauri's default deployment target applies because tauri.conf.json sets no minimumSystemVersion.
-const REQUIREMENTS = "macOS 13 or later · Apple Silicon and Intel";
-
 function DownloadButton({ theme }: { theme: SiteTheme }) {
   return (
-    <a href={`${GITHUB_REPOSITORY_URL}/releases`} {...stylex.props(styles.primaryButton)}>
+    <a href={DOWNLOAD_URL} {...stylex.props(styles.primaryButton)}>
       <span>Download for macOS</span>
       <span aria-hidden="true" {...stylex.props(styles.primaryButtonArrow)}>
         <Arrow inverse={theme === "dark"} />
@@ -50,6 +50,9 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
           <a href="#how-it-works" {...stylex.props(styles.navLink)}>
             How it works
           </a>
+          <a href={DOCS_URL} {...stylex.props(styles.navLink)}>
+            Docs
+          </a>
           <a href="#download" {...stylex.props(styles.navLink)}>
             Download
           </a>
@@ -60,29 +63,23 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
         <section {...stylex.props(styles.container, styles.hero)}>
           <div {...stylex.props(styles.copy)}>
             <h1 {...stylex.props(styles.title)}>
-              Your skills.
+              Tidy up your
               <br />
-              Your agents.
-              <br />
-              <span {...stylex.props(styles.titleAccent)}>One place.</span>
+              <span {...stylex.props(styles.titleAccent)}>agent skills.</span>
             </h1>
             <p {...stylex.props(styles.lede)}>
-              A desktop app for managing agent skills. Find installed copies, compare changes, and
-              choose where to install.
+              Skills pile up across your agents and projects. Skill Studio shows which are broken,
+              which are duplicates and which your agents never use, so you can clear them out with
+              undo.
             </p>
             <div {...stylex.props(styles.actions)}>
               <DownloadButton theme={theme} />
-              <a
-                href={GITHUB_REPOSITORY_URL}
-                target="_blank"
-                rel="noreferrer"
-                {...stylex.props(styles.sourceLink)}
-              >
-                <Code2 aria-hidden="true" size={18} />
-                <span>Browse source</span>
+              <a href={DOCS_URL} {...stylex.props(styles.sourceLink)}>
+                <BookOpen aria-hidden="true" size={18} />
+                <span>Read the docs</span>
               </a>
             </div>
-            <p {...stylex.props(styles.fineprint)}>{REQUIREMENTS}</p>
+            <p {...stylex.props(styles.fineprint)}>{TRUST_LINE}</p>
           </div>
 
           <div id="product" {...stylex.props(styles.productWrap)}>
@@ -120,20 +117,32 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
           </div>
         </section>
 
+        <section id="problem" {...stylex.props(styles.container, styles.problemSection)}>
+          <ProblemSection />
+        </section>
+
         <section id="how-it-works" {...stylex.props(styles.container, styles.importSection)}>
           <SidecarWalkthrough theme={theme} />
         </section>
 
+        <section id="use-it" {...stylex.props(styles.container, homeSectionStyles.section)}>
+          <UsageSection />
+        </section>
+
+        <section id="faq" {...stylex.props(styles.container, homeSectionStyles.section)}>
+          <FaqSection />
+        </section>
+
         <section id="download" {...stylex.props(styles.container, styles.closingSection)}>
-          <h2 {...stylex.props(styles.closingTitle)}>Get Skill Studio.</h2>
+          <h2 {...stylex.props(styles.closingTitle)}>Clear out your skills.</h2>
           <p {...stylex.props(styles.closingCopy)}>
-            Find your installed skills and check which agents can use them.
+            Keep the ones your agents use and park the rest.
           </p>
           <DownloadButton theme={theme} />
-          <p {...stylex.props(styles.fineprint)}>{REQUIREMENTS}</p>
+          <p {...stylex.props(styles.fineprint)}>{TRUST_LINE}</p>
           <p {...stylex.props(styles.trust)}>
-            Free and open source under the MIT license. Runs locally on your Mac, with no account.
-            Crash reports are off unless you turn them on.
+            Runs on your Mac. It sends anonymous crash reports, which you can turn off. They never
+            include skill names, files or paths.
           </p>
         </section>
       </main>
@@ -141,6 +150,9 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
       <footer {...stylex.props(styles.container, styles.footer)}>
         <LogoLockup inverse={theme === "dark"} compact />
         <nav {...stylex.props(styles.footerLinks)} aria-label="Footer navigation">
+          <a href={DOCS_URL} {...stylex.props(styles.footerLink)}>
+            Docs
+          </a>
           <a
             href={GITHUB_REPOSITORY_URL}
             target="_blank"
@@ -235,7 +247,9 @@ const styles = stylex.create({
   fineprint: {
     color: siteTokens.muted,
     fontSize: 12,
+    lineHeight: 1.5,
     margin: "14px 0 0",
+    textWrap: "balance",
   },
   trust: {
     color: siteTokens.muted,
@@ -407,6 +421,10 @@ const styles = stylex.create({
     whiteSpace: "nowrap",
     width: 1,
   },
+  problemSection: {
+    paddingTop: 112,
+    "@media (max-width: 600px)": { paddingTop: 72 },
+  },
   importSection: {
     paddingBlock: "124px 24px",
     "@media (max-width: 600px)": { paddingBlock: "86px 24px" },
@@ -415,10 +433,10 @@ const styles = stylex.create({
     alignItems: "flex-start",
     display: "flex",
     flexDirection: "column",
-    paddingBlock: "76px 142px",
+    paddingBlock: "124px 142px",
     "@media (max-width: 600px)": {
       alignItems: "center",
-      paddingBlock: "52px 100px",
+      paddingBlock: "86px 100px",
       textAlign: "center",
     },
   },

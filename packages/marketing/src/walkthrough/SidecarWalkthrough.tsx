@@ -73,7 +73,7 @@ export function SidecarWalkthrough({ theme }: WalkthroughProps) {
 
   return (
     <div data-walkthrough="sidecar">
-      <h2 {...stylex.props(s.sidecarTitle)}>Manage your installed skills.</h2>
+      <h2 {...stylex.props(s.sidecarTitle)}>How it works.</h2>
       <div {...stylex.props(s.sidecar)}>
         <div ref={list} {...stylex.props(s.sidecarList)}>
           {chapters.map((chapter, index) => (

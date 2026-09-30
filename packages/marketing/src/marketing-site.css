@@ -4,11 +4,6 @@
 
 html {
   scroll-behavior: smooth;
-  scrollbar-width: none;
-}
-
-html::-webkit-scrollbar {
-  display: none;
 }
 
 html,
@@ -57,6 +52,11 @@ html[data-site-theme="light"] body {
 
 button {
   cursor: pointer;
+}
+
+/* Safari still draws the disclosure triangle unless the marker pseudo-element is hidden. */
+summary::-webkit-details-marker {
+  display: none;
 }
 
 ::selection {
