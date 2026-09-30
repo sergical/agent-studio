@@ -867,6 +867,36 @@ fn a_failed_cli_update_says_which_command_failed_with_the_tool_line_and_no_npm_c
     }
 }
 
+/// Flow: a dotagents update pins `delta` to a new ref, and `dotagents
+/// install` fails. Expectation: `agents.toml` holds its original bytes,
+/// including the old `ref`. Failure here means a failed update leaves the
+/// declaration pinned to a ref that never installed, so the next
+/// `dotagents install` fetches it.
+#[test]
+fn a_failed_dotagents_update_leaves_agents_toml_on_its_old_ref_or_names_the_pin_left_behind() {
+    let home = unique_temp_dir("update_dotagents_failed_pin");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "delta", "v1");
+    seed_dotagents_files(&home, DECLARED_TOML);
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(FailingNpxSpawner)),
+    );
+    let mut req = cli_request("delta", InstallMethod::Dotagents);
+    req.ref_pin = Some("bbb".to_string());
+
+    ops::update(&rt, &ctx(), &req).unwrap_err();
+
+    assert_eq!(
+        std::fs::read_to_string(home.join(".agents/agents.toml")).unwrap(),
+        DECLARED_TOML,
+        "the failed install left agents.toml pinned to the new ref"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// Flow: a global skills.sh update over a skill only the Universal folder
 /// holds, where the CLI links it into the Claude Code and Codex folders too.
 /// Expectation: after the update neither harness folder holds the skill, and

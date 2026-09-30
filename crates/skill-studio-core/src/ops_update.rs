@@ -115,6 +115,8 @@ struct DotagentsPlan {
     /// real file and the link survives.
     config: PathBuf,
     lock: PathBuf,
+    /// `agents.toml` as read, written back when the install fails.
+    original_config: String,
     /// The edited `agents.toml` text to write once the row is recorded;
     /// `None` when no new ref is pinned.
     edited_config: Option<String>,
@@ -188,6 +190,7 @@ fn plan_dotagents_update(
     Ok(DotagentsPlan {
         config,
         lock: dir.join("agents.lock"),
+        original_config: text,
         edited_config: pinned.map(|()| doc.to_string()),
     })
 }
@@ -493,15 +496,32 @@ fn update_write(
                 }
             }
             let held_before = harness_dirs_holding(rt, &req.scope, &req.skill);
-            update_via_cli(rt, ctx, req, destination)?;
-            if req.method == InstallMethod::SkillsSh {
-                remove_links_the_cli_added(
-                    rt,
-                    &session.guard,
-                    &req.scope,
-                    &req.skill,
-                    &held_before,
-                )?;
+            let refreshed = update_via_cli(rt, ctx, req, destination).and_then(|()| {
+                if req.method == InstallMethod::SkillsSh {
+                    remove_links_the_cli_added(
+                        rt,
+                        &session.guard,
+                        &req.scope,
+                        &req.skill,
+                        &held_before,
+                    )?;
+                }
+                Ok(())
+            });
+            if let Err(e) = refreshed {
+                if let Some(plan) = dotagents.filter(|p| p.edited_config.is_some()) {
+                    // Best effort: the original error is the one to report.
+                    let _ = crate::ports::confine_write_through(&rt.scope, fs, &plan.config).map(
+                        |scoped| {
+                            fs.write_atomic(
+                                &session.guard,
+                                &scoped,
+                                plan.original_config.as_bytes(),
+                            )
+                        },
+                    );
+                }
+                return Err(e);
             }
             Ok(())
         }
