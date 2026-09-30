@@ -5,8 +5,8 @@
 
 import { useState } from "react";
 
-export type SkillAssistantPanelMode = "assistant" | "runs";
-export type SkillAssistantPanelAction =
+type SkillAssistantPanelMode = "assistant" | "runs";
+type SkillAssistantPanelAction =
   | "open-assistant"
   | "close-assistant"
   | "open-runs"

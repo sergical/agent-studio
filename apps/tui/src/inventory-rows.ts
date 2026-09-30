@@ -7,7 +7,7 @@
 
 import type { DeploymentDto, InstalledSkillDto, Inventory } from "./cli-types.ts";
 
-export interface SkillRow {
+interface SkillRow {
   skill: InstalledSkillDto;
   /** Harness (or `universal`/`parked`) the skill's first deployment belongs to. */
   groupLabel: string;

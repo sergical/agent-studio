@@ -45,7 +45,7 @@ interface SharedFolderSwitchPolicy {
  * row stays without a switch in 0.1.0 - except when it is already disabled,
  * which must stay re-enableable.
  */
-export function canToggleHarness(deployment: Deployment): boolean {
+function canToggleHarness(deployment: Deployment): boolean {
   const id = agentIdFromDeploymentLabel(deployment.agent) ?? "";
   if (!HARNESSES_WITH_PER_SKILL_DISABLE.includes(id)) return false;
   if (deployment.disabled) return true;

@@ -73,7 +73,7 @@ interface FirstRunScreenState {
  * whatever the user leaves the switch at when they continue. */
 export const FIRST_RUN_TELEMETRY_DEFAULT = true;
 
-export interface FirstRunSave {
+interface FirstRunSave {
   choice: HarnessesChoice;
   telemetryEnabled: boolean;
 }

@@ -7,7 +7,7 @@ import { formatBytes, formatTokens, pluginSourceLabel } from "@skill-studio/lib"
 import type { Deployment, InstalledSkill, LifecycleOwnerKind } from "@skill-studio/lib";
 
 /** Text rendered by the installed skill source ledger. */
-export interface InstalledSkillSourceLedgerModel {
+interface InstalledSkillSourceLedgerModel {
   source: string;
   lifecycleOwner: string;
   lifecycleManagement: "Managed" | "Read-only" | "Mixed" | "Unknown";

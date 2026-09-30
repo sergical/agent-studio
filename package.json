@@ -35,7 +35,10 @@
     "@oxlint/plugins": "^1.80.0",
     "@playwright/test": "^1.63.0",
     "knip": "^5.88.1",
+    "oxfmt": "^0.65.0",
+    "oxlint": "^1.80.0",
     "react-doctor": "^0.9.12",
+    "vitest": "^4.1.11",
     "zod": "4.4.3"
   },
   "engines": {

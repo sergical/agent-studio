@@ -11,7 +11,7 @@ import { sortRows } from "../components/SkillList/skill-row-format";
 import { rowGroup, rowState } from "../components/SkillList/skill-row-state";
 import type { RowGroup, RowState } from "../components/SkillList/skill-row-state";
 
-export interface GroupedSkillRows {
+interface GroupedSkillRows {
   buckets: Record<RowGroup, InstalledSkill[]>;
   statesBySkill: Map<string, RowState | null>;
   /** The grouped display order: shift-click and `aria-rowindex` refer to this array, not the
