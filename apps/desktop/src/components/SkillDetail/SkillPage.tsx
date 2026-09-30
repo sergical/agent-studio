@@ -14,7 +14,7 @@ import {
 import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import { editableDeployments } from "@skill-studio/lib";
-import type { Deployment, InstalledSkill } from "@skill-studio/lib";
+import type { Deployment, FrontmatterQuoteRepair, InstalledSkill } from "@skill-studio/lib";
 import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
@@ -230,7 +230,8 @@ export function SkillPage({
   const { deployment, deploymentUnresolved, isDeploymentBroken, skillMdPath, isPluginManaged } =
     resolveSkillPageDeployment(skill, deploymentPath);
 
-  const { selectedFrontmatterRepair, setFrontmatterRepair } = useSkillFrontmatterRepair(deployment);
+  const { selectedFrontmatterRepair, isFrontmatterPreviewSettled, clearFrontmatterRepair } =
+    useSkillFrontmatterRepair(deployment);
 
   const {
     rawContent,
@@ -264,6 +265,22 @@ export function SkillPage({
       setEditorOpenedContent(null);
       setIsEditorDirty(false);
     });
+  };
+
+  const handleQuoteRepair = (repair: FrontmatterQuoteRepair) => {
+    if (!skillMdPath || rawContent === null) return;
+    writeInstalledSkillMdIfUnchanged(skillMdPath, rawContent, repair.fixedContent)
+      .then(() => {
+        addToast({ type: "success", title: `Quoted the ${repair.key}` });
+        loadContent(skillMdPath, false);
+      })
+      .catch((err) => {
+        addToast({
+          type: "error",
+          title: "Couldn't quote the value",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
   };
 
   const startEditing = () => {
@@ -301,6 +318,9 @@ export function SkillPage({
             skill={skill}
             deployment={deployment ?? undefined}
             frontmatterRepair={selectedFrontmatterRepair}
+            isFrontmatterPreviewSettled={isFrontmatterPreviewSettled}
+            skillMdContent={rawContent}
+            onQuoteRepair={isPluginManaged ? undefined : handleQuoteRepair}
             onFixYaml={() => setIsFrontmatterRepairOpen(true)}
             onEditManually={startEditing}
           />
@@ -377,7 +397,7 @@ export function SkillPage({
           onClose={() => setIsFrontmatterRepairOpen(false)}
           onEditManually={startEditing}
           onApplied={() => {
-            setFrontmatterRepair(null);
+            clearFrontmatterRepair();
             if (skillMdPath) loadContent(skillMdPath, false);
           }}
         />
