@@ -308,6 +308,20 @@ const KNOWN_DIVERGENCES: &[Divergence] = &[
     // write for and passed one `--agent` token per requested harness.
     Divergence {
         trace: "06-update-newer-source",
+        field: "argv",
+        cli_value: "(no scope flag)",
+        core_value: "--project",
+        reason: "the trace was recorded without a scope flag, which skills 1.7.0 reads as scope \"both\" and so also updates the global copy; `ops::update` names `--project`",
+    },
+    Divergence {
+        trace: "07-update-already-current",
+        field: "argv",
+        cli_value: "(no scope flag)",
+        core_value: "--project",
+        reason: "same as 06: a project update must not touch the global copy of the same name",
+    },
+    Divergence {
+        trace: "06-update-newer-source",
         field: "on-disk path",
         cli_value: ".claude/skills/academy-guide -> ../../.agents/skills/academy-guide",
         core_value: ".claude/skills",
@@ -531,6 +545,9 @@ impl TraceCtx {
                     .to_string_lossy()
                     .into_owned();
             }
+        }
+        if let Some(d) = divergence(trace_name, "argv") {
+            expected_args.push(d.core_value.to_string());
         }
         let recorded = self.spawner.recorded.lock().unwrap();
         assert_eq!(
