@@ -1688,9 +1688,14 @@ impl TargetKind {
     fn accepts(self, deployment: &skill_studio_core::dto::DeploymentDto) -> bool {
         use skill_studio_core::identity::{BackingRelationship, RootKind};
         match self {
-            TargetKind::Park | TargetKind::Remove => {
+            TargetKind::Park => {
                 deployment.root.kind == RootKind::Universal
                     && deployment.backing == BackingRelationship::Canonical
+            }
+            TargetKind::Remove => {
+                deployment.root.kind == RootKind::Universal
+                    && deployment.backing == BackingRelationship::Canonical
+                    && deployment.owner_kind.is_mutable()
             }
             TargetKind::Unpark => deployment.root.kind == RootKind::Parked,
         }
