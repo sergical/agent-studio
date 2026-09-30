@@ -1295,6 +1295,49 @@ fn claude_code_on_restores_the_override_the_off_replaced_or_names_the_value_it_d
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// `claude_code_on_after_an_undone_on_still_restores_the_users_override_or_names_the_value_it_dropped`:
+/// `gamma` starts as `"user-invocable-only"`. Flow: off, on, undo the on,
+/// on again. The undo puts `"off"` back, so the next on must still restore
+/// the user's own value: the last off that was not reverted is the one that
+/// replaced it. Fails when the second on drops the key, which means the
+/// undone on hid the earlier off's record.
+#[test]
+fn claude_code_on_after_an_undone_on_still_restores_the_users_override_or_names_the_value_it_dropped(
+) {
+    let home = unique_temp_dir("claude_on_after_undone_on");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::write(
+        claude_settings_path(&home),
+        r#"{"model":"x","skillOverrides":{"gamma":"user-invocable-only"}}"#,
+    )
+    .unwrap();
+    let rt = runtime_for(&home);
+
+    ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap();
+    let on = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: on.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(claude_override(&home, "gamma"), "off");
+    ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+
+    assert_eq!(
+        claude_override(&home, "gamma"),
+        "user-invocable-only",
+        "the on after an undone on should restore the value the off replaced"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `claude_code_on_for_a_universal_skill_claude_cannot_see_links_it_or_names_the_missing_row`:
 /// `~/.claude/skills` is a real folder with no entry for `gamma`, so Claude
 /// Code cannot see the Universal skill: the scan lists `claude-code` among

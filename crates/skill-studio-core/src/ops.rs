@@ -5916,7 +5916,7 @@ const CLAUDE_OVERRIDE_BEFORE_KEY: &str = "skill_override_before";
 /// value its last off replaced.
 const CLAUDE_OVERRIDE_HISTORY_LIMIT: u32 = 200;
 
-/// The `skillOverrides` value the newest completed Claude Code off replaced,
+/// The `skillOverrides` value the newest completed, not undone Claude Code off replaced,
 /// so an on puts it back (`"user-invocable-only"`, say) instead of dropping
 /// it. `None` - remove the key - when there was no entry, when the newest
 /// settings write for this skill was itself an on, or when no event records
@@ -5935,6 +5935,7 @@ fn claude_override_before_last_off(
         .ok()?;
     let last_write = events.iter().find(|e| {
         e.status == crate::events::EventStatus::Done
+            && e.reverted_by.is_none()
             && e.harness
                 .as_ref()
                 .is_some_and(|h| h.as_str() == AgentId::CLAUDE_CODE)
