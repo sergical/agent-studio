@@ -1,6 +1,6 @@
 // ============================================================================
 // Skill Studio - generate-types
-// Runs the `schema` Rust binary (apps/desktop/src-tauri/src/bin/schema.rs),
+// Runs the `schema` Cargo example (apps/desktop/src-tauri/examples/schema.rs),
 // which emits a JSON Schema for every Tauri wire type via `schemars`, then
 // turns it into TypeScript with json-schema-to-typescript. Writes
 // packages/lib/src/skill-types.generated.ts, which packages/lib/src/skill-types.ts
@@ -24,7 +24,7 @@ const outputPath = path.join(workspaceRoot, "packages/lib/src/skill-types.genera
 
 const schemaJson = execFileSync(
   "cargo",
-  ["run", "--quiet", "-p", "skill-studio", "--bin", "schema"],
+  ["run", "--quiet", "-p", "skill-studio", "--example", "schema"],
   { cwd: workspaceRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
 );
 const schema = JSON.parse(schemaJson);
