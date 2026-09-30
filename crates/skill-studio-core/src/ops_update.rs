@@ -396,6 +396,36 @@ struct CopyRegistryRead {
     home_document: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
+impl CopyRegistryRead {
+    /// The `registry_undo` entry for this update's `copies` row, recorded
+    /// with the event before the write: the old row and no `expected`, so a
+    /// crash before [`write_copy_registry`]'s guarded entry is patched in
+    /// still lets undo put the old `content_hash` back with the old bytes.
+    fn undo_before_write(&self, rt: &Runtime, deployment_id: &str) -> Option<serde_json::Value> {
+        let home_doc = self.home_document.as_ref().unwrap_or(&self.document);
+        let previous = home_doc.get("copies")?.get(deployment_id)?;
+        let mut entry = ops_install::guarded_registry_undo(
+            &rt.scope.home.lexical,
+            "copies",
+            deployment_id,
+            Some(previous),
+            None,
+        );
+        entry.as_object_mut()?.remove("expected");
+        Some(entry)
+    }
+}
+
+fn copy_registry_id(req: &UpdateRequest, destination: &Path) -> String {
+    ops_install::copy_deployment_id(
+        &req.scope,
+        &req.skill,
+        destination,
+        crate::identity::SkillDestination::Universal,
+        "universal",
+    )
+}
+
 fn read_copy_registry(
     rt: &Runtime,
     fs: &dyn ScopeFs,
@@ -430,13 +460,7 @@ fn write_copy_registry(
     mut read: CopyRegistryRead,
     content_hash: String,
 ) -> Result<Option<serde_json::Value>, CoreError> {
-    let deployment_id = ops_install::copy_deployment_id(
-        &req.scope,
-        &req.skill,
-        destination,
-        crate::identity::SkillDestination::Universal,
-        "universal",
-    );
+    let deployment_id = copy_registry_id(req, destination);
     let home_doc = read.home_document.as_mut().unwrap_or(&mut read.document);
     let mut undo = None;
     if let Some(serde_json::Value::Object(copies)) = home_doc.get_mut("copies") {
@@ -619,7 +643,13 @@ fn update_body(
         .entries
         .first()
         .and_then(|e| e.fingerprint.as_ref());
-    let inverse = crate::events::restore_backup_inverse(&destination, pre_fingerprint, None);
+    let mut inverse = crate::events::restore_backup_inverse(&destination, pre_fingerprint, None);
+    if let Some(entry) = copy_registry
+        .as_ref()
+        .and_then(|read| read.undo_before_write(rt, &copy_registry_id(req, &destination)))
+    {
+        inverse["registry_undo"] = serde_json::json!([entry]);
+    }
     let draft = EventDraft {
         kind: EventKind::Update,
         skill: req.skill.clone(),
@@ -659,9 +689,9 @@ fn update_body(
         }
     };
     if let Some(entry) = registry_undo {
-        // The update rewrites one row's `content_hash`; undo puts that row's
-        // old hash back with the old bytes, or the folder reads as unowned.
-        // Only that row: the file holds every other skill's row too.
+        // Adds `expected` to the entry recorded before the write, so undo
+        // refuses when the row changed since. Only that row: the file holds
+        // every other skill's row too.
         let _ = session.store.patch_inverse(
             &session.guard,
             &id,

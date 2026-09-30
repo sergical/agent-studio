@@ -148,15 +148,28 @@ fn runtime_with(
     fs: Arc<dyn skill_studio_core::ports::ScopeFs>,
     spawner: Option<Arc<dyn ProcessSpawner>>,
 ) -> Runtime {
-    let history_root = home.join(".history");
-    let db_path = history_root.join("events.sqlite3");
+    let db_path = home.join(".history").join("events.sqlite3");
+    runtime_with_history(
+        home,
+        fs,
+        spawner,
+        Arc::new(SqliteHistoryOpener::new(db_path)),
+    )
+}
+
+fn runtime_with_history(
+    home: &std::path::Path,
+    fs: Arc<dyn skill_studio_core::ports::ScopeFs>,
+    spawner: Option<Arc<dyn ProcessSpawner>>,
+    history: Arc<dyn skill_studio_core::ports::HistoryOpener>,
+) -> Runtime {
     let scope = RuntimeScope::fixture(home);
     let ports = Ports {
         fs,
         clock: Arc::new(FakeClock::at(0)),
         ids: Arc::new(FakeIds::default()),
         leases: Arc::new(FileLease::new(home.join(".leases"))),
-        history: Arc::new(SqliteHistoryOpener::new(db_path)),
+        history,
         sink: Arc::new(RecordingSink::default()),
         spawner,
         discovery: None,
@@ -1308,6 +1321,160 @@ fn undo_of_a_copy_update_refuses_when_its_registry_row_changed_since_or_names_th
         },
     )
     .unwrap();
+    assert_eq!(
+        read_registry(&home)["copies"][&key]["content_hash"],
+        hash_before
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// The SQLite history, except `patch_inverse` does nothing: the state a
+/// crash between an op's write and its inverse patch leaves behind.
+struct PatchlessHistory(SqliteHistoryOpener);
+
+struct PatchlessStore(Box<dyn skill_studio_core::ports::HistoryStore>);
+
+impl skill_studio_core::ports::HistoryOpener for PatchlessHistory {
+    fn open(
+        &self,
+        scope: &skill_studio_core::scope::NormalizedScope,
+        access: skill_studio_core::ports::HistoryAccess,
+    ) -> Result<Option<Box<dyn skill_studio_core::ports::HistoryStore>>, skill_studio_core::CoreError>
+    {
+        Ok(self.0.open(scope, access)?.map(|store| {
+            Box::new(PatchlessStore(store)) as Box<dyn skill_studio_core::ports::HistoryStore>
+        }))
+    }
+}
+
+impl skill_studio_core::ports::HistoryStore for PatchlessStore {
+    fn list(
+        &self,
+        filter: &skill_studio_core::events::EventFilter,
+    ) -> Result<Vec<skill_studio_core::events::EventRecord>, skill_studio_core::CoreError> {
+        self.0.list(filter)
+    }
+    fn get(
+        &self,
+        id: &skill_studio_core::identity::EventId,
+    ) -> Result<Option<skill_studio_core::events::EventRecord>, skill_studio_core::CoreError> {
+        self.0.get(id)
+    }
+    fn backup_paths(
+        &mut self,
+        guard: &skill_studio_core::ports::ExclusiveGuard,
+        id: &skill_studio_core::identity::EventId,
+        paths: &[PathBuf],
+    ) -> Result<skill_studio_core::events::BackupManifest, skill_studio_core::CoreError> {
+        self.0.backup_paths(guard, id, paths)
+    }
+    fn record(
+        &mut self,
+        guard: &skill_studio_core::ports::ExclusiveGuard,
+        id: &skill_studio_core::identity::EventId,
+        draft: &skill_studio_core::events::EventDraft,
+    ) -> Result<(), skill_studio_core::CoreError> {
+        self.0.record(guard, id, draft)
+    }
+    fn finish(
+        &mut self,
+        guard: &skill_studio_core::ports::ExclusiveGuard,
+        id: &skill_studio_core::identity::EventId,
+        status: skill_studio_core::events::EventStatus,
+        post_fingerprint: Option<skill_studio_core::identity::Fingerprint>,
+    ) -> Result<(), skill_studio_core::CoreError> {
+        self.0.finish(guard, id, status, post_fingerprint)
+    }
+    fn claim_revert(
+        &mut self,
+        guard: &skill_studio_core::ports::ExclusiveGuard,
+        target: &skill_studio_core::identity::EventId,
+        by: &skill_studio_core::identity::EventId,
+    ) -> Result<bool, skill_studio_core::CoreError> {
+        self.0.claim_revert(guard, target, by)
+    }
+    fn release_revert(
+        &mut self,
+        guard: &skill_studio_core::ports::ExclusiveGuard,
+        target: &skill_studio_core::identity::EventId,
+        restore: &skill_studio_core::identity::EventId,
+    ) -> Result<bool, skill_studio_core::CoreError> {
+        self.0.release_revert(guard, target, restore)
+    }
+    fn pending(
+        &self,
+    ) -> Result<Vec<skill_studio_core::events::EventRecord>, skill_studio_core::CoreError> {
+        self.0.pending()
+    }
+    fn read_manifest(
+        &self,
+        backup_dir: &str,
+    ) -> Result<skill_studio_core::events::BackupManifest, skill_studio_core::CoreError> {
+        self.0.read_manifest(backup_dir)
+    }
+    fn read_backup_bytes(
+        &self,
+        backup_dir: &str,
+        relative: &str,
+    ) -> Result<Vec<u8>, skill_studio_core::CoreError> {
+        self.0.read_backup_bytes(backup_dir, relative)
+    }
+    fn read_backup_files(
+        &self,
+        backup_dir: &str,
+        relative: &str,
+    ) -> Result<Vec<skill_studio_core::fsops::StageFile>, skill_studio_core::CoreError> {
+        self.0.read_backup_files(backup_dir, relative)
+    }
+    fn patch_payload(
+        &mut self,
+        guard: &skill_studio_core::ports::ExclusiveGuard,
+        id: &skill_studio_core::identity::EventId,
+        patch: serde_json::Value,
+    ) -> Result<(), skill_studio_core::CoreError> {
+        self.0.patch_payload(guard, id, patch)
+    }
+}
+
+/// Flow: Copy-update `lambda` through a history that drops every inverse
+/// patch (a crash right after the write), then undo the update.
+/// Expectation: `lambda`'s `copies` row gets its old `content_hash` back
+/// with the old bytes. Failure here means the undo entry only exists once
+/// the post-write patch lands, so a crash in that window leaves undo
+/// restoring the old folder under the new hash, which reads as unowned.
+#[test]
+fn undo_of_a_copy_update_restores_the_registry_row_without_the_post_write_patch() {
+    let home = unique_temp_dir("update_undo_registry_without_patch");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_with_history(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"))),
+        Arc::new(PatchlessHistory(SqliteHistoryOpener::new(
+            home.join(".history").join("events.sqlite3"),
+        ))),
+    );
+    install_copy(&rt, "lambda");
+    let key = copy_row_key(&read_registry(&home), "lambda");
+    let hash_before = read_registry(&home)["copies"][&key]["content_hash"].clone();
+    let outcome = ops::update(&rt, &ctx(), &copy_request("lambda", "v2")).unwrap();
+    assert_ne!(
+        read_registry(&home)["copies"][&key]["content_hash"],
+        hash_before,
+        "setup: the update must change the row's hash"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
     assert_eq!(
         read_registry(&home)["copies"][&key]["content_hash"],
         hash_before
