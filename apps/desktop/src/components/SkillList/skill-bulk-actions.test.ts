@@ -8,6 +8,8 @@ import { realCopyDeployment, universalDeployment } from "../../dev/harness/scann
 import {
   bulkActionToast,
   bulkDisabledReason,
+  bulkRemovalTargets,
+  bulkUpdateTargets,
   bulkUpdateResult,
   planBulkAction,
   runBulkSequentially,
@@ -230,5 +232,60 @@ describe("bulkUpdateResult", () => {
     });
     expect(names(result.succeeded)).toEqual(["a"]);
     expect(result.failed).toEqual([{ skill: b, error: "network" }]);
+  });
+});
+
+function projectFolder(name: string, projectPath: string, fields: Partial<Deployment> = {}) {
+  return globalFolder(name, {
+    scope: "project",
+    project_path: projectPath,
+    path: `${projectPath}/.agents/skills/${name}`,
+    owner_id: `owner:v1/project/${projectPath}/${name}`,
+    ...fields,
+  });
+}
+
+describe("bulk targets across locations", () => {
+  const twoLocations = (name: string, kind: "manual" | "skills-sh" = "manual") =>
+    fixtureSkill(name, {
+      source_kind: kind === "manual" ? "manual" : "skills-sh",
+      deployments: [
+        globalFolder(name, { owner_kind: kind }),
+        projectFolder(name, "/work/p", { owner_kind: kind }),
+      ],
+    });
+
+  it("removes a skill installed globally and in a project from both locations; fails if bulk Remove targets only the first location and the row stays", () => {
+    const targets = bulkRemovalTargets(twoLocations("both"));
+    expect(targets.map((target) => target.owner_id)).toEqual([
+      "owner:v1/global/both",
+      "owner:v1/project//work/p/both",
+    ]);
+  });
+
+  it("updates every location that reports a newer commit; fails if bulk Update targets only the first location", () => {
+    const skill = twoLocations("both", "skills-sh");
+    skill.update_owner_ids = skill.deployments.flatMap((d) => d.owner_id ?? []);
+    skill.update_owners = skill.update_owner_ids.map((owner_id) => ({
+      owner_id,
+      latest_commit: "abc",
+      latest_commit_at: null,
+    }));
+    expect(bulkUpdateTargets(skill).map((target) => target.owner_id)).toEqual(
+      skill.update_owner_ids,
+    );
+  });
+
+  it("reports a skill as failed when any of its location updates fails; fails if a later item hides an earlier failure", () => {
+    const skill = twoLocations("both", "skills-sh");
+    const result = bulkUpdateResult([skill], {
+      items: [
+        { skill: "both", outcome: null },
+        { skill: "both", outcome: {} },
+      ],
+      errors: {},
+    });
+    expect(names(result.failed.map((failure) => failure.skill))).toEqual(["both"]);
+    expect(result.succeeded).toEqual([]);
   });
 });

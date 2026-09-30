@@ -1577,20 +1577,44 @@ pub(crate) fn apply_skill_snapshot_overlays(
         });
     }
 
+    // Only owners the update path can run are listed as outdated - the same
+    // `update_refusal` rule `build_update_request` applies - so Home never
+    // offers an update the backend would refuse.
+    let project_paths: Vec<PathBuf> = skills
+        .iter()
+        .flat_map(|skill| skill.deployments.iter())
+        .filter_map(|deployment| deployment.project_path.as_deref().map(PathBuf::from))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let ledgers = super::skill_ownership::load_ownership_ledgers(home, &project_paths);
     for skill in skills.iter_mut() {
+        let mut seen_owners: Vec<&str> = Vec::new();
         for deployment in &skill.deployments {
             let Some(owner_id) = deployment.owner_id.as_deref() else {
                 continue;
             };
+            if seen_owners.contains(&owner_id) {
+                continue;
+            }
+            seen_owners.push(owner_id);
             let Some(state) =
                 skill_update_check::state_for_owner(update_store, owner_id, current_owner_ids)
                     .filter(|state| skill_update_check::has_update(state))
             else {
                 continue;
             };
-            if !skill.update_owner_ids.iter().any(|id| id == owner_id) {
-                skill.update_owner_ids.push(owner_id.to_string());
+            let adapter = super::skill_lifecycle::owner_adapter_deployment(
+                skill
+                    .deployments
+                    .iter()
+                    .filter(|candidate| candidate.owner_id.as_deref() == Some(owner_id)),
+            )
+            .unwrap_or(deployment);
+            if super::skill_lifecycle::update_refusal(adapter, &skill.name, &ledgers).is_some() {
+                continue;
             }
+            skill.update_owner_ids.push(owner_id.to_string());
             skill.update_owners.push(super::skill_dto::OwnerUpdateInfo {
                 owner_id: owner_id.to_string(),
                 latest_commit: state.latest_commit.clone(),
@@ -4266,6 +4290,111 @@ mod tests {
         assert_eq!(skill.deployments[0].disabled_by, None);
         assert!(skill.deployments[0].disabled_readers.is_empty());
         assert_eq!(skill.deployments[0].codex_implicit_invocation, None);
+    }
+
+    /// One skill with a deployment per `(owner id, kind)`, every owner
+    /// reported outdated by the update-check store, run through the overlay.
+    fn skill_with_outdated_owners(
+        home: &Path,
+        owners: &[(&str, super::super::skill_ownership::LifecycleOwnerKind)],
+    ) -> super::super::skill_dto::InstalledSkill {
+        use super::super::skill_deployment::DeploymentMutability;
+        let mut skill = fixture_snapshot(&home.join("skill")).skills.remove(0);
+        skill.deployments = owners
+            .iter()
+            .map(|(owner_id, kind)| super::super::skill_dto::Deployment {
+                id: format!("dep-{owner_id}"),
+                scope: "global".to_string(),
+                path: home.join(owner_id).to_string_lossy().to_string(),
+                owner_id: Some((*owner_id).to_string()),
+                owner_kind: *kind,
+                mutability: if kind.is_mutable() {
+                    DeploymentMutability::Mutable
+                } else {
+                    DeploymentMutability::ReadOnly
+                },
+                ..Default::default()
+            })
+            .collect();
+        let store_owners: serde_json::Map<_, _> = owners
+            .iter()
+            .map(|(owner_id, _)| {
+                (
+                    (*owner_id).to_string(),
+                    serde_json::json!({
+                        "repo": "someorg/foo", "path": "skills/foo",
+                        "installed_commit": "a".repeat(40),
+                        "latest_commit": "b".repeat(40),
+                        "latest_commit_at": "2026-02-01T00:00:00Z",
+                        "checked_at": Utc::now().to_rfc3339(), "error": null,
+                    }),
+                )
+            })
+            .collect();
+        let store: skill_update_check::UpdateCheckStore =
+            serde_json::from_value(serde_json::json!({
+                "version": 2, "checked_at": Utc::now().to_rfc3339(),
+                "gh_status": { "kind": "ok" }, "owners": store_owners,
+            }))
+            .unwrap();
+        let all_owner_ids: Vec<String> = owners.iter().map(|(id, _)| (*id).to_string()).collect();
+        apply_skill_snapshot_overlays(
+            home,
+            std::slice::from_mut(&mut skill),
+            &super::super::skill_fork_registry::ForkRegistry::default(),
+            &store,
+            &all_owner_ids,
+        );
+        skill
+    }
+
+    /// Flow: the update-check store reports a newer commit for a skill whose
+    /// only owner is a wildcard dotagents entry (read-only). Expectation: the
+    /// skill lists no update owner and has no update badge. A failure means
+    /// Home offers an update `update_all_skills` always refuses.
+    #[test]
+    fn a_skill_whose_only_outdated_owner_is_wildcard_dotagents_lists_no_update() {
+        use super::super::skill_ownership::LifecycleOwnerKind;
+        let temp = tempfile::tempdir().unwrap();
+        let skill = skill_with_outdated_owners(
+            temp.path(),
+            &[(
+                "owner:v1/global/wild",
+                LifecycleOwnerKind::WildcardDotagents,
+            )],
+        );
+
+        assert!(
+            skill.update_owner_ids.is_empty(),
+            "{:?}",
+            skill.update_owner_ids
+        );
+        assert!(skill.update_owners.is_empty());
+        assert!(!skill.has_update);
+    }
+
+    /// Flow: a skill is outdated for a skills.sh owner and a wildcard
+    /// dotagents owner. Expectation: only the skills.sh owner is listed. A
+    /// failure means the unrunnable owner still becomes an update target.
+    #[test]
+    fn a_skill_with_an_updatable_and_a_wildcard_owner_lists_only_the_updatable_one() {
+        use super::super::skill_ownership::LifecycleOwnerKind;
+        let temp = tempfile::tempdir().unwrap();
+        let skill = skill_with_outdated_owners(
+            temp.path(),
+            &[
+                (
+                    "owner:v1/global/wild",
+                    LifecycleOwnerKind::WildcardDotagents,
+                ),
+                ("owner:v1/global/sh", LifecycleOwnerKind::SkillsSh),
+            ],
+        );
+
+        assert_eq!(skill.update_owner_ids, vec!["owner:v1/global/sh"]);
+        assert_eq!(skill.update_owners.len(), 1);
+        assert_eq!(skill.update_owners[0].owner_id, "owner:v1/global/sh");
+        assert!(skill.has_update);
     }
 
     /// How `~/.claude/skills` reaches a skill in the Claude Code overlay

@@ -5,7 +5,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 import { universalDeployment } from "../../dev/harness/scanned-deployment";
-import { bulkActionToast, bulkProgressLabel, planBulkAction } from "./skill-bulk-actions";
+import {
+  bulkActionToast,
+  bulkProgressLabel,
+  bulkUpdateProgressLabel,
+  planBulkAction,
+} from "./skill-bulk-actions";
 import { runBatchAction } from "./skill-bulk-run";
 import type { BatchApi } from "./skill-bulk-run";
 
@@ -156,5 +161,11 @@ describe("bulkProgressLabel", () => {
     );
     expect(bulkProgressLabel({ kind: "park" }, 1, 1)).toBe("Parking 1 skill…");
     expect(bulkProgressLabel({ kind: "remove" }, 2, 5)).toBe("Removing 2 of 5…");
+  });
+});
+
+describe("bulkUpdateProgressLabel", () => {
+  it("counts finished update targets against the batch total; fails if the label stays a static skill count while the batch runs", () => {
+    expect(bulkUpdateProgressLabel(12, 80)).toBe("Updating 12 of 80…");
   });
 });

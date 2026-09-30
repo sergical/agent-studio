@@ -6,6 +6,7 @@
 export * from "./skill-types";
 export * from "./skill-add-operation-types";
 export * from "./skill-add-operation-policy";
+export * from "./skill-update-progress-types";
 export * from "./skill-install-destination";
 export * from "./skill-coverage";
 export * from "./skill-health";

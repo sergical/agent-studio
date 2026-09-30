@@ -13,18 +13,17 @@ use super::skill_dto::{
     InstallScope, InstalledSkill, LifecycleTarget, PaginatedSkillsResponse, SkillDetails,
 };
 use super::skill_editor;
-use super::skill_lifecycle::{
-    ledger_matching_deployment, rebuild_fresh_lifecycle_snapshot, resolve_lifecycle_target,
-};
+use super::skill_lifecycle::{self, rebuild_fresh_lifecycle_snapshot, resolve_lifecycle_target};
 use super::skill_md_write::write_skill_md_compare_and_swap;
 use super::skill_process::RealCommandRunner;
 use super::skill_refresh::{self, SkillRefreshState};
 use super::skill_update_check;
+use serde::{Deserialize, Serialize};
 use skill_studio_core::dto::{RemoveOutcome, RemoveRequest};
 use skill_studio_core::identity::{CorrelationId, DeploymentId};
 use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::OpContext;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// The `npx -y @sentry/dotagents add <source> --name <name> [--ref <ref>]`
 /// argv - the plain (non-re-pinning) shape of what `dotagents_update_args`
@@ -144,6 +143,152 @@ mod tests {
     use super::super::skill_process::CommandRunner;
     use super::*;
     use std::sync::atomic::Ordering;
+
+    /// Flow: an "Update all" batch holds one wildcard-dotagents (read-only)
+    /// target and one updatable target. Expectation: the updatable one is
+    /// still run, the read-only one comes back as a failed item carrying the
+    /// refusal message, the call itself returns Ok, and progress counts both.
+    /// A failure means one refused target aborts the batch (the "Updated 0 of
+    /// 80" bug) or hides why it failed.
+    #[test]
+    fn update_all_batch_runs_the_updatable_target_and_reports_the_read_only_one_as_failed() {
+        use skill_studio_core::dto::{
+            InstallMethod, UpdateAllItem, UpdateAllOutcome, UpdateOutcome, UpdateRequest,
+        };
+        use skill_studio_core::identity::{EventId, RootScope, SkillName};
+
+        let target = |owner: &str| LifecycleTarget {
+            deployment_id: None,
+            owner_id: Some(owner.to_string()),
+        };
+        let targets = [
+            target("owner:v1/global/read-only"),
+            target("owner:v1/global/updatable"),
+        ];
+        let resolve = |target: &LifecycleTarget| {
+            let owner_id = target.owner_id.clone().unwrap();
+            let name = owner_id.rsplit('/').next().unwrap().to_string();
+            let kind = if name == "read-only" {
+                super::super::skill_ownership::LifecycleOwnerKind::WildcardDotagents
+            } else {
+                super::super::skill_ownership::LifecycleOwnerKind::SkillsSh
+            };
+            let deployment = super::super::skill_dto::Deployment {
+                path: format!("/home/.agents/skills/{name}"),
+                owner_id: Some(owner_id),
+                owner_kind: kind,
+                mutability: if kind.is_mutable() {
+                    super::super::skill_deployment::DeploymentMutability::Mutable
+                } else {
+                    super::super::skill_deployment::DeploymentMutability::ReadOnly
+                },
+                ..Default::default()
+            };
+            super::super::skill_lifecycle::require_direct_deployment_mutable(&deployment, "Update")
+                .map_err(|message| UnresolvedUpdateTarget {
+                    skill: SkillName(name.clone()),
+                    message,
+                })?;
+            Ok((
+                UpdateRequest {
+                    skill: SkillName(name.clone()),
+                    method: InstallMethod::SkillsSh,
+                    scope: RootScope::Global,
+                    files: Vec::new(),
+                    source: None,
+                    ref_pin: None,
+                },
+                (
+                    name,
+                    deployment.owner_id.clone(),
+                    PathBuf::from(&deployment.path),
+                ),
+            ))
+        };
+        let mut ran = Vec::new();
+        let mut progress = Vec::new();
+
+        let (outcome, owners) = run_update_all_batch(
+            &targets,
+            resolve,
+            |requests, on_finished| {
+                ran = requests.iter().map(|r| r.skill.0.clone()).collect();
+                let mut items = Vec::new();
+                for request in requests {
+                    on_finished(&request.skill.0);
+                    items.push(UpdateAllItem {
+                        skill: request.skill.clone(),
+                        outcome: Some(UpdateOutcome {
+                            event_id: EventId("event".to_string()),
+                            skill: request.skill.clone(),
+                            deployment_path: PathBuf::from("/home/.agents/skills/updatable"),
+                            tree_hash_before: "a".to_string(),
+                            tree_hash_after: "b".to_string(),
+                        }),
+                    });
+                }
+                Ok(UpdateAllOutcome {
+                    items,
+                    errors: Default::default(),
+                })
+            },
+            |event| progress.push((event.done, event.total, event.skill_name)),
+        )
+        .expect("a refused target must not fail the whole batch");
+
+        assert_eq!(ran, vec!["updatable"]);
+        assert_eq!(outcome.items.len(), 2);
+        let failed: Vec<_> = outcome
+            .items
+            .iter()
+            .filter(|item| item.outcome.is_none())
+            .collect();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].skill.0, "read-only");
+        assert!(
+            outcome.errors["read-only"].contains("wildcard-dotagents (read-only)"),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(owners.len(), 1);
+        assert_eq!(
+            progress,
+            vec![
+                (1, 2, "read-only".to_string()),
+                (2, 2, "updatable".to_string())
+            ]
+        );
+    }
+
+    /// Flow: every target of an "Update all" batch is refused. Expectation:
+    /// Ok with every item failed, and `run` (which builds the runtime and
+    /// takes the write lease) is never called. A failure means an all-refused
+    /// batch errors out or touches the write path for nothing.
+    #[test]
+    fn update_all_batch_where_every_target_is_refused_returns_ok_with_all_items_failed() {
+        let targets = [LifecycleTarget {
+            deployment_id: None,
+            owner_id: Some("owner:v1/global/only".to_string()),
+        }];
+
+        let (outcome, owners) = run_update_all_batch(
+            &targets,
+            |_| {
+                Err(UnresolvedUpdateTarget {
+                    skill: skill_studio_core::identity::SkillName("only".to_string()),
+                    message: "Update is not available".to_string(),
+                })
+            },
+            |_, _| panic!("no request resolved, so nothing should run"),
+            |_| {},
+        )
+        .expect("all-refused batch still returns Ok");
+
+        assert_eq!(outcome.items.len(), 1);
+        assert!(outcome.items[0].outcome.is_none());
+        assert_eq!(outcome.errors["only"], "Update is not available");
+        assert!(owners.is_empty());
+    }
 
     struct CountingLifecycleRunner(std::sync::atomic::AtomicUsize);
 
@@ -1875,30 +2020,7 @@ fn build_update_request(
             let home = dirs::home_dir().ok_or("Could not find home directory")?;
             let project_paths: Vec<PathBuf> = snapshot.projects.iter().map(Into::into).collect();
             let ledgers = super::skill_ownership::load_ownership_ledgers(&home, &project_paths);
-            let ledger = ledger_matching_deployment(&ledgers, deployment)
-                .ok_or("Update is not available: the matching ownership ledger is missing")?;
-            let entry = ledger
-                .dotagents
-                .iter()
-                .find(|entry| entry.name == skill.name)
-                .ok_or_else(|| {
-                    format!(
-                        "Update is not available: {} is not in the matching agents.lock",
-                        skill.name
-                    )
-                })?;
-            if !entry.has_manifest_row {
-                return Err(format!(
-                    "Update is not available: {} is a wildcard dotagents entry",
-                    skill.name
-                ));
-            }
-            if entry.is_local_path() {
-                return Err(
-                    "Update is not available: dotagents tracks this as a local folder; there is nothing upstream to update from"
-                        .to_string(),
-                );
-            }
+            let entry = skill_lifecycle::dotagents_update_entry(&ledgers, deployment, &skill.name)?;
             let ref_pin = if entry.declared_ref.is_some() {
                 let store = skill_update_check::read_update_check_store(app_data);
                 let owner_id = deployment.owner_id.as_deref().ok_or(
@@ -2178,20 +2300,133 @@ fn owners_to_clear(
         .collect()
 }
 
-/// "Update all": resolves every target, then runs `ops::update_all` over all
-/// of them via `run_update_all_sync` (shared with the test-only
+/// Event name "Update all" reports each finished target on.
+pub const UPDATE_ALL_PROGRESS_EVENT: &str = "skills://update-all-progress";
+
+/// One finished target of an "Update all" batch, succeeded or failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateAllProgress {
+    pub done: usize,
+    pub total: usize,
+    pub skill_name: String,
+}
+
+/// A target the update path refused before it could run.
+struct UnresolvedUpdateTarget {
+    skill: skill_studio_core::identity::SkillName,
+    message: String,
+}
+
+/// One target resolved to its request plus the row `owners_to_clear` needs.
+type ResolvedUpdateTarget = (
+    skill_studio_core::dto::UpdateRequest,
+    (String, Option<String>, PathBuf),
+);
+
+/// A batch's outcome plus the owner rows `owners_to_clear` matches against.
+type UpdateAllBatchResult = (
+    skill_studio_core::dto::UpdateAllOutcome,
+    Vec<(String, Option<String>, PathBuf)>,
+);
+
+/// The per-target loop of "Update all". A target that fails to resolve
+/// becomes one failed item in the returned outcome, so one refused target
+/// never aborts the batch; every resolvable target still goes through
+/// `run`. `on_progress` sees each refused target first, then each finished
+/// one, with `done` counting both. Split out of `update_all_skills` so a
+/// test can drive it without a `tauri::AppHandle`.
+fn run_update_all_batch(
+    targets: &[LifecycleTarget],
+    mut resolve: impl FnMut(&LifecycleTarget) -> Result<ResolvedUpdateTarget, UnresolvedUpdateTarget>,
+    run: impl FnOnce(
+        &[skill_studio_core::dto::UpdateRequest],
+        &mut dyn FnMut(&str),
+    ) -> Result<skill_studio_core::dto::UpdateAllOutcome, String>,
+    mut on_progress: impl FnMut(UpdateAllProgress),
+) -> Result<UpdateAllBatchResult, String> {
+    let total = targets.len();
+    let mut requests = Vec::with_capacity(total);
+    let mut owners = Vec::with_capacity(total);
+    let mut refused_items = Vec::new();
+    let mut refused_errors = std::collections::BTreeMap::new();
+    for target in targets {
+        match resolve(target) {
+            Ok((request, owner)) => {
+                requests.push(request);
+                owners.push(owner);
+            }
+            Err(UnresolvedUpdateTarget { skill, message }) => {
+                on_progress(UpdateAllProgress {
+                    done: refused_items.len() + 1,
+                    total,
+                    skill_name: skill.0.clone(),
+                });
+                refused_errors.insert(skill.0.clone(), message);
+                refused_items.push(skill_studio_core::dto::UpdateAllItem {
+                    skill,
+                    outcome: None,
+                });
+            }
+        }
+    }
+
+    let already_done = refused_items.len();
+    let mut finished = 0;
+    let mut outcome = if requests.is_empty() {
+        skill_studio_core::dto::UpdateAllOutcome {
+            items: Vec::new(),
+            errors: std::collections::BTreeMap::new(),
+        }
+    } else {
+        run(&requests, &mut |skill_name| {
+            finished += 1;
+            on_progress(UpdateAllProgress {
+                done: already_done + finished,
+                total,
+                skill_name: skill_name.to_string(),
+            });
+        })?
+    };
+    outcome.items.splice(0..0, refused_items);
+    for (skill, message) in refused_errors {
+        outcome.errors.entry(skill).or_insert(message);
+    }
+    Ok((outcome, owners))
+}
+
+/// The skill name a target the update path refused belongs to, for its
+/// failed item: the owner id encodes it, a deployment id is looked up in the
+/// snapshot, and the raw id is the last resort.
+fn unresolved_target_skill(
+    snapshot: &skill_refresh::SkillSnapshot,
+    target: &LifecycleTarget,
+) -> skill_studio_core::identity::SkillName {
+    let name = match (&target.owner_id, &target.deployment_id) {
+        (Some(owner_id), _) => super::skill_ownership::parse_owner_id(owner_id)
+            .map_or_else(|| owner_id.clone(), |parsed| parsed.name),
+        (None, Some(id)) => snapshot
+            .skills
+            .iter()
+            .find(|skill| skill.deployments.iter().any(|d| &d.id == id))
+            .map_or_else(|| id.clone(), |skill| skill.name.clone()),
+        (None, None) => "unknown".to_string(),
+    };
+    skill_studio_core::identity::SkillName(name)
+}
+
+/// "Update all": resolves every target, then runs `ops::update_all` over the
+/// resolvable ones via `run_update_all_sync` (shared with the test-only
 /// `update_all_with_runtime`, N1 review round 2) in the one `spawn_blocking`
 /// task `time_command_blocking` wraps the whole body in (N2: the review
 /// round 1 fix - resolving targets reads ledgers off disk, which no longer
 /// runs untimed on the Tokio worker) - each skill still gets its own
 /// journal row (`ops::update_all`'s own per-request loop), but no part of
 /// resolving targets, reading ledgers, or writing skills touches the UI
-/// task. `on_outcome` is a no-op here: the
-/// frontend's existing "Updated N of M" toast reads the returned
-/// `UpdateAllOutcome` once the whole batch finishes rather than a per-skill
-/// progress event, matching the shared brief's "no new component". Only a
-/// succeeded item's owner has its badge cleared (N1, via `owners_to_clear`);
-/// a failed item's badge stays on so the row still reads as outdated.
+/// task. A refused target is one failed item, not a failed call
+/// (`run_update_all_batch`). Each finished target emits
+/// `UPDATE_ALL_PROGRESS_EVENT`. Only a succeeded item's owner has its badge
+/// cleared (N1, via `owners_to_clear`); a failed item's badge stays on so
+/// the row still reads as outdated.
 #[tauri::command]
 pub async fn update_all_skills(
     targets: Vec<LifecycleTarget>,
@@ -2205,27 +2440,39 @@ pub async fn update_all_skills(
             .path()
             .app_data_dir()
             .unwrap_or_else(|_| PathBuf::from("."));
-        let mut requests = Vec::with_capacity(targets.len());
-        let mut owners = Vec::with_capacity(targets.len());
-        for target in &targets {
-            let (skill, deployment) = resolve_lifecycle_target(&snapshot, target, "Update")?;
-            requests.push(build_update_request(
-                &app_data,
-                &snapshot,
-                &skill,
-                &deployment,
-            )?);
-            owners.push((
-                skill.name.clone(),
-                deployment.owner_id.clone(),
-                PathBuf::from(&deployment.path),
-            ));
-        }
 
-        let outcome = run_update_all_sync(
-            &requests,
-            super::core_runtime::build_runtime_write,
-            |_, _| {},
+        let (outcome, owners) = run_update_all_batch(
+            &targets,
+            |target| {
+                let (skill, deployment) = resolve_lifecycle_target(&snapshot, target, "Update")
+                    .map_err(|message| UnresolvedUpdateTarget {
+                        skill: unresolved_target_skill(&snapshot, target),
+                        message,
+                    })?;
+                let request = build_update_request(&app_data, &snapshot, &skill, &deployment)
+                    .map_err(|message| UnresolvedUpdateTarget {
+                        skill: unresolved_target_skill(&snapshot, target),
+                        message,
+                    })?;
+                Ok((
+                    request,
+                    (
+                        skill.name.clone(),
+                        deployment.owner_id.clone(),
+                        PathBuf::from(&deployment.path),
+                    ),
+                ))
+            },
+            |requests, on_finished| {
+                run_update_all_sync(
+                    requests,
+                    super::core_runtime::build_runtime_write,
+                    |skill, _| on_finished(&skill.0),
+                )
+            },
+            |progress| {
+                let _ = app.emit(UPDATE_ALL_PROGRESS_EVENT, progress);
+            },
         )?;
 
         let current_owner_ids = skill_refresh::snapshot_owner_ids(&snapshot.skills);

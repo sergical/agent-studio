@@ -6,10 +6,15 @@
 
 import { useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
-import { Button, Collapsible, CollapsiblePanel } from "@skill-studio/ui";
+import { Button, Collapsible, CollapsiblePanel, Progress } from "@skill-studio/ui";
 import { formatRelativeTime, formatTokens, shortSha } from "@skill-studio/lib";
 import type { HealthIssue, InstalledSkill, RecentlyUsedSkill } from "@skill-studio/lib";
-import { parkSkill, pullForkUpstream, updateAllSkills, updateSkill } from "../../lib/skill-api";
+import {
+  parkSkill,
+  pullForkUpstream,
+  updateAllSkillsWithProgress,
+  updateSkill,
+} from "../../lib/skill-api";
 import {
   lifecycleTargetForPark,
   skillCanPark,
@@ -31,6 +36,7 @@ import {
   MAX_ROWS_PER_GROUP,
   rowAt,
   skillKey,
+  updateAllFailureMessage,
   updateAllOutdatedSkills,
 } from "./home-inbox-data";
 import type { GroupId, HomeFilter, HomeGroups, HomeRowPlan } from "./home-inbox-data";
@@ -535,27 +541,31 @@ function UpdatesGroup({
   /** This group's offset into the page's continuous `aria-rowindex` sequence. */
   start: number;
 }) {
-  const [isUpdatingAll, setIsUpdatingAll] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const addToast = useAppStore((state) => state.addToast);
+  const isUpdatingAll = progress !== null;
 
   const handleUpdateAll = async () => {
-    setIsUpdatingAll(true);
+    setProgress({ done: 0, total: 0 });
     // `updateAllOutdatedSkills` catches every `pullFork`/`updateAllOwners`
     // rejection itself and folds it into `failures`, so this await never
     // throws - a plain (React Compiler-friendly) sequence needs no
     // try/finally to still always clear the loading flag.
-    const { attempted, succeeded, failures } = await updateAllOutdatedSkills(
+    const tally = await updateAllOutdatedSkills(
       updates,
       pullForkUpstream,
-      updateAllSkills,
+      (targets, onOwnerDone) =>
+        updateAllSkillsWithProgress(targets, ({ done }) => onOwnerDone(done)),
+      (done, total) => setProgress({ done, total }),
     );
+    const { attempted, succeeded, failures } = tally;
     addToast({
       type: failures > 0 ? "warning" : "success",
       title: `Updated ${succeeded} of ${attempted} deployment${attempted === 1 ? "" : "s"}`,
-      message: failures > 0 ? `${failures} failed` : undefined,
+      message: updateAllFailureMessage(tally),
     });
     // react-doctor-disable-next-line react-doctor/no-loading-flag-reset-outside-finally -- the React Compiler rejects try/finally here (react-hooks-js/todo); `updateAllOutdatedSkills` never rejects, so this always runs
-    setIsUpdatingAll(false);
+    setProgress(null);
   };
 
   return (
@@ -577,11 +587,22 @@ function UpdatesGroup({
                   }}
                   disabled={isUpdatingAll}
                 >
-                  {isUpdatingAll ? "Updating…" : "Update all"}
+                  {progress
+                    ? progress.total > 0
+                      ? `Updating ${progress.done} of ${progress.total}…`
+                      : "Updating…"
+                    : "Update all"}
                 </Button>
               )
             }
           />
+          {progress && progress.total > 0 && (
+            <Progress
+              value={(progress.done / progress.total) * 100}
+              aria-label={`Updating ${progress.done} of ${progress.total}`}
+              className="px-3 pb-2"
+            />
+          )}
         </div>
       </div>
       <CollapsiblePanel>
