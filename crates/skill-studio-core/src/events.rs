@@ -67,11 +67,13 @@ pub enum EventKind {
     /// `ops::remove`'s own quarantine prune; `payload.pruned` names every
     /// entry it deleted.
     QuarantinePrune,
+    /// Universal folder replaced by one copy per chosen harness.
+    Split,
 }
 
 impl EventKind {
     /// Every kind, in declaration order.
-    pub const ALL: [EventKind; 22] = [
+    pub const ALL: [EventKind; 23] = [
         EventKind::Install,
         EventKind::Remove,
         EventKind::Update,
@@ -94,6 +96,7 @@ impl EventKind {
         EventKind::RepairSkillFrontmatter,
         EventKind::Restore,
         EventKind::QuarantinePrune,
+        EventKind::Split,
     ];
 
     /// The literal stored in the `kind` column.
@@ -121,6 +124,7 @@ impl EventKind {
             EventKind::RepairSkillFrontmatter => "repair_skill_frontmatter",
             EventKind::Restore => "restore",
             EventKind::QuarantinePrune => "quarantine_prune",
+            EventKind::Split => "split",
         }
     }
 
@@ -416,6 +420,14 @@ pub(crate) fn fingerprint_path(
     fingerprint_entry(fs, path, meta.kind).map(Some)
 }
 
+/// The [`fingerprint_path`] of a link whose raw target text is `target`,
+/// known before the link exists.
+pub(crate) fn link_fingerprint(target: &Path) -> Fingerprint {
+    let mut buf = vec![b'L'];
+    buf.extend_from_slice(target.to_string_lossy().as_bytes());
+    Fingerprint::of_bytes(&buf)
+}
+
 /// One entry of [`fingerprint_path`]'s recursion; `kind` is the caller's
 /// already-known [`FileKind`] so a directory's children are not re-stat'd
 /// beyond the [`ScopeFs::read_dir`] call that named them.
@@ -427,9 +439,7 @@ fn fingerprint_entry(
     let buf = match kind {
         FileKind::Symlink => {
             let target = fs.read_link(path).map_err(|e| CoreError::io(path, e))?;
-            let mut buf = vec![b'L'];
-            buf.extend_from_slice(target.to_string_lossy().as_bytes());
-            buf
+            return Ok(link_fingerprint(&target));
         }
         FileKind::Dir => {
             let mut entries = fs.read_dir(path).map_err(|e| CoreError::io(path, e))?;
@@ -558,6 +568,69 @@ pub(crate) fn parse_restore_links(inverse: &serde_json::Value) -> Vec<(PathBuf, 
             let target = PathBuf::from(entry.get("target")?.as_str()?);
             Some((path, target))
         })
+        .collect()
+}
+
+/// Adds a `"remove_copies"` array to a `restore_backup` inverse: folders the
+/// same event wrote (one per harness `ops::split` copied into), each with
+/// the fingerprint it had right after the write. `restore_event` removes
+/// them before it recreates `"links"`, because a split copy can sit where a
+/// removed link used to be. Additive like `"links"`.
+pub(crate) fn with_remove_copies(
+    mut inverse: serde_json::Value,
+    copies: &[(PathBuf, Fingerprint)],
+) -> serde_json::Value {
+    if !copies.is_empty() {
+        let copies: Vec<serde_json::Value> = copies
+            .iter()
+            .map(|(path, fingerprint)| {
+                serde_json::json!({ "path": path, "fingerprint": fingerprint.bare_hex() })
+            })
+            .collect();
+        inverse["remove_copies"] = serde_json::Value::Array(copies);
+    }
+    inverse
+}
+
+/// Reads back the `"remove_copies"` array [`with_remove_copies`] adds, or an
+/// empty list for an inverse that has none.
+pub(crate) fn parse_restore_remove_copies(inverse: &serde_json::Value) -> Vec<(PathBuf, String)> {
+    inverse
+        .get("remove_copies")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let path = PathBuf::from(entry.get("path")?.as_str()?);
+            let fingerprint = entry.get("fingerprint")?.as_str()?.to_string();
+            Some((path, fingerprint))
+        })
+        .collect()
+}
+
+/// Adds a `"remove_codex_rows"` array to a `restore_backup` inverse: the
+/// `SKILL.md` paths whose disabled `[[skills.config]]` row the same event
+/// added to Codex's config (`ops::split` carries one to a Codex copy of a
+/// skill that was off). `restore_event` removes exactly those rows.
+pub(crate) fn with_remove_codex_rows(
+    mut inverse: serde_json::Value,
+    rows: &[PathBuf],
+) -> serde_json::Value {
+    if !rows.is_empty() {
+        inverse["remove_codex_rows"] = serde_json::json!(rows);
+    }
+    inverse
+}
+
+/// Reads back the `"remove_codex_rows"` array [`with_remove_codex_rows`]
+/// adds, or an empty list for an inverse that has none.
+pub(crate) fn parse_restore_remove_codex_rows(inverse: &serde_json::Value) -> Vec<PathBuf> {
+    inverse
+        .get("remove_codex_rows")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.as_str().map(PathBuf::from))
         .collect()
 }
 

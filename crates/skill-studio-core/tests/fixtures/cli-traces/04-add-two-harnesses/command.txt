@@ -6,8 +6,8 @@ anthropics/skills
 --skill
 brand-guidelines
 --agent
-universal
---agent
 claude-code
+--agent
+cursor
 --cwd--
 GLOBAL

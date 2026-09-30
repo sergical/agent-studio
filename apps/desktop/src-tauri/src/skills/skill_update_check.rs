@@ -1239,9 +1239,18 @@ mod tests {
     }
 
     fn write_agents_lock(home: &Path, name: &str, repo: &str, path: &str, commit: &str) {
-        fs::create_dir_all(home.join(".agents")).unwrap();
+        write_agents_lock_in(&home.join(".agents"), name, repo, path, commit);
+    }
+
+    /// dotagents keeps a project's `agents.lock` in the project root.
+    fn write_project_agents_lock(project: &Path, name: &str, repo: &str, path: &str, commit: &str) {
+        write_agents_lock_in(project, name, repo, path, commit);
+    }
+
+    fn write_agents_lock_in(dir: &Path, name: &str, repo: &str, path: &str, commit: &str) {
+        fs::create_dir_all(dir).unwrap();
         fs::write(
-            home.join(".agents/agents.lock"),
+            dir.join("agents.lock"),
             format!(
                 r#"
 [skills.{name}]
@@ -1779,14 +1788,14 @@ resolved_commit = "{commit}"
             "skills/global",
             "global-old",
         );
-        write_agents_lock(
+        write_project_agents_lock(
             &project_a,
             "shared-name",
             "org/project-a",
             "skills/project-a",
             "project-a-old",
         );
-        write_agents_lock(
+        write_project_agents_lock(
             &project_b,
             "shared-name",
             "org/project-b",
@@ -1869,7 +1878,7 @@ resolved_commit = "{commit}"
         let project = tmp.path().join("project");
         let app_data = tmp.path().join("data");
         write_agents_lock(&home, "same", "org/global", "skills/global", "global-old");
-        write_agents_lock(
+        write_project_agents_lock(
             &project,
             "same",
             "org/project",

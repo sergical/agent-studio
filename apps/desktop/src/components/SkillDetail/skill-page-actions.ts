@@ -22,9 +22,14 @@ import {
   lifecycleTargetForDeployment,
   lifecycleTargetForPark,
   lifecycleTargetForSkill,
-  skillGlobalRemovalTarget,
+  skillCanPark,
+  skillRemovalBlockedReason,
+  skillRemovalChoices,
+  skillRemovalEmptiesSkill,
+  skillUpdateToast,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
+import type { SkillRemovalChoice } from "../../lib/skill-lifecycle-target";
 import type { InstalledSkill, PullResult, Toast } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
@@ -119,11 +124,14 @@ export interface SkillPageActions {
   copyPath: () => void;
   /** The one primary action for the header - "Pull latest" or "Update" - `null` when there is none. */
   primaryAction: SkillPageAction | null;
-  parkAction: SkillPageAction;
+  /** Park or Unpark - `null` when the skill has no Global Universal folder to move. */
+  parkAction: SkillPageAction | null;
   /** Fork (when forkable) or Un-fork (when already forked) - `null` when neither applies. */
   forkAction: SkillPageAction | null;
-  /** Global-only removal, present only when an exact mutable lifecycle target exists. */
-  removeAction: SkillPageAction | null;
+  /** One entry per scope with an exact mutable removal target, global first. */
+  removeActions: (SkillPageAction & { key: string })[];
+  /** Why there is no Remove, for a skill whose files the app must not delete. */
+  removeBlockedReason: string | null;
 }
 
 /**
@@ -159,14 +167,14 @@ export function useSkillPageActions(
       openEditor: () => undefined,
       copyPath: () => undefined,
       primaryAction: null,
-      parkAction: { label: "Park", run: () => undefined, busy: false },
+      parkAction: null,
       forkAction: null,
-      removeAction: null,
+      removeActions: [],
+      removeBlockedReason: null,
     };
   }
 
   const path = skill.deployments[0]?.path ?? skill.skill_path;
-  const globalRemovalTarget = skillGlobalRemovalTarget(skill);
 
   const reveal = () => {
     if (!path) return;
@@ -254,31 +262,19 @@ export function useSkillPageActions(
   const doUpdate = () =>
     runAction(addToast, setIsUpdating, "Update failed", async () => {
       const summary = await updateSkillOwners(skill, updateSkill);
-      if (summary.failures.length === 0) {
-        addToast({
-          type: "success",
-          title: `Updated ${summary.succeeded} deployment${summary.succeeded === 1 ? "" : "s"}`,
-          message: skill.name,
-        });
-      } else {
-        addToast({
-          type: "warning",
-          title: `Updated ${summary.succeeded} of ${summary.attempted} deployments`,
-          message: summary.failures.map((failure) => failure.message).join("; "),
-        });
-      }
+      addToast(skillUpdateToast(skill.name, summary));
     });
 
-  const doRemove = async () => {
-    if (!globalRemovalTarget) return;
-    const confirmed = await ask(`Remove ${skill.name}?`, {
-      title: "Remove skill",
+  const doRemove = async (choice: SkillRemovalChoice) => {
+    const confirmed = await ask(choice.confirmMessage, {
+      title: choice.confirmTitle,
       kind: "warning",
+      okLabel: choice.label,
     });
     if (!confirmed) return;
     await runAction(addToast, setIsRemoving, "Remove failed", async () => {
-      await removeSkill(globalRemovalTarget);
-      onRemoveComplete();
+      await removeSkill(choice.preview.target);
+      if (skillRemovalEmptiesSkill(skill, choice.selection)) onRemoveComplete();
       addToast(removeSuccessToast(skill.name));
     });
   };
@@ -300,9 +296,12 @@ export function useSkillPageActions(
     forkAction = { label: "Fork", run: doFork, busy: isForking };
   }
 
-  const removeAction: SkillPageAction | null = globalRemovalTarget
-    ? { label: "Remove", run: doRemove, busy: isRemoving }
-    : null;
+  const removeActions = skillRemovalChoices(skill).map((choice) => ({
+    key: choice.key,
+    label: choice.label,
+    run: () => void doRemove(choice),
+    busy: isRemoving,
+  }));
 
   return {
     path,
@@ -311,12 +310,11 @@ export function useSkillPageActions(
     openEditor,
     copyPath,
     primaryAction,
-    parkAction: {
-      label: skill.parked ? "Unpark" : "Park",
-      run: togglePark,
-      busy: isParking,
-    },
+    parkAction: skillCanPark(skill)
+      ? { label: skill.parked ? "Unpark" : "Park", run: togglePark, busy: isParking }
+      : null,
     forkAction,
-    removeAction,
+    removeActions,
+    removeBlockedReason: skillRemovalBlockedReason(skill),
   };
 }

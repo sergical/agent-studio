@@ -19,6 +19,7 @@ import { StatusIcon } from "../ui/StatusIcon";
 import { TooltipControl } from "../ui/TooltipControl";
 import { RemoveDeploymentsDialog } from "./RemoveDeploymentsDialog";
 import { SkillLocationScope } from "./SkillLocationScope";
+import { SplitSkillDialog } from "./SplitSkillDialog";
 import { UninstallPluginDialog } from "./UninstallPluginDialog";
 import { useLocationActions, setInvocationForFile } from "./skill-location-actions";
 import {
@@ -64,7 +65,7 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
   const actions = useLocationActions(skill, onCompareCopies);
 
   const groups = buildScopeGroups(skill);
-  const files = buildInvocationFiles(groups, skill);
+  const files = buildInvocationFiles(groups);
   const hasDrift = scopeGroupsHaveDrift(groups);
   const link = titleLink(skill, hasDrift);
   const promote = link ? null : promoteToGlobal(groups);
@@ -214,11 +215,7 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
           harness={actions.materializeRequest.harness}
           harnessLabel={actions.materializeRequest.harnessLabel}
           root={actions.materializeRequest.root}
-          intent={
-            actions.materializeRequest.intent === "convert-only"
-              ? { kind: "convert-only" }
-              : { kind: "convert-then-disable", skill: skill.name }
-          }
+          intent={{ kind: "convert-only" }}
           onClose={actions.closeMaterializeRequest}
         />
       )}
@@ -237,6 +234,15 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
           projectPath={actions.removeRequest.projectPath}
           deployment={actions.removeRequest.deployment}
           onClose={actions.closeRemoveRequest}
+        />
+      )}
+      {actions.splitRequest && (
+        <SplitSkillDialog
+          skillName={skill.name}
+          target={actions.splitRequest.target}
+          projectPath={actions.splitRequest.projectPath}
+          readers={actions.splitRequest.readers}
+          onClose={actions.closeSplitRequest}
         />
       )}
       {actions.pluginUninstallRequest && (

@@ -1,8 +1,8 @@
 // ============================================================================
 // MaterializeRootDialog - the one place a whole-dir link (e.g.
 // `~/.claude/skills -> ../.agents/skills`) gets converted into real per-skill
-// links. Opened from the Locations card's Claude Code toggle on a linked
-// root, and from Home's "linked-root" repair card - never done silently.
+// links. Opened from the Locations card's "Convert to per-skill links…"
+// action and from Home's "linked-root" repair card - never done silently.
 // ============================================================================
 
 import { useState } from "react";

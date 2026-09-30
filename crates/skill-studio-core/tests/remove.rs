@@ -216,11 +216,14 @@ fn copy_request(skill: &str) -> InstallRequest {
             relative_path: PathBuf::from("SKILL.md"),
             contents: format!("---\nname: {skill}\ndescription: a copied skill\n---\nBody.\n")
                 .into_bytes(),
+            mode: None,
         }],
         source: None,
         trust_identity: None,
         trust_confirmed: false,
         save_as_preference: false,
+        link_mode: skill_studio_core::dto::InstallLinkMode::Link,
+        destination: skill_studio_core::identity::SkillDestination::Universal,
     }
 }
 
@@ -407,7 +410,10 @@ fn setup_owner_kind_with_claude_link(
 ) -> DeploymentId {
     if kind == LifecycleOwnerKind::Copy {
         let mut req = copy_request(skill);
-        req.harnesses = vec![AgentId::parse(AgentId::CLAUDE_CODE).unwrap()];
+        req.harnesses = vec![
+            AgentId::parse("universal").unwrap(),
+            AgentId::parse(AgentId::CLAUDE_CODE).unwrap(),
+        ];
         let InstallOutcome::Installed { .. } = ops::install(rt, &ctx(), &req).unwrap() else {
             panic!("expected Installed");
         };
@@ -626,22 +632,14 @@ fn undo_after_remove_restores_the_links_and_the_provenance_state_or_names_the_mi
         )
         .unwrap();
 
-        let raw_target = std::fs::read_link(&claude_link).unwrap_or_else(|e| {
+        std::fs::read_link(&claude_link).unwrap_or_else(|e| {
             panic!("{kind:?}: the Claude Code link must be back after restore: {e}")
         });
-        // `restore_event` always recreates the link with an absolute target
-        // (see `ScopeFs::symlink`'s own doc), even when the original target
-        // it is restoring from was relative - so this asserts the recorded
-        // target is absolute rather than resolving it against the link's
-        // own parent: that resolution would keep any `..` components a
-        // relative target had, giving a path that only accidentally matches
-        // `universal_path`.
-        assert!(
-            raw_target.is_absolute(),
-            "{kind:?}: the restored link's target must be absolute"
-        );
+        // `restore_event` keeps the recorded target's form (relative stays
+        // relative), so compare where the link lands, not its raw text.
         assert_eq!(
-            raw_target, universal_path,
+            std::fs::canonicalize(&claude_link).ok(),
+            std::fs::canonicalize(&universal_path).ok(),
             "{kind:?}: the restored link must resolve to the restored tree"
         );
 
@@ -1576,4 +1574,50 @@ fn cli_remove_matches_the_npx_skills_remove_trace_byte_for_byte_apart_from_times
         lock_bytes, expected_bytes,
         "the lock file's remaining bytes must match lock_before with only {skill:?} removed"
     );
+}
+
+/// Flow: Copy-install `lambda`, remove it, Copy-install `mu` and save a
+/// preference, then undo the removal of `lambda`. Expectation: `lambda`'s
+/// `copies` row is back and `mu`'s row and the preference stay. Failure here
+/// means undo restored the whole registry file from the remove's backup and
+/// erased every later registry change.
+#[test]
+fn undo_of_a_copy_remove_keeps_registry_rows_added_after_it_or_names_the_erased_key() {
+    let home = unique_temp_dir("remove_undo_keeps_later_registry_rows");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = install_and_resolve(&rt, "lambda");
+    let registry_file = home.join(".agents").join("skill-studio.json");
+    let read = || -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(&registry_file).unwrap()).unwrap()
+    };
+    let has_row = |doc: &serde_json::Value, skill: &str| {
+        doc["copies"]
+            .as_object()
+            .is_some_and(|m| m.values().any(|row| row["name"] == skill))
+    };
+
+    let outcome = ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap();
+    assert!(!has_row(&read(), "lambda"), "setup: remove drops the row");
+    install_and_resolve(&rt, "mu");
+    let mut doc = read();
+    doc["preferred_method"] = serde_json::json!("copy");
+    std::fs::write(&registry_file, serde_json::to_vec(&doc).unwrap()).unwrap();
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    let after = read();
+    assert!(has_row(&after, "lambda"), "lambda's row must be back");
+    assert!(has_row(&after, "mu"), "mu's row must stay: {after}");
+    assert_eq!(after["preferred_method"], "copy");
+
+    std::fs::remove_dir_all(&home).ok();
 }

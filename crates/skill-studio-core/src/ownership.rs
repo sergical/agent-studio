@@ -38,6 +38,10 @@ pub(crate) struct DotagentsEntry {
     /// --all`), which has an `agents.lock` row but no `[[skills]]` row in
     /// `agents.toml`.
     pub has_manifest_row: bool,
+    /// True when the ledger records a `path:` source - a folder `dotagents
+    /// sync` adopted, with no upstream. Such a row never claims a skill
+    /// another ledger also claims, see `classify_owner`.
+    pub is_local_path: bool,
 }
 
 /// The skills.sh lock file and the dotagents ledger for one `.agents`
@@ -46,11 +50,6 @@ pub(crate) struct DotagentsEntry {
 pub(crate) struct ScopeLedgers {
     pub lock: SkillLockFile,
     pub dotagents: Vec<DotagentsEntry>,
-    /// Whether `agents.toml` or `agents.lock` exists at all, regardless of
-    /// what it names. A dotagents install with no row for a given skill
-    /// still makes that skill's owner ambiguous - see `classify_owner`'s
-    /// shared-root carve-out - so presence is a separate fact from content.
-    pub has_dotagents_files: bool,
     /// Skill names a project-scope `<project>/skills-lock.json` (schema
     /// version 1) names - a second, project-root source for skills.sh
     /// ownership alongside `lock` above, which only ever sees the shared
@@ -59,8 +58,9 @@ pub(crate) struct ScopeLedgers {
     pub project_lock_skills: HashSet<String>,
 }
 
-/// Reads both ledgers under `agents_dir` (normally `<scope root>/.agents`),
-/// plus `project_lock_path`'s skill names when the scope is a project (see
+/// Reads the skills.sh lock under `agents_dir` (normally
+/// `<scope root>/.agents`) and the dotagents ledger under `dotagents_dir`
+/// (see [`crate::dotagents_ledger::dotagents_dir`]), plus `project_lock_path`'s skill names when the scope is a project (see
 /// [`ScopeLedgers::project_lock_skills`]). A missing or unreadable file
 /// yields an empty ledger rather than an error: most scopes have no
 /// dotagents or skills.sh install at all, and a scan must still report
@@ -68,6 +68,7 @@ pub(crate) struct ScopeLedgers {
 pub(crate) fn read_scope_ledgers(
     fs: &dyn ScopeFs,
     agents_dir: &Path,
+    dotagents_dir: &Path,
     project_lock_path: Option<&Path>,
 ) -> ScopeLedgers {
     let lock =
@@ -82,9 +83,7 @@ pub(crate) fn read_scope_ledgers(
         .unwrap_or_default();
     ScopeLedgers {
         lock,
-        dotagents: read_dotagents_ledger(fs, agents_dir),
-        has_dotagents_files: fs.symlink_metadata(&agents_dir.join("agents.toml")).is_ok()
-            || fs.symlink_metadata(&agents_dir.join("agents.lock")).is_ok(),
+        dotagents: read_dotagents_ledger(fs, dotagents_dir),
         project_lock_skills,
     }
 }
@@ -95,13 +94,15 @@ pub(crate) fn read_scope_ledgers(
 /// `classify_owner` doesn't need (`source`, `installed_commit`, ...).
 fn read_dotagents_ledger(fs: &dyn ScopeFs, agents_dir: &Path) -> Vec<DotagentsEntry> {
     let manifest_names = dotagents_manifest_names(fs, agents_dir);
-    dotagents_lock_names(fs, agents_dir)
+    dotagents_lock_sources(fs, agents_dir)
         .into_iter()
-        .map(|name| {
+        .map(|(name, source)| {
             let has_manifest_row = manifest_names.contains(&name);
             DotagentsEntry {
                 name,
                 has_manifest_row,
+                is_local_path: source
+                    .is_some_and(|s| crate::dotagents_ledger::is_local_path_source(&s)),
             }
         })
         .collect()
@@ -116,15 +117,23 @@ fn read_toml_document(fs: &dyn ScopeFs, path: &Path) -> Option<toml::Table> {
 }
 
 /// `agents.lock`'s `[skills.<name>]` table keys - the set of skills
-/// dotagents has actually resolved on disk.
-fn dotagents_lock_names(fs: &dyn ScopeFs, agents_dir: &Path) -> Vec<String> {
+/// dotagents has actually resolved on disk - each with the `source` the row
+/// records.
+fn dotagents_lock_sources(fs: &dyn ScopeFs, agents_dir: &Path) -> Vec<(String, Option<String>)> {
     let Some(table) = read_toml_document(fs, &agents_dir.join("agents.lock")) else {
         return Vec::new();
     };
     table
         .get("skills")
         .and_then(toml::Value::as_table)
-        .map(|t| t.keys().cloned().collect())
+        .map(|t| {
+            t.iter()
+                .map(|(name, row)| {
+                    let source = row.get("source").and_then(toml::Value::as_str);
+                    (name.clone(), source.map(str::to_string))
+                })
+                .collect()
+        })
         .unwrap_or_default()
 }
 

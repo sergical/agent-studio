@@ -99,56 +99,134 @@ fn install_claude_link(home: &Path, name: &str) {
     std::os::unix::fs::symlink(&target, claude_skills.join(name)).unwrap();
 }
 
-/// `each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_names_the_wrong_file`:
+fn claude_request(name: &str, enabled: bool) -> SetHarnessEnabledRequest {
+    SetHarnessEnabledRequest {
+        skill: SkillName(name.into()),
+        harness: AgentId::from(AgentId::CLAUDE_CODE),
+        enabled,
+        project_path: None,
+    }
+}
+
+fn claude_settings_path(home: &Path) -> std::path::PathBuf {
+    home.join(".claude/settings.json")
+}
+
+/// `skillOverrides.<name>` from the fixture's `~/.claude/settings.json`,
+/// or `Null` when the file, the object, or the entry is missing.
+fn claude_override(home: &Path, name: &str) -> serde_json::Value {
+    std::fs::read_to_string(claude_settings_path(home))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .map_or(serde_json::Value::Null, |v| {
+            v["skillOverrides"][name].clone()
+        })
+}
+
+/// The settings file the maintainer's real home already has: another
+/// skill's override and unrelated top-level keys that every switch write
+/// must keep.
+fn seed_claude_settings(home: &Path) {
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::write(
+        claude_settings_path(home),
+        r#"{
+  "permissions": {"allow": ["Bash(ls)"]},
+  "skillOverrides": {"code-review": "user-invocable-only"},
+  "enabledPlugins": {"x@y": true}
+}"#,
+    )
+    .unwrap();
+}
+
+/// Every entry under `~/.claude/skills` (and the folder itself) as
+/// `(path, kind, link target)`, so a test can prove a switch write left the
+/// Claude Code skills folder byte-for-byte alone.
+fn claude_skills_tree(home: &Path) -> Vec<(String, &'static str, Option<std::path::PathBuf>)> {
+    fn walk(path: &Path, out: &mut Vec<(String, &'static str, Option<std::path::PathBuf>)>) {
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            return;
+        };
+        let display = path.display().to_string();
+        if meta.file_type().is_symlink() {
+            out.push((display, "link", std::fs::read_link(path).ok()));
+        } else if meta.is_dir() {
+            out.push((display, "dir", None));
+            let mut children: Vec<_> = std::fs::read_dir(path)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            children.sort();
+            for child in children {
+                walk(&child, out);
+            }
+        } else {
+            out.push((display, "file", None));
+        }
+    }
+    let mut out = Vec::new();
+    walk(&home.join(CLAUDE_ROOT_RELATIVE), &mut out);
+    out
+}
+
+/// The scan's Claude Code deployment of `name` (a row under a Claude Code
+/// harness root), if any.
+fn claude_deployment(
+    inventory: &skill_studio_core::dto::Inventory,
+    name: &str,
+) -> Option<skill_studio_core::dto::DeploymentDto> {
+    inventory
+        .skills
+        .iter()
+        .filter(|s| s.name.0 == name)
+        .flat_map(|s| s.deployments.iter())
+        .find(|d| {
+            d.harness
+                .as_ref()
+                .is_some_and(|h| h.as_str() == AgentId::CLAUDE_CODE)
+        })
+        .cloned()
+}
+
+/// `each_of_the_three_harness_switch_tests_passes_against_its_fixture_home_or_names_the_wrong_file`:
 /// one case per harness, each asserting the exact file `enable-and-links.md`
 /// names for that harness.
 #[test]
-fn each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_names_the_wrong_file() {
-    // Claude Code: the per-skill link under `.claude/skills/<name>` is
-    // removed, then recreated pointing at the universal directory.
+fn each_of_the_three_harness_switch_tests_passes_against_its_fixture_home_or_names_the_wrong_file()
+{
+    // Claude Code: `skillOverrides.<name>` is set to `"off"` in
+    // `~/.claude/settings.json`, then removed again; the per-skill link is
+    // left alone both ways.
     {
         let home = unique_temp_dir("switch_claude_code");
         install_universal_skill(&home, "gamma");
         install_claude_link(&home, "gamma");
         let rt = runtime_for(&home);
         let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+
+        ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap();
+        assert_eq!(
+            claude_override(&home, "gamma"),
+            "off",
+            "claude code disable should write skillOverrides.gamma = off in {}",
+            claude_settings_path(&home).display()
+        );
         assert!(
             std::fs::symlink_metadata(&link).is_ok(),
-            "fixture setup: {} should start linked",
+            "claude code disable must leave the link at {} in place",
             link.display()
         );
 
-        ops::set_harness_enabled(
-            &rt,
-            &ctx(),
-            &SetHarnessEnabledRequest {
-                skill: SkillName("gamma".into()),
-                harness: AgentId::from(AgentId::CLAUDE_CODE),
-                enabled: false,
-                project_path: None,
-            },
-        )
-        .unwrap();
-        assert!(
-            std::fs::symlink_metadata(&link).is_err(),
-            "claude code disable should remove {}",
-            link.display()
+        ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+        assert_eq!(
+            claude_override(&home, "gamma"),
+            serde_json::Value::Null,
+            "claude code enable should remove skillOverrides.gamma from {}",
+            claude_settings_path(&home).display()
         );
-
-        ops::set_harness_enabled(
-            &rt,
-            &ctx(),
-            &SetHarnessEnabledRequest {
-                skill: SkillName("gamma".into()),
-                harness: AgentId::from(AgentId::CLAUDE_CODE),
-                enabled: true,
-                project_path: None,
-            },
-        )
-        .unwrap();
         assert!(
             std::fs::symlink_metadata(&link).is_ok(),
-            "claude code enable should recreate {}",
+            "claude code enable must leave the link at {} in place",
             link.display()
         );
         std::fs::remove_dir_all(&home).ok();
@@ -216,40 +294,10 @@ fn each_of_the_four_harness_switch_tests_passes_against_its_fixture_home_or_name
         );
         std::fs::remove_dir_all(&home).ok();
     }
-
-    // pi: this build's stand-in switch, `skill-studio.disabledSkills` in
-    // pi's own settings file.
-    {
-        let home = unique_temp_dir("switch_pi");
-        install_universal_skill(&home, "gamma");
-        let rt = runtime_for(&home);
-        ops::set_harness_enabled(
-            &rt,
-            &ctx(),
-            &SetHarnessEnabledRequest {
-                skill: SkillName("gamma".into()),
-                harness: AgentId::from(AgentId::PI),
-                enabled: false,
-                project_path: None,
-            },
-        )
-        .unwrap();
-        let config_path = home.join(".pi/agent/settings.json");
-        let text = std::fs::read_to_string(&config_path)
-            .unwrap_or_else(|e| panic!("pi disable should write {}: {e}", config_path.display()));
-        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(
-            value["skill-studio"]["disabledSkills"][0],
-            "gamma",
-            "expected skill-studio.disabledSkills to include gamma in {}, got: {text}",
-            config_path.display()
-        );
-        std::fs::remove_dir_all(&home).ok();
-    }
 }
 
 /// `set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_names_the_missing_step`:
-/// a failure on pi's single write still leaves a durable journal row - the
+/// a failure on `OpenCode`'s single write still leaves a durable journal row - the
 /// row was recorded before the write, not after.
 #[test]
 fn set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_names_the_missing_step(
@@ -265,7 +313,7 @@ fn set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_nam
         &ctx(),
         &SetHarnessEnabledRequest {
             skill: SkillName("gamma".into()),
-            harness: AgentId::from(AgentId::PI),
+            harness: AgentId::from(AgentId::OPEN_CODE),
             enabled: false,
             project_path: None,
         },
@@ -288,8 +336,8 @@ fn set_harness_enabled_writes_a_journal_row_before_the_first_path_toggles_or_nam
 }
 
 /// `any_error_after_the_event_is_recorded_marks_it_failed_or_names_the_row_left_pending`:
-/// pi's `ensure_dir_all`, called after the journal row is recorded to create
-/// `~/.pi/agent` on a fresh home but before `write_atomic`, fails. That row
+/// `OpenCode`'s `ensure_dir_all`, called after the journal row is recorded to create
+/// `~/.config/opencode` on a fresh home but before `write_atomic`, fails. That row
 /// must finish `failed`, not stay `pending` - `recover_interrupted` would
 /// later read a `pending` row as a crash mid-write rather than a plain,
 /// retryable failure the caller already saw returned as an error.
@@ -306,7 +354,7 @@ fn any_error_after_the_event_is_recorded_marks_it_failed_or_names_the_row_left_p
         &ctx(),
         &SetHarnessEnabledRequest {
             skill: SkillName("gamma".into()),
-            harness: AgentId::from(AgentId::PI),
+            harness: AgentId::from(AgentId::OPEN_CODE),
             enabled: false,
             project_path: None,
         },
@@ -770,34 +818,24 @@ fn set_harness_enabled_accepts_opencode_and_open_code_spellings_or_names_the_rej
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// `claude_code_undo_of_undo_removes_the_recreated_link_or_names_the_stale_inverse`:
-/// disable removes the link and journals `recreate_symlink` as its inverse;
-/// undoing that disable recreates the link and must journal `remove_symlink`
-/// as its own inverse (not another `recreate_symlink`), so undoing the undo
-/// removes the link again instead of trying to recreate an already-present
-/// one.
+/// `claude_code_undo_of_undo_of_a_created_link_removes_it_again_or_names_the_stale_inverse`:
+/// an enable for a skill Claude Code cannot see creates the per-skill link
+/// and journals `remove_symlink` as its inverse; undoing it removes the link
+/// and must journal `recreate_symlink` (not another `remove_symlink`), so
+/// undoing the undo puts the link back instead of trying to remove an
+/// already-absent one.
 #[test]
-fn claude_code_undo_of_undo_removes_the_recreated_link_or_names_the_stale_inverse() {
+fn claude_code_undo_of_undo_of_a_created_link_removes_it_again_or_names_the_stale_inverse() {
     let home = unique_temp_dir("claude_undo_of_undo");
     install_universal_skill(&home, "gamma");
-    install_claude_link(&home, "gamma");
+    std::fs::create_dir_all(home.join(CLAUDE_ROOT_RELATIVE)).unwrap();
     let rt = runtime_for(&home);
     let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
 
-    let disable = ops::set_harness_enabled(
-        &rt,
-        &ctx(),
-        &SetHarnessEnabledRequest {
-            skill: SkillName("gamma".into()),
-            harness: AgentId::from(AgentId::CLAUDE_CODE),
-            enabled: false,
-            project_path: None,
-        },
-    )
-    .unwrap();
+    let enable = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
     assert!(
-        std::fs::symlink_metadata(&link).is_err(),
-        "disable should remove {}",
+        std::fs::symlink_metadata(&link).is_ok(),
+        "enable should create {}",
         link.display()
     );
 
@@ -805,14 +843,14 @@ fn claude_code_undo_of_undo_removes_the_recreated_link_or_names_the_stale_invers
         &rt,
         &ctx(),
         &RestoreRequest {
-            event_id: disable.event_id.clone(),
+            event_id: enable.event_id.clone(),
             force: false,
         },
     )
     .unwrap();
     assert!(
-        std::fs::symlink_metadata(&link).is_ok(),
-        "undoing the disable should recreate {}",
+        std::fs::symlink_metadata(&link).is_err(),
+        "undoing the enable should remove {}",
         link.display()
     );
 
@@ -826,8 +864,8 @@ fn claude_code_undo_of_undo_removes_the_recreated_link_or_names_the_stale_invers
     )
     .unwrap();
     assert!(
-        std::fs::symlink_metadata(&link).is_err(),
-        "undoing the undo should remove the recreated link at {} again",
+        std::fs::symlink_metadata(&link).is_ok(),
+        "undoing the undo should recreate the link at {}",
         link.display()
     );
 
@@ -837,7 +875,7 @@ fn claude_code_undo_of_undo_removes_the_recreated_link_or_names_the_stale_invers
         .open(&rt.scope, HistoryAccess::ReadIfExists)
         .unwrap()
         .expect("the store exists after the writes above");
-    let disable_row = store.get(&disable.event_id).unwrap().unwrap();
+    let enable_row = store.get(&enable.event_id).unwrap().unwrap();
     let undo_row = store.get(&undo.restore_event_id).unwrap().unwrap();
     let undo_of_undo_row = store.get(&undo_of_undo.restore_event_id).unwrap().unwrap();
     let inverse_op = |row: &skill_studio_core::events::EventRecord| {
@@ -848,19 +886,19 @@ fn claude_code_undo_of_undo_removes_the_recreated_link_or_names_the_stale_invers
             .map(str::to_string)
     };
     assert_eq!(
-        inverse_op(&disable_row).as_deref(),
-        Some("recreate_symlink"),
-        "the disable's own inverse should recreate the link"
+        inverse_op(&enable_row).as_deref(),
+        Some("remove_symlink"),
+        "the enable created the link, so its inverse should remove it"
     );
     assert_eq!(
         inverse_op(&undo_row).as_deref(),
-        Some("remove_symlink"),
-        "undoing the disable recreated the link, so its inverse must remove it, not recreate it again"
+        Some("recreate_symlink"),
+        "undoing the enable removed the link, so its inverse must recreate it, not remove it again"
     );
     assert_eq!(
         inverse_op(&undo_of_undo_row).as_deref(),
-        Some("recreate_symlink"),
-        "undoing the undo removed the link, so its inverse must recreate it"
+        Some("remove_symlink"),
+        "undoing the undo recreated the link, so its inverse must remove it"
     );
 
     std::fs::remove_dir_all(&home).ok();
@@ -903,15 +941,14 @@ fn claude_code_enable_creates_the_skills_dir_on_a_fresh_home_or_names_the_confin
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// `project_scoped_claude_code_disable_removes_the_project_link_or_names_the_global_link_it_touched_instead`:
-/// `gamma` is installed both globally and inside one project, each with its
-/// own Claude Code link. A disable scoped to the project must remove only
-/// `<project>/.claude/skills/gamma`, leaving the unrelated global link at
-/// `<home>/.claude/skills/gamma` untouched - the opposite of what the
-/// unscoped code did before, which always resolved the home slot.
+/// `project_scoped_claude_code_disable_is_refused_and_writes_nothing_or_names_the_file_it_changed`:
+/// Claude Code's `skillOverrides` live in the global
+/// `~/.claude/settings.json` and apply in every project, so a
+/// project-scoped off would silently switch the skill off everywhere. It
+/// must be refused, with neither settings file written and both links left
+/// in place.
 #[test]
-fn project_scoped_claude_code_disable_removes_the_project_link_or_names_the_global_link_it_touched_instead(
-) {
+fn project_scoped_claude_code_disable_is_refused_and_writes_nothing_or_names_the_file_it_changed() {
     let home = unique_temp_dir("claude_project_scope");
     install_universal_skill(&home, "gamma");
     install_claude_link(&home, "gamma");
@@ -929,64 +966,141 @@ fn project_scoped_claude_code_disable_removes_the_project_link_or_names_the_glob
     let global_link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
     let project_link = project_claude_skills.join("gamma");
 
+    let err = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            project_path: Some(project.clone()),
+            ..claude_request("gamma", false)
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Unsupported);
+    assert!(
+        err.message.contains("settings.json"),
+        "the refusal should say the switch lives in settings.json, got: {}",
+        err.message
+    );
+    for settings in [
+        claude_settings_path(&home),
+        project.join(".claude/settings.json"),
+    ] {
+        assert!(
+            std::fs::symlink_metadata(&settings).is_err(),
+            "a refused project-scoped off must not write {}",
+            settings.display()
+        );
+    }
+    for link in [&global_link, &project_link] {
+        assert!(
+            std::fs::symlink_metadata(link).is_ok(),
+            "a refused project-scoped off must leave the link at {}",
+            link.display()
+        );
+    }
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `project_scoped_codex_switch_changes_only_the_project_copy_or_names_the_row_it_wrote_elsewhere`:
+/// `gamma` is installed globally and in one project. Switching it off for
+/// Codex from the project row must add a row for the project's `SKILL.md`
+/// only. Fails when the global copy's path gets a row too: the switch on one
+/// project would turn the skill off everywhere.
+#[test]
+fn project_scoped_codex_switch_changes_only_the_project_copy_or_names_the_row_it_wrote_elsewhere() {
+    let home = unique_temp_dir("codex_project_scope");
+    install_universal_skill(&home, "gamma");
+    let project = home.join("proj");
+    install_project_universal_skill(&project, "gamma");
+    let rt = runtime_with(&home, vec![project.clone()], Arc::new(RealFs::new()));
+
     ops::set_harness_enabled(
         &rt,
         &ctx(),
         &SetHarnessEnabledRequest {
             skill: SkillName("gamma".into()),
-            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            harness: AgentId::from(AgentId::CODEX),
             enabled: false,
             project_path: Some(project.clone()),
         },
     )
     .unwrap();
 
+    let fs = RealFs::new();
+    let off = ops::codex_disabled_skill_md_paths(&fs, &home.join(".codex"));
+    let form = |dir: &Path| ops::codex_path_form(&fs, &dir.join("gamma/SKILL.md"));
     assert!(
-        std::fs::symlink_metadata(&project_link).is_err(),
-        "project-scoped disable should remove {}",
-        project_link.display()
+        off.contains(&form(&project.join(UNIVERSAL_ROOT_RELATIVE))),
+        "the project copy must be off: {off:?}"
     );
     assert!(
-        std::fs::symlink_metadata(&global_link).is_ok(),
-        "project-scoped disable must leave the global link at {} untouched, not names the wrong global slot it also removed",
-        global_link.display()
+        !off.contains(&form(&home.join(UNIVERSAL_ROOT_RELATIVE))),
+        "the global copy must stay on: {off:?}"
     );
 
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// `disabling_an_already_disabled_claude_code_skill_records_no_undo_or_names_the_link_the_undo_would_delete`:
-/// `gamma` starts with no Claude Code link at all; disabling it again is a
-/// no-op on disk, so its journal row must carry no inverse. Restoring that
-/// row must be refused rather than removing a link the no-op never created.
+/// `project_scoped_opencode_switch_is_refused_and_writes_nothing_or_names_the_global_config_it_changed`:
+/// `OpenCode`'s off switch is a rule in the global `opencode.json`, which every
+/// project reads, so a switch from a project row would change the skill
+/// everywhere. It must be refused with `Unsupported`, and no config written.
 #[test]
-fn disabling_an_already_disabled_claude_code_skill_records_no_undo_or_names_the_link_the_undo_would_delete(
+fn project_scoped_opencode_switch_is_refused_and_writes_nothing_or_names_the_global_config_it_changed(
 ) {
-    let home = unique_temp_dir("claude_noop_disable");
-    install_universal_skill(&home, "gamma");
-    let rt = runtime_for(&home);
-    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
-    assert!(
-        std::fs::symlink_metadata(&link).is_err(),
-        "fixture setup: {} should start unlinked",
-        link.display()
-    );
+    let home = unique_temp_dir("opencode_project_scope");
+    let project = home.join("proj");
+    install_project_universal_skill(&project, "gamma");
+    let rt = runtime_with(&home, vec![project.clone()], Arc::new(RealFs::new()));
 
-    let disable = ops::set_harness_enabled(
+    let err = ops::set_harness_enabled(
         &rt,
         &ctx(),
         &SetHarnessEnabledRequest {
             skill: SkillName("gamma".into()),
-            harness: AgentId::from(AgentId::CLAUDE_CODE),
+            harness: AgentId::from(AgentId::OPEN_CODE),
             enabled: false,
-            project_path: None,
+            project_path: Some(project.clone()),
         },
     )
-    .unwrap();
+    .unwrap_err();
+
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Unsupported);
     assert!(
-        std::fs::symlink_metadata(&link).is_err(),
-        "a no-op disable must not create {}",
-        link.display()
+        err.message.contains("opencode.json"),
+        "the refusal should name the shared file, got: {}",
+        err.message
+    );
+    assert!(
+        std::fs::symlink_metadata(home.join(".config/opencode/opencode.json")).is_err(),
+        "a refused project-scoped switch must not write the shared opencode.json"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `disabling_a_skill_already_off_in_claude_settings_records_no_undo_or_names_the_bytes_undo_would_rewrite`:
+/// `gamma` is already `"off"` in `skillOverrides`; switching it off again is
+/// a no-op, so the file's bytes stay as they were and the journal row
+/// carries no inverse. Restoring that row must be refused rather than
+/// rewriting a file the no-op never touched.
+#[test]
+fn disabling_a_skill_already_off_in_claude_settings_records_no_undo_or_names_the_bytes_undo_would_rewrite(
+) {
+    let home = unique_temp_dir("claude_noop_disable");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    let before = "{\"skillOverrides\":{\"gamma\":\"off\"}}";
+    std::fs::write(claude_settings_path(&home), before).unwrap();
+    let rt = runtime_for(&home);
+
+    let disable = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(claude_settings_path(&home)).unwrap(),
+        before,
+        "a no-op off must not rewrite settings.json"
     );
 
     let store = rt
@@ -998,12 +1112,12 @@ fn disabling_an_already_disabled_claude_code_skill_records_no_undo_or_names_the_
     let row = store.get(&disable.event_id).unwrap().unwrap();
     assert_eq!(
         row.inverse, None,
-        "a no-op toggle must record no inverse, not one that would delete a link it never created"
+        "a no-op toggle must record no inverse, not one that would rewrite settings.json"
     );
     assert_eq!(
         row.restore_capability(),
         skill_studio_core::dto::RestoreCapability::NoInverse,
-        "with no inverse, the row must refuse restore rather than name the link an undo would delete"
+        "with no inverse, the row must refuse restore"
     );
 
     std::fs::remove_dir_all(&home).ok();
@@ -1094,123 +1208,311 @@ fn claude_code_toggle_marks_the_event_failed_when_the_link_write_fails_or_names_
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// `claude_code_disable_refuses_a_real_directory_or_whole_dir_link_or_names_the_removed_directory`:
-/// presence at `~/.claude/skills/<name>` only means "already linked" when it
-/// is a symlink. A real directory there (a plain copy) or a whole-directory
-/// link at `~/.claude/skills` itself must be refused, not torn down by
-/// `remove_file`.
-#[test]
-fn claude_code_disable_refuses_a_real_directory_or_whole_dir_link_or_names_the_removed_directory() {
-    // A real directory sits at the per-skill slot.
-    {
-        let home = unique_temp_dir("claude_disable_real_dir");
-        install_universal_skill(&home, "gamma");
-        let rt = runtime_for(&home);
-        let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
-        std::fs::create_dir_all(&link).unwrap();
-        std::fs::write(link.join("SKILL.md"), "---\nname: gamma\n---\n").unwrap();
+/// The three Claude Code layouts the scanner produces a Claude row for.
+#[derive(Debug, Clone, Copy)]
+enum ClaudeLayout {
+    /// `~/.claude/skills` is a real folder holding a relative per-skill
+    /// link `../../.agents/skills/<name>`.
+    PerSkillLink,
+    /// `~/.claude/skills` is itself a link to `~/.agents/skills`.
+    WholeFolderLink,
+    /// `~/.claude/skills/<name>` is a real copy of the skill.
+    RealCopy,
+}
 
-        let err = ops::set_harness_enabled(
-            &rt,
-            &ctx(),
-            &SetHarnessEnabledRequest {
-                skill: SkillName("gamma".into()),
-                harness: AgentId::from(AgentId::CLAUDE_CODE),
-                enabled: false,
-                project_path: None,
-            },
-        )
-        .unwrap_err();
-        assert_eq!(err.code, skill_studio_core::ErrorCode::InvalidRequest);
-        assert!(
-            err.message.contains(&link.display().to_string()),
-            "expected the error to name {}, got: {}",
-            link.display(),
-            err.message
-        );
-        assert!(
-            std::fs::metadata(&link).is_ok_and(|m| m.is_dir()),
-            "the real directory at {} must not be removed",
-            link.display()
-        );
-        std::fs::remove_dir_all(&home).ok();
+fn install_claude_layout(home: &Path, name: &str, layout: ClaudeLayout) {
+    let claude_skills = home.join(CLAUDE_ROOT_RELATIVE);
+    match layout {
+        ClaudeLayout::PerSkillLink => {
+            install_universal_skill(home, name);
+            std::fs::create_dir_all(&claude_skills).unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(
+                Path::new("../../.agents/skills").join(name),
+                claude_skills.join(name),
+            )
+            .unwrap();
+        }
+        ClaudeLayout::WholeFolderLink => {
+            install_universal_skill(home, name);
+            std::fs::create_dir_all(home.join(".claude")).unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(home.join(UNIVERSAL_ROOT_RELATIVE), &claude_skills).unwrap();
+        }
+        ClaudeLayout::RealCopy => {
+            let dir = claude_skills.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: a real Claude Code copy\n---\nBody.\n"),
+            )
+            .unwrap();
+        }
     }
+}
 
-    // `~/.claude/skills` itself is a whole-directory link into the shared root.
-    {
-        let home = unique_temp_dir("claude_disable_whole_dir_link");
-        install_universal_skill(&home, "gamma");
-        let claude_skills_dir = home.join(CLAUDE_ROOT_RELATIVE);
-        let universal_dir = home.join(UNIVERSAL_ROOT_RELATIVE);
-        std::fs::create_dir_all(claude_skills_dir.parent().unwrap()).unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&universal_dir, &claude_skills_dir).unwrap();
+/// `claude_code_off_writes_skill_overrides_for_every_layout_and_survives_rescan_and_restart_or_names_the_layout_that_lost_it`:
+/// for a per-skill link, a whole-folder link, and a real copy alike, the
+/// off switch writes `skillOverrides.<name> = "off"`, keeps the other
+/// skill's `"user-invocable-only"` and every other key, and changes nothing
+/// under `~/.claude/skills`. A rescan and a fresh runtime (an app restart)
+/// both still list the Claude Code row, marked
+/// `DisabledBy::ClaudeSkillOverrides`; the on switch clears it again.
+#[test]
+fn claude_code_off_writes_skill_overrides_for_every_layout_and_survives_rescan_and_restart_or_names_the_layout_that_lost_it(
+) {
+    for layout in [
+        ClaudeLayout::PerSkillLink,
+        ClaudeLayout::WholeFolderLink,
+        ClaudeLayout::RealCopy,
+    ] {
+        let home = unique_temp_dir(&format!("claude_off_{layout:?}"));
+        install_claude_layout(&home, "gamma", layout);
+        seed_claude_settings(&home);
+        let tree_before = claude_skills_tree(&home);
         let rt = runtime_for(&home);
 
-        let err = ops::set_harness_enabled(
-            &rt,
-            &ctx(),
-            &SetHarnessEnabledRequest {
-                skill: SkillName("gamma".into()),
-                harness: AgentId::from(AgentId::CLAUDE_CODE),
-                enabled: false,
-                project_path: None,
-            },
-        )
-        .unwrap_err();
-        assert_eq!(err.code, skill_studio_core::ErrorCode::InvalidRequest);
-        assert!(
-            err.message
-                .contains(&claude_skills_dir.display().to_string()),
-            "expected the error to name {}, got: {}",
-            claude_skills_dir.display(),
-            err.message
+        let before = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+        let row = claude_deployment(&before, "gamma").unwrap_or_else(|| {
+            panic!("{layout:?}: fixture setup should give gamma a Claude Code row")
+        });
+        assert_eq!(row.disabled_by, None, "{layout:?}: gamma should start on");
+
+        ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false))
+            .unwrap_or_else(|e| panic!("{layout:?}: off should succeed, got: {}", e.message));
+        assert_eq!(
+            claude_override(&home, "gamma"),
+            "off",
+            "{layout:?}: off should write skillOverrides.gamma = off"
         );
-        assert!(
-            std::fs::symlink_metadata(&claude_skills_dir).is_ok_and(|m| m.file_type().is_symlink()),
-            "the whole-directory link at {} must not be removed",
-            claude_skills_dir.display()
+        assert_eq!(
+            claude_override(&home, "code-review"),
+            "user-invocable-only",
+            "{layout:?}: off dropped another skill's override"
         );
+        let settings: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(claude_settings_path(&home)).unwrap())
+                .unwrap();
+        assert!(
+            settings.get("permissions").is_some() && settings.get("enabledPlugins").is_some(),
+            "{layout:?}: off lost a top-level settings key: {settings}"
+        );
+        assert_eq!(
+            claude_skills_tree(&home),
+            tree_before,
+            "{layout:?}: off changed something under ~/.claude/skills"
+        );
+
+        let rescanned = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+        let restarted = ops::scan(&runtime_for(&home), &ctx(), &ScanRequest::default()).unwrap();
+        for (when, inventory) in [("rescan", &rescanned), ("restart", &restarted)] {
+            let row = claude_deployment(inventory, "gamma").unwrap_or_else(|| {
+                panic!("{layout:?}: the Claude Code row vanished after the {when}")
+            });
+            assert_eq!(
+                row.disabled_by,
+                Some(skill_studio_core::harness::DisabledBy::ClaudeSkillOverrides),
+                "{layout:?}: the {when} should mark the Claude Code row off by skillOverrides"
+            );
+        }
+
+        ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true))
+            .unwrap_or_else(|e| panic!("{layout:?}: on should succeed, got: {}", e.message));
+        assert_eq!(
+            claude_override(&home, "gamma"),
+            serde_json::Value::Null,
+            "{layout:?}: on should remove skillOverrides.gamma"
+        );
+        assert_eq!(
+            claude_override(&home, "code-review"),
+            "user-invocable-only",
+            "{layout:?}: on dropped another skill's override"
+        );
+        assert_eq!(
+            claude_skills_tree(&home),
+            tree_before,
+            "{layout:?}: on changed something under ~/.claude/skills"
+        );
+        let after = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+        assert_eq!(
+            claude_deployment(&after, "gamma").map(|d| d.disabled_by),
+            Some(None),
+            "{layout:?}: after on, the Claude Code row should be on again"
+        );
+
         std::fs::remove_dir_all(&home).ok();
     }
 }
 
+/// `claude_code_on_restores_the_override_the_off_replaced_or_names_the_value_it_dropped`:
+/// `gamma` starts as `"user-invocable-only"`. Off replaces that with
+/// `"off"`; on must put `"user-invocable-only"` back, not delete the key and
+/// lose the user's own setting.
+#[test]
+fn claude_code_on_restores_the_override_the_off_replaced_or_names_the_value_it_dropped() {
+    let home = unique_temp_dir("claude_on_restores_override");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::write(
+        claude_settings_path(&home),
+        r#"{"skillOverrides": {"gamma": "user-invocable-only"}}"#,
+    )
+    .unwrap();
+    let rt = runtime_for(&home);
+
+    ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap();
+    assert_eq!(claude_override(&home, "gamma"), "off");
+    ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+    assert_eq!(
+        claude_override(&home, "gamma"),
+        "user-invocable-only",
+        "on should restore the value off replaced, not drop it"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `claude_code_on_after_an_undone_on_still_restores_the_users_override_or_names_the_value_it_dropped`:
+/// `gamma` starts as `"user-invocable-only"`. Flow: off, on, undo the on,
+/// on again. The undo puts `"off"` back, so the next on must still restore
+/// the user's own value: the last off that was not reverted is the one that
+/// replaced it. Fails when the second on drops the key, which means the
+/// undone on hid the earlier off's record.
+#[test]
+fn claude_code_on_after_an_undone_on_still_restores_the_users_override_or_names_the_value_it_dropped(
+) {
+    let home = unique_temp_dir("claude_on_after_undone_on");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::write(
+        claude_settings_path(&home),
+        r#"{"model":"x","skillOverrides":{"gamma":"user-invocable-only"}}"#,
+    )
+    .unwrap();
+    let rt = runtime_for(&home);
+
+    ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap();
+    let on = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: on.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(claude_override(&home, "gamma"), "off");
+    ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+
+    assert_eq!(
+        claude_override(&home, "gamma"),
+        "user-invocable-only",
+        "the on after an undone on should restore the value the off replaced"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `claude_code_on_for_a_universal_skill_claude_cannot_see_links_it_or_names_the_missing_row`:
+/// `~/.claude/skills` is a real folder with no entry for `gamma`, so Claude
+/// Code cannot see the Universal skill: the scan lists `claude-code` among
+/// its disabled readers and there is no Claude Code row. On creates the
+/// per-skill link (and does not create `settings.json`); the next scan has
+/// a Claude Code row that is on and no longer lists `claude-code` as a
+/// disabled reader. This is also how a link an older build removed as its
+/// off switch comes back.
+#[test]
+fn claude_code_on_for_a_universal_skill_claude_cannot_see_links_it_or_names_the_missing_row() {
+    let home = unique_temp_dir("claude_on_links_universal");
+    install_universal_skill(&home, "gamma");
+    std::fs::create_dir_all(home.join(CLAUDE_ROOT_RELATIVE)).unwrap();
+    let rt = runtime_for(&home);
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    let reads_claude = |inventory: &skill_studio_core::dto::Inventory| {
+        inventory
+            .skills
+            .iter()
+            .filter(|s| s.name.0 == "gamma")
+            .flat_map(|s| s.deployments.iter())
+            .any(|d| {
+                d.disabled_readers
+                    .iter()
+                    .any(|r| r.as_str() == AgentId::CLAUDE_CODE)
+            })
+    };
+
+    let before = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+    assert!(
+        claude_deployment(&before, "gamma").is_none() && reads_claude(&before),
+        "fixture setup: gamma should have no Claude Code row and claude-code as a disabled reader"
+    );
+
+    ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true))
+        .unwrap_or_else(|e| panic!("on should link gamma, got: {}", e.message));
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::read_link(&link).ok(),
+        Some(home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma")),
+        "on should create a per-skill link at {} to the Universal folder",
+        link.display()
+    );
+    assert!(
+        std::fs::symlink_metadata(claude_settings_path(&home)).is_err(),
+        "on for a skill with no override must not create settings.json"
+    );
+
+    let after = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+    assert_eq!(
+        claude_deployment(&after, "gamma").map(|d| d.disabled_by),
+        Some(None),
+        "after on, gamma should have a Claude Code row that is on"
+    );
+    assert!(
+        !reads_claude(&after),
+        "after on, claude-code should no longer be a disabled reader of gamma"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_remove`:
-/// disabling Claude Code removes the link and journals a `Recreate` inverse
-/// on `E1`. A real directory occupies the link's slot before the undo runs,
-/// so the undo's `fs.symlink` call fails: `E1` must stay restorable (its
-/// claim was released, not consumed) and its own restore row `R` must finish
-/// `failed`. `restore_event` on `R` must then be refused, naming `R`'s
+/// an enable creates the Claude Code link (`E1`, inverse `remove_symlink`);
+/// undoing it (`R1`) removes the link and journals a `Recreate` inverse. A
+/// real directory occupies the link's slot before `R1` is undone, so that
+/// undo's `fs.symlink` call fails: `R1` must stay restorable (its claim was
+/// released, not consumed) and the new restore row `R2` must finish
+/// `failed`. `restore_event` on `R2` must then be refused, naming `R2`'s
 /// status - `RestoreCapability::NotCompleted` is what makes that refusal
-/// possible; without it, undoing `R` would apply `R`'s `remove_symlink`
-/// inverse to the occupant directory, deleting state `R` never touched.
+/// possible; without it, undoing `R2` would apply `R2`'s `remove_symlink`
+/// inverse to the occupant directory, deleting state `R2` never touched.
 #[test]
 fn undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_remove() {
     let home = unique_temp_dir("claude_undo_failed_recreate");
     install_universal_skill(&home, "gamma");
-    install_claude_link(&home, "gamma");
     let rt = runtime_for(&home);
     let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
 
-    let disable = ops::set_harness_enabled(
+    let enable = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+    let unlink = ops::restore_event(
         &rt,
         &ctx(),
-        &SetHarnessEnabledRequest {
-            skill: SkillName("gamma".into()),
-            harness: AgentId::from(AgentId::CLAUDE_CODE),
-            enabled: false,
-            project_path: None,
+        &RestoreRequest {
+            event_id: enable.event_id.clone(),
+            force: false,
         },
     )
     .unwrap();
     assert!(
         std::fs::symlink_metadata(&link).is_err(),
-        "disable should remove {}",
+        "undoing the enable should remove {}",
         link.display()
     );
 
-    // The occupant: a real directory sits where the undo's `Recreate`
-    // inverse wants to put the link back.
+    // The occupant: a real directory sits where `R1`'s `Recreate` inverse
+    // wants to put the link back.
     std::fs::create_dir_all(&link).unwrap();
     std::fs::write(link.join("SKILL.md"), "---\nname: gamma\n---\n").unwrap();
 
@@ -1218,7 +1520,7 @@ fn undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_
         &rt,
         &ctx(),
         &RestoreRequest {
-            event_id: disable.event_id.clone(),
+            event_id: unlink.restore_event_id.clone(),
             force: false,
         },
     )
@@ -1236,11 +1538,11 @@ fn undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_
         .open(&rt.scope, HistoryAccess::ReadIfExists)
         .unwrap()
         .expect("the store exists after the writes above");
-    let disable_row = store.get(&disable.event_id).unwrap().unwrap();
+    let unlink_row = store.get(&unlink.restore_event_id).unwrap().unwrap();
     assert_eq!(
-        disable_row.restore_capability(),
+        unlink_row.restore_capability(),
         skill_studio_core::dto::RestoreCapability::Yes,
-        "the failed undo must release its claim, leaving E1 restorable again"
+        "the failed undo must release its claim, leaving R1 restorable again"
     );
 
     let events = ops::list_events(
@@ -1252,7 +1554,7 @@ fn undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_
     let failed_restore = events
         .iter()
         .find(|e| e.kind == "restore" && e.status == "failed")
-        .expect("the undo's own restore row R must be recorded and finished failed");
+        .expect("the undo's own restore row R2 must be recorded and finished failed");
     let restore_row = store.get(&failed_restore.id).unwrap().unwrap();
     assert_eq!(
         restore_row.status,
@@ -1271,12 +1573,12 @@ fn undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_
     assert_eq!(redo_err.code, skill_studio_core::ErrorCode::InvalidRequest);
     assert!(
         redo_err.message.contains("failed"),
-        "expected the refusal to name R's status (failed), got: {}",
+        "expected the refusal to name R2's status (failed), got: {}",
         redo_err.message
     );
     assert!(
         std::fs::metadata(&link).is_ok_and(|m| m.is_dir()),
-        "undoing R must still be refused, so the occupant directory at {} must remain",
+        "undoing R2 must still be refused, so the occupant directory at {} must remain",
         link.display()
     );
 
@@ -1292,6 +1594,7 @@ fn undo_of_a_failed_recreate_restore_is_refused_or_names_the_live_link_it_would_
 fn codex_switch_writes_the_config_under_codex_home_or_names_the_file_it_wrote_instead() {
     let home = unique_temp_dir("switch_codex_home");
     let codex_home = unique_temp_dir("switch_codex_home_custom");
+    std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&codex_home).unwrap();
     // `RuntimeScope::codex_home` has no canonical form and is checked
     // lexically only (see its doc comment): canonicalize here so a
@@ -1301,8 +1604,9 @@ fn codex_switch_writes_the_config_under_codex_home_or_names_the_file_it_wrote_in
     let codex_home = codex_home.canonicalize().unwrap();
     // Codex's own harness root, not the universal root: `native_disabled_by`
     // only attributes `DisabledBy::CodexConfig` to a `RootKind::Harness`
-    // (Codex) deployment, so the scan assertion below needs one.
-    let codex_dir = home.join(CODEX_ROOT_RELATIVE).join("gamma");
+    // (Codex) deployment, so the scan assertion below needs one. With
+    // `CODEX_HOME` set, Codex reads `$CODEX_HOME/skills`, not `~/.codex/skills`.
+    let codex_dir = codex_home.join("skills").join("gamma");
     std::fs::create_dir_all(&codex_dir).unwrap();
     std::fs::write(
         codex_dir.join("SKILL.md"),
@@ -1357,289 +1661,45 @@ fn codex_switch_writes_the_config_under_codex_home_or_names_the_file_it_wrote_in
     std::fs::remove_dir_all(&codex_home).ok();
 }
 
-/// `claude_code_disable_records_the_links_real_target_or_names_the_body_undo_would_relink`:
-/// a per-skill link retargeted by hand - pointing somewhere other than the
-/// canonical universal deployment - must have its disable inverse recreate
-/// *that* target, not the universal directory. Recording the canonical
-/// directory instead would make undo relink the body at whatever the
-/// universal directory holds now, not what the link pointed at before the
-/// disable.
-#[test]
-fn claude_code_disable_records_the_links_real_target_or_names_the_body_undo_would_relink() {
-    let home = unique_temp_dir("claude_disable_real_target");
-    install_universal_skill(&home, "gamma");
-    let canonical_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
-
-    // A body the link points at instead of the canonical universal
-    // deployment - standing in for a link retargeted by hand or left over
-    // from a moved skill.
-    let foreign_dir = home.join("foreign-target");
-    std::fs::create_dir_all(&foreign_dir).unwrap();
-    std::fs::write(foreign_dir.join("marker.txt"), "foreign body").unwrap();
-
-    let claude_skills = home.join(CLAUDE_ROOT_RELATIVE);
-    std::fs::create_dir_all(&claude_skills).unwrap();
-    let link = claude_skills.join("gamma");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&foreign_dir, &link).unwrap();
-
-    let rt = runtime_for(&home);
-    let disable = ops::set_harness_enabled(
-        &rt,
-        &ctx(),
-        &SetHarnessEnabledRequest {
-            skill: SkillName("gamma".into()),
-            harness: AgentId::from(AgentId::CLAUDE_CODE),
-            enabled: false,
-            project_path: None,
-        },
-    )
-    .unwrap();
-    assert!(
-        std::fs::symlink_metadata(&link).is_err(),
-        "disable should remove {}",
-        link.display()
-    );
-
-    let store = rt
-        .ports
-        .history
-        .open(&rt.scope, HistoryAccess::ReadIfExists)
-        .unwrap()
-        .expect("the store exists after the write above");
-    let row = store.get(&disable.event_id).unwrap().unwrap();
-    let recorded_target = row
-        .inverse
-        .as_ref()
-        .and_then(|v| v.get("target"))
-        .and_then(|v| v.as_str())
-        .map(std::path::PathBuf::from)
-        .expect("a recreate_symlink inverse must carry a target");
-    assert_eq!(
-        recorded_target,
-        foreign_dir,
-        "the inverse should recreate the link's real target {}, not the canonical dir {}",
-        foreign_dir.display(),
-        canonical_dir.display()
-    );
-    assert_ne!(
-        recorded_target, canonical_dir,
-        "recording the canonical dir would relink undo to the wrong body"
-    );
-
-    ops::restore_event(
-        &rt,
-        &ctx(),
-        &RestoreRequest {
-            event_id: disable.event_id.clone(),
-            force: false,
-        },
-    )
-    .unwrap();
-    assert!(
-        std::fs::symlink_metadata(&link).is_ok(),
-        "undo should recreate {}",
-        link.display()
-    );
-    #[cfg(unix)]
-    {
-        let relinked_target = std::fs::read_link(&link).unwrap();
-        assert_eq!(
-            relinked_target,
-            foreign_dir,
-            "undo should relink to the recorded real target {}, not the canonical dir",
-            foreign_dir.display()
-        );
-    }
-
-    std::fs::remove_dir_all(&home).ok();
-}
-
-/// `claude_code_disable_of_a_relative_target_link_records_its_resolved_target_or_names_the_link_it_refused`:
-/// a Claude Code per-skill link written with a relative target
-/// (`../../.agents/skills/<name>`, the shape the scanner resolves at
-/// `ops.rs`'s scan, the desktop adapter relinks with, and the `basic`
-/// fixture in `scan_golden.rs` models) must disable the same way an
-/// absolute-target link does, not fail before any journal row is recorded
-/// because `confine` refuses a raw relative `read_link` value.
-#[test]
-fn claude_code_disable_of_a_relative_target_link_records_its_resolved_target_or_names_the_link_it_refused(
-) {
-    let home = unique_temp_dir("claude_disable_relative_target");
-    install_universal_skill(&home, "delta");
-    let canonical_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("delta");
-
-    let claude_skills = home.join(CLAUDE_ROOT_RELATIVE);
-    std::fs::create_dir_all(&claude_skills).unwrap();
-    let link = claude_skills.join("delta");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(Path::new("../../.agents/skills/delta"), &link).unwrap();
-
-    let rt = runtime_for(&home);
-    let disable = ops::set_harness_enabled(
-        &rt,
-        &ctx(),
-        &SetHarnessEnabledRequest {
-            skill: SkillName("delta".into()),
-            harness: AgentId::from(AgentId::CLAUDE_CODE),
-            enabled: false,
-            project_path: None,
-        },
-    )
-    .unwrap_or_else(|e| panic!("disable of a relative-target link must succeed, got: {e}"));
-    assert!(
-        std::fs::symlink_metadata(&link).is_err(),
-        "disable should remove {}",
-        link.display()
-    );
-
-    let store = rt
-        .ports
-        .history
-        .open(&rt.scope, HistoryAccess::ReadIfExists)
-        .unwrap()
-        .expect("the store exists after the write above");
-    let row = store.get(&disable.event_id).unwrap().unwrap();
-    let recorded_target = row
-        .inverse
-        .as_ref()
-        .and_then(|v| v.get("target"))
-        .and_then(|v| v.as_str())
-        .map(std::path::PathBuf::from)
-        .expect("a recreate_symlink inverse must carry a target");
-    assert_eq!(
-        recorded_target,
-        canonical_dir,
-        "the inverse should record the relative link's resolved target {}",
-        canonical_dir.display()
-    );
-
-    std::fs::remove_dir_all(&home).ok();
-}
-
-/// `undo_of_a_relative_target_link_disable_recreates_the_same_link_or_names_the_target_it_changed`:
-/// undoing the disable of a relative-target link must recreate a link the
-/// skill can be discovered through again, not leave the disable's own
-/// resolved-target fix half done.
-#[test]
-fn undo_of_a_relative_target_link_disable_recreates_the_same_link_or_names_the_target_it_changed() {
-    let home = unique_temp_dir("claude_undo_relative_target");
-    install_universal_skill(&home, "delta");
-    let canonical_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("delta");
-
-    let claude_skills = home.join(CLAUDE_ROOT_RELATIVE);
-    std::fs::create_dir_all(&claude_skills).unwrap();
-    let link = claude_skills.join("delta");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(Path::new("../../.agents/skills/delta"), &link).unwrap();
-
-    let rt = runtime_for(&home);
-    let disable = ops::set_harness_enabled(
-        &rt,
-        &ctx(),
-        &SetHarnessEnabledRequest {
-            skill: SkillName("delta".into()),
-            harness: AgentId::from(AgentId::CLAUDE_CODE),
-            enabled: false,
-            project_path: None,
-        },
-    )
-    .unwrap_or_else(|e| panic!("disable of a relative-target link must succeed, got: {e}"));
-
-    ops::restore_event(
-        &rt,
-        &ctx(),
-        &RestoreRequest {
-            event_id: disable.event_id.clone(),
-            force: false,
-        },
-    )
-    .unwrap_or_else(|e| panic!("undo of the relative-target disable must succeed, got: {e}"));
-    assert!(
-        std::fs::symlink_metadata(&link).is_ok(),
-        "undo should recreate {}",
-        link.display()
-    );
-    #[cfg(unix)]
-    {
-        let raw = std::fs::read_link(&link).unwrap();
-        let resolved = if raw.is_absolute() {
-            raw
-        } else {
-            claude_skills.join(raw)
-        };
-        assert_eq!(
-            resolved,
-            canonical_dir,
-            "the recreated link should resolve to {}",
-            canonical_dir.display()
-        );
-    }
-
-    let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
-    let skill = inventory
-        .skills
-        .iter()
-        .find(|s| s.name.0 == "delta")
-        .expect("delta must still be in the inventory");
-    assert!(
-        skill
-            .deployments
-            .iter()
-            .any(|d| d.path == link && d.disabled_by.is_none()),
-        "expected a fresh scan to see delta enabled again for Claude Code at {}",
-        link.display()
-    );
-
-    std::fs::remove_dir_all(&home).ok();
-}
-
 /// `undo_of_a_symlink_refuses_a_parked_target_or_names_the_dangling_link_it_created`:
 /// a `Recreate` inverse must refuse to run once the target it would point at
-/// is gone - parked, or moved out from under it between the disable and the
+/// is gone - parked, or moved out from under it between the unlink and its
 /// undo - rather than planting a dangling link and calling it a success.
 #[test]
 fn undo_of_a_symlink_refuses_a_parked_target_or_names_the_dangling_link_it_created() {
     let home = unique_temp_dir("undo_parked_target");
     install_universal_skill(&home, "gamma");
-    install_claude_link(&home, "gamma");
     let rt = runtime_for(&home);
     let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
     let canonical_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
 
-    let disable = ops::set_harness_enabled(
+    let enable = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+    let unlink = ops::restore_event(
         &rt,
         &ctx(),
-        &SetHarnessEnabledRequest {
-            skill: SkillName("gamma".into()),
-            harness: AgentId::from(AgentId::CLAUDE_CODE),
-            enabled: false,
-            project_path: None,
+        &RestoreRequest {
+            event_id: enable.event_id.clone(),
+            force: false,
         },
     )
     .unwrap();
     assert!(
         std::fs::symlink_metadata(&link).is_err(),
-        "disable should remove {}",
+        "undoing the enable should remove {}",
         link.display()
     );
 
-    // Park the canonical directory the disable's inverse recorded as its
+    // Park the canonical directory the unlink's inverse recorded as its
     // recreate target - simulating the skill being parked or moved between
-    // the disable and the undo.
+    // the unlink and its undo.
     let parked_dir = home.join("parked-gamma");
     std::fs::rename(&canonical_dir, &parked_dir).unwrap();
-    assert!(
-        std::fs::symlink_metadata(&canonical_dir).is_err(),
-        "fixture setup: {} should no longer exist",
-        canonical_dir.display()
-    );
 
     let undo_err = ops::restore_event(
         &rt,
         &ctx(),
         &RestoreRequest {
-            event_id: disable.event_id.clone(),
+            event_id: unlink.restore_event_id.clone(),
             force: false,
         },
     )
@@ -1657,7 +1717,7 @@ fn undo_of_a_symlink_refuses_a_parked_target_or_names_the_dangling_link_it_creat
         &rt,
         &ctx(),
         &RestoreRequest {
-            event_id: disable.event_id.clone(),
+            event_id: unlink.restore_event_id.clone(),
             force: true,
         },
     )
@@ -1916,7 +1976,7 @@ fn undo_of_a_remove_row_against_a_relative_live_link_records_a_resolved_inverse_
 
     // Hand-record a `remove_symlink` inverse whose `target` is the
     // resolved absolute path, the shape `set_claude_code_switch` writes
-    // (mirrors the two relative-link tests above).
+    // when an enable creates a link.
     let id = rt.ports.ids.next_event_id();
     let mut session = skill_studio_core::ports::MutationSession::begin(&rt, &ctx()).unwrap();
     let inverse = serde_json::json!({
@@ -1985,6 +2045,175 @@ fn undo_of_a_remove_row_against_a_relative_live_link_records_a_resolved_inverse_
         std::fs::symlink_metadata(&link).is_ok(),
         "the second restore should recreate {}",
         link.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `undo_of_a_claude_code_off_restores_settings_json_byte_for_byte_or_names_the_bytes_it_changed`:
+/// the off's inverse is the backup of `settings.json` taken before the
+/// write, so undoing it gives back the exact bytes - formatting, key order,
+/// and the other skill's override included.
+#[test]
+fn undo_of_a_claude_code_off_restores_settings_json_byte_for_byte_or_names_the_bytes_it_changed() {
+    let home = unique_temp_dir("claude_undo_off");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    seed_claude_settings(&home);
+    let before = std::fs::read_to_string(claude_settings_path(&home)).unwrap();
+    let rt = runtime_for(&home);
+
+    let off = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap();
+    assert_eq!(claude_override(&home, "gamma"), "off");
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: off.event_id.clone(),
+            force: false,
+        },
+    )
+    .unwrap_or_else(|e| panic!("undo of the off should succeed, got: {}", e.message));
+    assert_eq!(
+        std::fs::read_to_string(claude_settings_path(&home)).unwrap(),
+        before,
+        "undo of the off should restore settings.json exactly"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: gamma is off in `settings.json` and Claude Code has no link to it;
+/// the user turns it on (which edits settings and creates the link), then
+/// undoes that. Expect `settings.json` back byte for byte and the link
+/// gone. Catches an undo that restores only the settings and leaves the
+/// link the on created.
+#[test]
+fn undo_of_a_claude_code_on_that_linked_the_skill_removes_the_link_too() {
+    let home = unique_temp_dir("claude_undo_on_link");
+    install_universal_skill(&home, "gamma");
+    std::fs::create_dir_all(home.join(CLAUDE_ROOT_RELATIVE)).unwrap();
+    std::fs::write(
+        claude_settings_path(&home),
+        "{\n  \"skillOverrides\": {\n    \"gamma\": \"off\"\n  }\n}\n",
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(claude_settings_path(&home)).unwrap();
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    let rt = runtime_for(&home);
+
+    let on = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "fixture setup: on must create the link"
+    );
+    assert_ne!(
+        std::fs::read_to_string(claude_settings_path(&home)).unwrap(),
+        before,
+        "fixture setup: on must edit settings.json"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: on.event_id,
+            force: false,
+        },
+    )
+    .unwrap_or_else(|e| panic!("undo of the on should succeed, got: {}", e.message));
+
+    assert_eq!(
+        std::fs::read_to_string(claude_settings_path(&home)).unwrap(),
+        before
+    );
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "undo left the link the on created at {}",
+        link.display()
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: `~/.claude/settings.json` is a link into a dotfiles folder, and
+/// the user turns a skill off in Claude Code, then undoes it. Expect the
+/// write and the undo to land in the dotfiles file, the link to stay a link,
+/// and the file to keep its 0600 mode. Catches a rename that replaces the
+/// link with a regular file (0755, copied from the link), which cuts the
+/// settings off from the user's dotfiles.
+#[test]
+fn claude_code_off_writes_through_a_linked_settings_json_and_keeps_the_link_and_its_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = unique_temp_dir("claude_linked_settings");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    let dotfiles = home.join("dotfiles/claude-settings.json");
+    std::fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
+    let before = "{\"permissions\":{\"allow\":[\"Bash(ls)\"]}}";
+    std::fs::write(&dotfiles, before).unwrap();
+    std::fs::set_permissions(&dotfiles, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&dotfiles, claude_settings_path(&home)).unwrap();
+    let rt = runtime_for(&home);
+
+    let off = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap();
+
+    let settings = claude_settings_path(&home);
+    assert!(
+        std::fs::symlink_metadata(&settings)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "settings.json must still be a link"
+    );
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dotfiles).unwrap()).unwrap();
+    assert_eq!(written["skillOverrides"]["gamma"], "off");
+    assert_eq!(
+        std::fs::metadata(&dotfiles).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "the linked file must keep its own mode"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: off.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+    assert!(std::fs::symlink_metadata(&settings)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&dotfiles).unwrap(), before);
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: `~/.claude/settings.json` is a link to a file that no longer
+/// exists, and the user turns a skill off. Expect a refusal that names the
+/// dangling link, with the link left in place. Catches a write that turns
+/// the dangling link into a new regular file.
+#[test]
+fn claude_code_off_refuses_a_dangling_settings_json_link_and_leaves_it() {
+    let home = unique_temp_dir("claude_dangling_settings");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    let missing = home.join("dotfiles/missing.json");
+    std::os::unix::fs::symlink(&missing, claude_settings_path(&home)).unwrap();
+    let rt = runtime_for(&home);
+
+    let err = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap_err();
+
+    assert!(err.message.contains("does not exist"), "{}", err.message);
+    assert_eq!(
+        std::fs::read_link(claude_settings_path(&home)).unwrap(),
+        missing
     );
 
     std::fs::remove_dir_all(&home).ok();

@@ -9,7 +9,7 @@ patched.
 
 Report a vulnerability through GitHub private vulnerability reporting:
 
-https://github.com/sergical/agent-studio/security/advisories/new
+https://github.com/sergical/skill-studio/security/advisories/new
 
 Do not report a vulnerability through a public issue.
 

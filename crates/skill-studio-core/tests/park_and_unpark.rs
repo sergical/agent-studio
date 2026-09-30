@@ -108,6 +108,85 @@ fn park_universal_skill_moves_directory_and_removes_the_claude_link() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// `park_and_unpark_write_a_symlinked_codex_config_through_the_link_or_name_the_regular_file_that_replaced_it`:
+/// `~/.codex/config.toml` is a link into a dotfiles folder and holds a
+/// disabled row for `gamma`. Park then unpark move that row with the skill.
+/// Expect the link to survive both ops and the dotfiles file to hold the
+/// row. Fails when the link became a regular file: the dotfiles copy would
+/// silently go stale.
+#[cfg(unix)]
+#[test]
+fn park_and_unpark_write_a_symlinked_codex_config_through_the_link_or_name_the_regular_file_that_replaced_it(
+) {
+    let home = unique_temp_dir("park_codex_config_link");
+    parkable_home(&home);
+    let dotfiles = home.join("dotfiles");
+    std::fs::create_dir_all(&dotfiles).unwrap();
+    let target = dotfiles.join("codex-config.toml");
+    let universal_md = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma/SKILL.md");
+    std::fs::write(
+        &target,
+        format!(
+            "[[skills.config]]\npath = \"{}\"\nenabled = false\n",
+            universal_md.display()
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    let link = home.join(".codex/config.toml");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+
+    let parked = ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(&link).unwrap().is_symlink(),
+        "park replaced the config link with a regular file"
+    );
+    let text = std::fs::read_to_string(&target).unwrap();
+    assert!(
+        text.contains(&parked.parked_path.join("SKILL.md").display().to_string()),
+        "the dotfiles file must hold the row at the parked path:\n{text}"
+    );
+
+    let parked_id = {
+        let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+        inventory
+            .skills
+            .iter()
+            .find(|s| s.name.0 == "gamma")
+            .unwrap()
+            .deployments
+            .iter()
+            .find(|d| d.root.kind == RootKind::Parked)
+            .unwrap()
+            .id
+            .clone()
+    };
+    ops::unpark(
+        &rt,
+        &ctx(),
+        &UnparkRequest {
+            deployment_id: parked_id,
+        },
+    )
+    .unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(&link).unwrap().is_symlink(),
+        "unpark replaced the config link with a regular file"
+    );
+    assert!(
+        std::fs::read_to_string(&target)
+            .unwrap()
+            .contains(&universal_md.display().to_string()),
+        "the dotfiles file must hold the row at the universal path again"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `park_then_unpark_restores_the_universal_skill_and_the_claude_link`: the
 /// reverse of the above, driven by the journal row `park` wrote (this build
 /// carries no generic `inverse`; `unpark` finds its own `park` row by skill
@@ -166,6 +245,180 @@ fn park_then_unpark_restores_the_universal_skill_and_the_claude_link() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+#[cfg(unix)]
+#[test]
+fn park_removes_a_pi_per_skill_link_into_universal_and_unpark_restores_it() {
+    let home = unique_temp_dir("park_pi_link");
+    parkable_home(&home);
+    let pi_skills = home.join(".pi/agent/skills");
+    std::fs::create_dir_all(&pi_skills).unwrap();
+    let pi_link = pi_skills.join("gamma");
+    std::os::unix::fs::symlink(home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma"), &pi_link).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+
+    let park_outcome = ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap();
+    assert!(
+        std::fs::symlink_metadata(&pi_link).is_err(),
+        "park left pi's per-skill link dangling at {}",
+        pi_link.display()
+    );
+
+    let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+    let parked_id = inventory
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "gamma")
+        .and_then(|s| {
+            s.deployments
+                .iter()
+                .find(|d| d.root.kind == RootKind::Parked)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the rescan lost the parked gamma at {:?}",
+                park_outcome.parked_path
+            )
+        })
+        .id
+        .clone();
+    ops::unpark(
+        &rt,
+        &ctx(),
+        &UnparkRequest {
+            deployment_id: parked_id,
+        },
+    )
+    .unwrap();
+
+    let restored_dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
+    assert_eq!(
+        std::fs::canonicalize(&pi_link).ok(),
+        std::fs::canonicalize(&restored_dir).ok(),
+        "unpark did not restore pi's per-skill link to the Universal folder"
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: Claude Code links to gamma with a relative target; the user parks
+/// and then unparks gamma. Expect the Claude link back with the same
+/// relative target. Catches an unpark that recreates the link as absolute,
+/// which breaks when the user moves or syncs their home.
+#[cfg(unix)]
+#[test]
+fn park_then_unpark_recreates_a_relative_claude_link_as_relative() {
+    let home = unique_temp_dir("park_relative_link");
+    parkable_home(&home);
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    let relative = std::path::PathBuf::from("../../.agents/skills/gamma");
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&relative, &link).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+    ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap();
+    let parked_id = ops::scan(&rt, &ctx(), &ScanRequest::default())
+        .unwrap()
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "gamma")
+        .and_then(|s| {
+            s.deployments
+                .iter()
+                .find(|d| d.root.kind == RootKind::Parked)
+        })
+        .unwrap()
+        .id
+        .clone();
+
+    ops::unpark(
+        &rt,
+        &ctx(),
+        &UnparkRequest {
+            deployment_id: parked_id,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(std::fs::read_link(&link).unwrap(), relative);
+    assert!(link.join("SKILL.md").exists());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the Universal entry is a dev link (`~/.agents/skills/gamma ->
+/// ~/src/gamma`) and Claude Code's whole skills folder links to
+/// `~/.agents/skills`; the user parks gamma. Expect the park to succeed,
+/// the parked entry to still reach `~/src/gamma`, and the Claude folder
+/// link to survive. Catches a park that takes `~/.claude/skills/gamma` for
+/// a per-skill link and unlinks the Universal entry through it, so the
+/// rename then fails half-way.
+#[cfg(unix)]
+#[test]
+fn park_of_a_dev_linked_skill_leaves_a_whole_folder_claude_link_alone() {
+    let home = unique_temp_dir("park_whole_folder_dev_link");
+    let source = home.join("src/gamma");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("SKILL.md"),
+        b"---\nname: gamma\ndescription: a dev-linked skill\n---\nBody.\n",
+    )
+    .unwrap();
+    let universal_root = home.join(UNIVERSAL_ROOT_RELATIVE);
+    std::fs::create_dir_all(&universal_root).unwrap();
+    std::os::unix::fs::symlink(&source, universal_root.join("gamma")).unwrap();
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&universal_root, home.join(CLAUDE_ROOT_RELATIVE)).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+
+    let outcome = ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap();
+
+    assert_eq!(
+        std::fs::canonicalize(&outcome.parked_path).unwrap(),
+        std::fs::canonicalize(&source).unwrap()
+    );
+    assert!(source.join("SKILL.md").exists());
+    assert!(std::fs::symlink_metadata(home.join(CLAUDE_ROOT_RELATIVE))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
+    assert_eq!(events[0].status, "done");
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `a_park_that_fails_after_removing_the_links_puts_them_back_or_names_the_skill_left_unlinked`:
+/// the move to `skills-parked` fails after the per-skill links came down.
+/// Expect the skill still at its Universal path and the Claude Code link
+/// back, pointing at it. Fails when the link stays gone: the skill is neither
+/// parked nor visible to Claude Code, and the row only says "failed".
+#[cfg(unix)]
+#[test]
+fn a_park_that_fails_after_removing_the_links_puts_them_back_or_names_the_skill_left_unlinked() {
+    let home = unique_temp_dir("park_fail_restores_links");
+    parkable_home(&home);
+    let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
+    let rt = runtime_with(&home, failing_fs.clone());
+    let deployment_id = universal_deployment_id(&rt);
+
+    failing_fs.fail_next_rename();
+    ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap_err();
+
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    assert_eq!(
+        std::fs::read_link(&link).ok(),
+        Some(home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma")),
+        "the Claude Code link must be back after the failed park"
+    );
+    assert!(home
+        .join(UNIVERSAL_ROOT_RELATIVE)
+        .join("gamma/SKILL.md")
+        .exists());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `park_journal_row_is_durable_before_the_directory_moves`: `record` runs
 /// before any filesystem step. Proven by failing the rename after `record`
 /// already ran: the row exists (and, once recovery runs, reads
@@ -186,10 +439,9 @@ fn park_journal_row_is_durable_before_the_directory_moves() {
     // the one that was there before the call - the rename never committed.
     assert!(home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma").exists());
     assert!(!home.join(PARKED_ROOT_RELATIVE).join("gamma").exists());
-    // The link removal step ran before the failed rename: it is not left
-    // dangling, and it is not silently restored either - the row a retry
-    // will see is not `done`, so nothing here claims the mutation finished.
-    assert!(std::fs::symlink_metadata(home.join(CLAUDE_ROOT_RELATIVE).join("gamma")).is_err());
+    // The link removal step ran before the failed rename, so the failure
+    // path puts the link back: a failed park leaves the skill linked.
+    assert!(std::fs::symlink_metadata(home.join(CLAUDE_ROOT_RELATIVE).join("gamma")).is_ok());
 
     let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
     // The row was recorded (this is the point of the test): it exists
@@ -200,14 +452,9 @@ fn park_journal_row_is_durable_before_the_directory_moves() {
         "the park row must be recorded before the rename step runs"
     );
     assert_eq!(events[0].kind, "park");
-    assert_eq!(events[0].status, "pending");
-
-    // The next mutation session recovers it to `interrupted`, the same
-    // startup recovery every other op relies on.
-    let session = skill_studio_core::ports::MutationSession::begin(&rt, &ctx()).unwrap();
-    session.finish(&rt, &ctx());
-    let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
-    assert_eq!(events[0].status, "interrupted");
+    // The op saw its own error, so it closes the row itself rather than
+    // leaving it for startup recovery.
+    assert_eq!(events[0].status, "failed");
 
     // A retry, with the filesystem working again, finishes the job the
     // crashed attempt started.

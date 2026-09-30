@@ -2,31 +2,49 @@
 // Skill Studio - skill location action routing tests
 // ============================================================================
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Deployment } from "@skill-studio/lib";
-import { materializeRequestForLocationAction } from "./skill-location-actions";
+import { universalDeployment, wholeFolderDeployment } from "../../dev/harness/scanned-deployment";
+import {
+  forkBeforeInvocationEdit,
+  materializeRequestForLocationAction,
+} from "./skill-location-actions";
+import type { InvocationFile } from "./skill-location-status";
 
-function wholeRootDeployment(): Deployment {
-  return {
-    id: "dep:v1/global/claude-code/find-bugs",
-    destination: "universal",
-    owner_kind: "manual",
-    mutability: "read-only",
-    backing: { kind: "linked-to", deployment_id: "dep:v1/global/universal/find-bugs" },
-    agent: "Claude Code",
-    scope: "global",
-    path: "/home/.claude/skills/find-bugs",
-    is_symlink: true,
-    shared_via_whole_dir_link: true,
-    symlink_is_broken: false,
-    content_hash: "abc",
-    disabled: false,
-    codex_implicit_invocation: null,
-    disabled_by: null,
-    invocation: "both",
-    spec_violations: [],
-  };
+function sharedFile(ownerKind: Deployment["owner_kind"]): InvocationFile {
+  const deployment = universalDeployment(
+    { universalPath: "/home/.agents/skills/emil-design" },
+    { owner_kind: ownerKind, mutability: "mutable", owner_id: null },
+  );
+  // SAFETY: forkBeforeInvocationEdit reads only `kind` and `deployment`.
+  return { kind: "shared", deployment } as InvocationFile;
 }
+
+describe("forkBeforeInvocationEdit", () => {
+  it("edits_an_ambiguous_shared_folder_in_place_because_the_fork_would_be_refused", async () => {
+    const fork = vi.fn(async () => {});
+    await forkBeforeInvocationEdit(sharedFile("ambiguous"), fork);
+    expect(fork).not.toHaveBeenCalled();
+  });
+
+  it.each(["manual", "copy", "fork", "in-repo"] as const)(
+    "edits_a_%s_shared_folder_in_place_because_it_has_no_upstream",
+    async (ownerKind) => {
+      const fork = vi.fn(async () => {});
+      await forkBeforeInvocationEdit(sharedFile(ownerKind), fork);
+      expect(fork).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["skills-sh", "dotagents", "wildcard-dotagents"] as const)(
+    "forks_a_%s_shared_folder_first_so_an_update_does_not_overwrite_the_edit",
+    async (ownerKind) => {
+      const fork = vi.fn(async () => {});
+      await forkBeforeInvocationEdit(sharedFile(ownerKind), fork);
+      expect(fork).toHaveBeenCalledTimes(1);
+    },
+  );
+});
 
 describe("materializeRequestForLocationAction", () => {
   it.each([
@@ -45,27 +63,20 @@ describe("materializeRequestForLocationAction", () => {
       harness,
       harnessLabel,
       root: "/home/.claude/skills",
-      intent: "convert-only",
     });
   });
 
-  it("routes only whole-root toggle-off as convert-then-disable", () => {
-    const deployment = wholeRootDeployment();
-    expect(
-      materializeRequestForLocationAction({ kind: "set-enabled", deployment, enabled: false }),
-    ).toMatchObject({
-      intent: "convert-then-disable",
-      target: { deployment_id: deployment.id },
+  it("never_routes_the_enabled_switch_to_the_conversion_dialog_for_a_whole_folder_link_or_names_the_direction", () => {
+    const deployment = wholeFolderDeployment({
+      agent: "Claude Code",
+      path: "/home/.claude/skills/find-bugs",
+      universalPath: "/home/.agents/skills/find-bugs",
     });
-    expect(
-      materializeRequestForLocationAction({ kind: "set-enabled", deployment, enabled: true }),
-    ).toBeNull();
-    expect(
-      materializeRequestForLocationAction({
-        kind: "set-enabled",
-        deployment: { ...deployment, shared_via_whole_dir_link: false },
-        enabled: false,
-      }),
-    ).toBeNull();
+    for (const enabled of [false, true]) {
+      expect(
+        materializeRequestForLocationAction({ kind: "set-enabled", deployment, enabled }),
+        `switching ${enabled ? "on" : "off"} opened the conversion dialog`,
+      ).toBeNull();
+    }
   });
 });

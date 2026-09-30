@@ -16,6 +16,7 @@ import {
 import type {
   AgentId,
   Deployment,
+  ForkRecord,
   InstalledSkill,
   InvocationPolicy,
   LifecycleTarget,
@@ -38,10 +39,12 @@ import {
   lifecycleTargetForDeployment,
   lifecycleTargetForPark,
   lifecycleTargetForSkill,
+  skillUpdateToast,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import { canOfferHarnessSwitch } from "./skill-location-helpers";
+import { hasUpstreamOwner } from "./skill-location-status";
 import type { InvocationFile, LocationAction } from "./skill-location-status";
 
 interface UseLocationActionsResult {
@@ -62,14 +65,18 @@ interface UseLocationActionsResult {
   /** Set while an "Uninstall the <name> plugin…" action is pending confirmation. */
   pluginUninstallRequest: Deployment | null;
   closePluginUninstallRequest: () => void;
+  /** Set while a "Split into harness folders…" action is pending confirmation. */
+  splitRequest: SplitLocationRequest | null;
+  closeSplitRequest: () => void;
 }
+
+type SplitLocationRequest = Omit<Extract<LocationAction, { kind: "split" }>, "kind">;
 
 export interface MaterializeLocationRequest {
   target: LifecycleTarget;
   harness: string;
   harnessLabel: string;
   root: string;
-  intent: "convert-only" | "convert-then-disable";
 }
 
 /** Display label for a harness whose whole skills root can be materialized. */
@@ -92,33 +99,20 @@ function materializeHarnessLabel(harness: AgentId): string {
   }
 }
 
-/** Routes only explicit conversion and whole-root toggle-off actions to the conversion dialog. */
+/**
+ * Routes the explicit "Convert to per-skill links…" action to the conversion
+ * dialog. The Enabled switch never does: every harness switch writes its own
+ * setting and leaves a whole-folder link in place.
+ */
 export function materializeRequestForLocationAction(
   action: LocationAction,
 ): MaterializeLocationRequest | null {
-  if (action.kind === "convert-root") {
-    return {
-      target: action.target,
-      harness: action.harness,
-      harnessLabel: materializeHarnessLabel(action.harness),
-      root: action.root,
-      intent: "convert-only",
-    };
-  }
-  if (
-    action.kind !== "set-enabled" ||
-    action.enabled ||
-    !action.deployment.shared_via_whole_dir_link
-  ) {
-    return null;
-  }
-  const { deployment } = action;
+  if (action.kind !== "convert-root") return null;
   return {
-    target: { deployment_id: deployment.id },
-    harness: agentIdFromDeploymentLabel(deployment.agent) ?? deployment.agent,
-    harnessLabel: deployment.agent,
-    root: deployment.path.slice(0, deployment.path.lastIndexOf("/")),
-    intent: "convert-then-disable",
+    target: action.target,
+    harness: action.harness,
+    harnessLabel: materializeHarnessLabel(action.harness),
+    root: action.root,
   };
 }
 
@@ -142,6 +136,7 @@ export function useLocationActions(
     deployment?: Deployment;
   } | null>(null);
   const [pluginUninstallRequest, setPluginUninstallRequest] = useState<Deployment | null>(null);
+  const [splitRequest, setSplitRequest] = useState<SplitLocationRequest | null>(null);
 
   const runWithErrorToast = (title: string, fn: () => Promise<void>) => {
     setIsBusy(true);
@@ -192,11 +187,6 @@ export function useLocationActions(
       case "set-enabled": {
         const { deployment, enabled } = action;
         const readerAgent = agentIdFromDeploymentLabel(deployment.agent);
-        const conversion = materializeRequestForLocationAction(action);
-        if (conversion) {
-          setMaterializeRequest(conversion);
-          return;
-        }
         // `park` is the off switch only for the Global Universal deployment - never this row's
         // (see `canOfferHarnessSwitch`). Both the rail and the Locations card disable the
         // control for any row that fails this check, so the rejection below is a
@@ -234,6 +224,7 @@ export function useLocationActions(
             destination: "universal",
             agents,
             disabled_harnesses: [],
+            link_mode: "link",
             scope: "global",
             project_path: null,
           });
@@ -253,6 +244,13 @@ export function useLocationActions(
           unparkSkill(lifecycleTargetForPark(skill)),
         );
         return;
+      case "split":
+        setSplitRequest({
+          target: action.target,
+          projectPath: action.projectPath,
+          readers: action.readers,
+        });
+        return;
       case "remove-scope":
         setRemoveRequest({ scopeLabel: action.scopeLabel, projectPath: action.projectPath });
         return;
@@ -266,11 +264,7 @@ export function useLocationActions(
       case "update":
         runWithErrorToast("Update failed", async () => {
           const summary = await updateSkillOwners(skill, updateSkill);
-          if (summary.failures.length > 0) {
-            throw new Error(
-              `Updated ${summary.succeeded} of ${summary.attempted} deployments. ${summary.failures.map((failure) => failure.message).join("; ")}`,
-            );
-          }
+          addToast(skillUpdateToast(skill.name, summary));
         });
         return;
       case "install-again":
@@ -290,6 +284,7 @@ export function useLocationActions(
             destination: "universal",
             agents: [],
             disabled_harnesses: [],
+            link_mode: "link",
             project_path: null,
           });
         });
@@ -313,6 +308,8 @@ export function useLocationActions(
     closeRemoveRequest: () => setRemoveRequest(null),
     pluginUninstallRequest,
     closePluginUninstallRequest: () => setPluginUninstallRequest(null),
+    splitRequest,
+    closeSplitRequest: () => setSplitRequest(null),
   };
 }
 
@@ -333,9 +330,16 @@ export async function setInvocationForFile(
   file: InvocationFile,
   policy: InvocationPolicy,
 ): Promise<void> {
-  const isManaged = skill.source_kind === "dotagents" || skill.source_kind === "skills-sh";
-  if (isManaged && file.kind === "shared") {
-    await forkSkill(lifecycleTargetForDeployment(file.deployment));
-  }
+  await forkBeforeInvocationEdit(file);
   await setSkillInvocation(skill.name, `${file.path}/SKILL.md`, policy);
+}
+
+/** Forks a shared folder an update would write over, so the edit stays. Ambiguous and manual folders have no upstream, so they are edited in place. */
+export async function forkBeforeInvocationEdit(
+  file: InvocationFile,
+  fork: (target: LifecycleTarget) => Promise<ForkRecord | void> = forkSkill,
+): Promise<void> {
+  if (file.kind === "shared" && hasUpstreamOwner(file.deployment)) {
+    await fork(lifecycleTargetForDeployment(file.deployment));
+  }
 }

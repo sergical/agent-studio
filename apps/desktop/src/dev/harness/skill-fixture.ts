@@ -9,6 +9,7 @@
 // ============================================================================
 
 import type { Deployment, InstalledSkill, SkillSnapshot } from "@skill-studio/lib";
+import { withScannerIdentity } from "./scanned-deployment";
 
 export const HARNESS_HOME = "/Users/demo";
 export const HARNESS_PROJECT = `${HARNESS_HOME}/src/agent-studio`;
@@ -21,20 +22,17 @@ const CAPTURE_NOW = Date.now();
 const SCANNED_AT = new Date(CAPTURE_NOW).toISOString();
 
 /** Exported for `mock-tauri.ts`'s `add_skill`/`start_add_skill_operation` handlers, which build a
- * freshly "installed" skill from whatever request the Add Skill sheet actually sent. */
+ * freshly "installed" skill from whatever request the Add Skill sheet actually sent.
+ * `id`, `destination`, and `backing` follow from the other fields the way the scanner derives them. */
 export function deployment(
   input: Partial<Deployment> & Pick<Deployment, "agent" | "scope" | "path">,
 ): Deployment {
-  return {
-    id: `harness:${input.path}`,
-    destination: input.agent === "shared" || input.is_symlink ? "universal" : "per-harness",
+  return withScannerIdentity({
+    id: "",
+    destination: "per-harness",
     owner_kind: input.agent === "shared" ? "dotagents" : "manual",
     mutability: "mutable",
-    backing: input.symlink_target
-      ? { kind: "linked-to", deployment_id: `harness:${input.symlink_target}` }
-      : input.agent === "shared"
-        ? { kind: "canonical" }
-        : { kind: "independent" },
+    backing: { kind: "independent" },
     is_symlink: false,
     symlink_is_broken: false,
     shared_via_whole_dir_link: false,
@@ -45,7 +43,7 @@ export function deployment(
     spec_violations: [],
     invocation: "both",
     ...input,
-  };
+  });
 }
 
 export function skill(

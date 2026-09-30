@@ -14,6 +14,24 @@ export function hasMalformedYamlWarning(
   );
 }
 
+/** One backend preview per file state: the deployment plus the bytes last scanned for it. */
+export function frontmatterPreviewKey(
+  deployment: Pick<Deployment, "id" | "content_hash"> | undefined,
+): string | null {
+  return deployment ? `${deployment.id}\u0000${deployment.content_hash}` : null;
+}
+
+/**
+ * The local "Quote" button waits for the backend preview to settle and yields
+ * to it, so the user never sees "Quote" turn into "Fix".
+ */
+export function canOfferLocalQuote(state: {
+  isPreviewSettled: boolean;
+  hasPreview: boolean;
+}): boolean {
+  return state.isPreviewSettled && !state.hasPreview;
+}
+
 export function frontmatterRepairActionLabels(
   preview: Pick<FrontmatterRepairPreview, "allowed_apply_modes">,
 ): string[] {

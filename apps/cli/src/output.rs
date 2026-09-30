@@ -6,9 +6,9 @@ use std::process::ExitCode;
 use serde::Serialize;
 use skill_studio_core::dto::{
     CommandHealth, ConflictReport, Diagnosis, DoctorReport, EventDto, FixApplied, FixSkillOutcome,
-    FrontmatterRepairPreview, InstallOutcome, InstallPreferences, Inventory, ParkOutcome,
-    RemoveOutcome, RepairOutcome, RestoreOutcome, ScanRequest, SetHarnessEnabledOutcome,
-    UnparkOutcome, UpdateAllOutcome, UpdateOutcome,
+    FrontmatterRepairPreview, InstallHarnessResult, InstallOutcome, InstallPreferences, Inventory,
+    ParkOutcome, RemoveOutcome, RepairOutcome, RestoreOutcome, ScanRequest,
+    SetHarnessEnabledOutcome, UnparkOutcome, UpdateAllOutcome, UpdateOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
@@ -267,16 +267,43 @@ pub fn print_install_outcome_table(envelope: &ResultEnvelope<InstallOutcome>) {
         InstallOutcome::Installed {
             skill,
             deployment_path,
-            linked_harnesses,
+            harness_results,
             ..
         } => {
             println!("installed {} at {}", skill.0, deployment_path.display());
-            for harness in linked_harnesses {
-                println!("linked {}", harness.as_str());
+            for result in harness_results {
+                println!("{}", install_harness_line(result));
             }
         }
         InstallOutcome::NeedsTrust { identity } => {
             println!("needs trust: {identity} (retry with --trust to confirm)");
+        }
+    }
+}
+
+/// One line per harness in `add`'s table, e.g. `linked pi at <path>`.
+fn install_harness_line(result: &InstallHarnessResult) -> String {
+    match result {
+        InstallHarnessResult::ReadsShared { harness, path } => {
+            format!("{} reads {}", harness.as_str(), path.display())
+        }
+        InstallHarnessResult::Linked { harness, path } => {
+            format!("linked {} at {}", harness.as_str(), path.display())
+        }
+        InstallHarnessResult::Copied {
+            harness,
+            path,
+            link_failed,
+        } => {
+            let why = if *link_failed {
+                " (the link failed)"
+            } else {
+                ""
+            };
+            format!("copied {} to {}{why}", harness.as_str(), path.display())
+        }
+        InstallHarnessResult::Skipped { harness, reason } => {
+            format!("skipped {}: {reason}", harness.as_str())
         }
     }
 }
@@ -434,6 +461,23 @@ pub fn print_park_outcome_table(envelope: &ResultEnvelope<ParkOutcome>) {
     );
 }
 
+/// Prints `split`'s table: one line per copy, then the update note.
+pub fn print_split_outcome_table(envelope: &ResultEnvelope<skill_studio_core::dto::SplitOutcome>) {
+    print_errors(envelope);
+    let Some(outcome) = &envelope.data else {
+        return;
+    };
+    for copy in &outcome.copies {
+        println!(
+            "{} {} -> {}",
+            outcome.skill.0,
+            copy.harness.as_str(),
+            copy.path.display()
+        );
+    }
+    println!("{}", outcome.update_note);
+}
+
 /// Prints `unpark`'s table: the deployment and where its directory now lives.
 pub fn print_unpark_outcome_table(envelope: &ResultEnvelope<UnparkOutcome>) {
     print_errors(envelope);
@@ -583,6 +627,12 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
         }),
         ("park_outcome", || {
             schemars::schema_for!(skill_studio_core::dto::ParkOutcome)
+        }),
+        ("split_request", || {
+            schemars::schema_for!(skill_studio_core::dto::SplitRequest)
+        }),
+        ("split_outcome", || {
+            schemars::schema_for!(skill_studio_core::dto::SplitOutcome)
         }),
         ("unpark_request", || {
             schemars::schema_for!(skill_studio_core::dto::UnparkRequest)

@@ -353,37 +353,79 @@ fn scan_never_descends_into_node_modules_inside_a_plugin_cache_or_names_the_path
     );
 }
 
-/// A cached plugin's enabled state is keyed `<plugin>@<marketplace>` with
-/// no version in the key (`docs/research/harness-primitives.md`), and an
-/// orphaned version is pruned about 14 days after it stops being used
-/// (`docs/action-map/harnesses/plugins.md`). Two version folders on disk
-/// are therefore one live plugin, so one skill row with one deployment -
-/// not the same skill counted once per stale copy.
-#[test]
-#[ignore = "follow-up #273 section 1: enumerate_plugin_skills reports every cached version \
-            folder, and no doc names which one is live (plugins.md leaves the Codex cache \
-            layout open and gives Claude only the ~14-day orphan prune), so the dedupe \
-            needs a liveness source rather than a version-string compare"]
-fn scan_picks_one_version_per_cached_plugin_or_names_the_duplicate() {
-    let inventory = scan_shape(shapes::with_plugin_cache_nesting(FixtureBuilder::new()));
-
+/// The Claude Code plugin rows `inventory` reports for
+/// [`shapes::PLUGIN_SKILL_NAME`], as deployment paths.
+fn claude_cached_plugin_paths(inventory: &Inventory) -> Vec<String> {
     let claude_cache = format!("{HOME}/.claude/plugins/cache/vendor-1/plugin-1");
-    let from_claude_cache: Vec<String> = inventory
-        .skills
-        .iter()
-        .filter(|skill| skill.name.0 == shapes::PLUGIN_SKILL_NAME)
-        .flat_map(|skill| &skill.deployments)
-        .map(|deployment| deployment.path.display().to_string())
+    deployment_paths(inventory)
+        .into_iter()
         .filter(|path| path.starts_with(&claude_cache))
-        .collect();
-    assert_eq!(
-        from_claude_cache.len(),
-        1,
-        "versions {:?} of plugin-1 are cached side by side but only one is live, so \
-         `{}` must be reported once: {from_claude_cache:?}",
-        shapes::PLUGIN_VERSIONS,
-        shapes::PLUGIN_SKILL_NAME
-    );
+        .filter(|path| path.ends_with(shapes::PLUGIN_SKILL_NAME))
+        .collect()
+}
+
+/// Claude Code keeps an updated plugin's old version folder in the cache
+/// until its ~14-day orphan prune (`docs/action-map/harnesses/plugins.md`),
+/// and its enabled state is keyed `<plugin>@<marketplace>` with no version
+/// (`docs/research/harness-primitives.md`). `installed_plugins.json`
+/// (version 2) names the `installPath` Claude Code loads, so one skill row
+/// comes from that folder only - whichever version string it carries, so
+/// the lower version is also tried as the live one.
+#[test]
+fn scan_picks_one_version_per_cached_plugin_or_names_the_duplicate() {
+    for live in shapes::PLUGIN_VERSIONS {
+        let inventory = scan_shape(shapes::with_claude_installed_plugin(
+            shapes::with_plugin_cache_nesting(FixtureBuilder::new()),
+            HOME,
+            live,
+        ));
+
+        let from_claude_cache = claude_cached_plugin_paths(&inventory);
+        assert_eq!(
+            from_claude_cache.len(),
+            1,
+            "versions {:?} of plugin-1 are cached side by side but installed_plugins.json \
+             names only {live}, so `{}` must be reported once: {from_claude_cache:?}",
+            shapes::PLUGIN_VERSIONS,
+            shapes::PLUGIN_SKILL_NAME
+        );
+        assert!(
+            from_claude_cache[0].contains(&format!("/plugin-1/{live}/")),
+            "the row must come from the installPath folder {live}, got {from_claude_cache:?}"
+        );
+    }
+}
+
+/// Without a usable `installed_plugins.json`, or when its `installPath` is
+/// not a cached folder, nothing says which version folder is live. Every
+/// cached version then stays, so the plugin is never hidden.
+#[test]
+fn scan_without_a_matching_installed_plugins_record_keeps_every_cached_version_or_names_the_hidden_plugin(
+) {
+    let cases = [
+        ("no installed_plugins.json", FixtureBuilder::new()),
+        (
+            "installPath names a version that is not cached",
+            shapes::with_claude_installed_plugin(FixtureBuilder::new(), HOME, "9.9.9"),
+        ),
+        (
+            "installed_plugins.json is version 1",
+            FixtureBuilder::new().file(
+                ".claude/plugins/installed_plugins.json",
+                br#"{"version":1,"plugins":{}}"#,
+            ),
+        ),
+    ];
+    for (case, builder) in cases {
+        let inventory = scan_shape(shapes::with_plugin_cache_nesting(builder));
+        let from_claude_cache = claude_cached_plugin_paths(&inventory);
+        assert_eq!(
+            from_claude_cache.len(),
+            shapes::PLUGIN_VERSIONS.len(),
+            "{case}: no record names a cached folder, so every cached version must stay \
+             listed: {from_claude_cache:?}"
+        );
+    }
 }
 
 /// The lock file belongs to `npx skills`, which writes keys this reader
@@ -496,13 +538,12 @@ fn scan_ignores_project_root_skills_dir_and_cursor_root_or_names_the_row() {
     }
 }
 
-/// pi has no native per-skill switch, so this build keeps its own
-/// exclusion list under a `skill-studio` key in pi's `settings.json`
+/// pi has no per-skill switch Skill Studio writes
 /// (`docs/agent-skill-conventions.md`: "pi, Cursor, Grok Build: no
-/// per-skill disable"). Writing that key back must leave every other key in
-/// the file untouched - the file belongs to pi, not to Skill Studio.
+/// per-skill disable"), so a pi disable is refused and Park is the off path.
+/// The refusal must leave pi's own `settings.json` exactly as it was.
 #[test]
-fn harness_toggle_preserves_unknown_settings_keys_or_names_the_lost_key() {
+fn pi_disable_is_refused_as_unsupported_and_leaves_pi_settings_byte_for_byte_unchanged() {
     let home = unique_temp_dir("real_home_shapes_pi_settings");
     std::fs::create_dir_all(&home).unwrap();
     let home = home.canonicalize().unwrap();
@@ -538,7 +579,7 @@ fn harness_toggle_preserves_unknown_settings_keys_or_names_the_lost_key() {
     };
     let rt = Runtime::new(&scope, ports).expect("runtime");
 
-    ops::set_harness_enabled(
+    let err = ops::set_harness_enabled(
         &rt,
         &ctx(),
         &SetHarnessEnabledRequest {
@@ -548,25 +589,24 @@ fn harness_toggle_preserves_unknown_settings_keys_or_names_the_lost_key() {
             project_path: None,
         },
     )
-    .expect("pi switch");
+    .expect_err("the pi disable reported success, but nothing turns the skill off in pi");
 
-    let after: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
-    for (key, value) in [
-        ("theme", serde_json::json!("dark")),
-        ("telemetry", serde_json::json!(false)),
-        ("editor", serde_json::json!({"tabWidth": 2})),
-    ] {
-        assert_eq!(
-            after.get(key),
-            Some(&value),
-            "the pi switch rewrote {} and lost `{key}`; got {after}",
-            settings_path.display()
-        );
-    }
     assert_eq!(
-        after["skill-studio"]["disabledSkills"][0], "toggle-me",
-        "the switch itself must still be written; got {after}"
+        err.code,
+        skill_studio_core::ErrorCode::Unsupported,
+        "the pi disable failed for the wrong reason: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("Park"),
+        "the refusal does not point at Park as the off path: {}",
+        err.message
+    );
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).unwrap(),
+        before,
+        "the refused pi disable still rewrote {}",
+        settings_path.display()
     );
 
     std::fs::remove_dir_all(&home).ok();

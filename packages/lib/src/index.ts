@@ -6,6 +6,7 @@
 export * from "./skill-types";
 export * from "./skill-add-operation-types";
 export * from "./skill-add-operation-policy";
+export * from "./skill-update-progress-types";
 export * from "./skill-install-destination";
 export * from "./skill-coverage";
 export * from "./skill-health";
@@ -24,3 +25,4 @@ export * from "./skill-run-history-types";
 export * from "./skill-run-target-types";
 export * from "./skill-updates";
 export * from "./skill-violation-text";
+export * from "./skill-frontmatter-repair";

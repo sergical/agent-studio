@@ -17,12 +17,22 @@
       "$ref": "#/$defs/RootScope"
     },
     "harnesses": {
-      "description": "Harnesses to link the new skill into right after install. Only\nClaude Code has a per-skill link this build writes; other harnesses\nread the universal root directly.",
+      "description": "The harness set to install for, as the `skills` CLI's `--agent` list:\nharness ids plus the pseudo id `universal` for the shared\n`.agents/skills` folder alone. Empty means `universal` only. Codex,\n`OpenCode`, Cursor, and `universal` read the shared folder; Claude\nCode, pi, and Grok Build get their own folder (see `link_mode`).",
       "type": "array",
       "items": {
         "$ref": "#/$defs/AgentIdentity"
       },
       "default": []
+    },
+    "link_mode": {
+      "description": "How each chosen harness with its own folder receives the skill. See\n[`InstallLinkMode`].",
+      "$ref": "#/$defs/InstallLinkMode",
+      "default": "link"
+    },
+    "destination": {
+      "description": "`Universal` is the `skills` CLI's pick above. `PerHarness` (`Copy`\nonly) gives every chosen harness a real folder in its own skills\nfolder, Codex, `OpenCode`, and Cursor included, and writes no shared\ncopy; `link_mode` is ignored.",
+      "$ref": "#/$defs/SkillDestination",
+      "default": "universal"
     },
     "files": {
       "description": "`Copy` only: the folder's files, staged then swapped into place.",
@@ -132,6 +142,36 @@
       "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
       "type": "string"
     },
+    "InstallLinkMode": {
+      "description": "How `install` puts the skill into each chosen harness that has its own\nfolder - the `skills` CLI's symlink/`--copy` choice. `install` forces\n`Copy` when the chosen harnesses resolve to one folder or fewer, the same\nas the CLI, and always uses `Link` for `Dotagents`.",
+      "oneOf": [
+        {
+          "description": "One real folder at `<scope>/.agents/skills/<name>`, and a relative\nsymlink to it in each other chosen harness folder.",
+          "type": "string",
+          "const": "link"
+        },
+        {
+          "description": "One real folder in each chosen harness folder. The shared folder\ngets one only when a harness that reads it is chosen.",
+          "type": "string",
+          "const": "copy"
+        }
+      ]
+    },
+    "SkillDestination": {
+      "description": "Universal (`.agents/skills`) or per-harness destination.",
+      "oneOf": [
+        {
+          "description": "The shared root.",
+          "type": "string",
+          "const": "universal"
+        },
+        {
+          "description": "A harness's own root.",
+          "type": "string",
+          "const": "per_harness"
+        }
+      ]
+    },
     "InstallFile": {
       "description": "One file `InstallMethod::Copy` stages into the new skill's folder, path\nrelative to the folder root (for example `SKILL.md` or\n`scripts/run.sh`).",
       "type": "object",
@@ -149,6 +189,16 @@
             "minimum": 0,
             "maximum": 255
           }
+        },
+        "mode": {
+          "description": "The `0o777` permission bits the source file had, so a copied\n`scripts/run.sh` stays executable. `None` gives the process default;\nignored off Unix.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
         }
       },
       "required": [
