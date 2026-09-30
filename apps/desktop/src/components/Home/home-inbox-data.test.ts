@@ -13,7 +13,7 @@ import type {
   UpdateAllOutcome,
   UpdateOutcome,
 } from "@skill-studio/lib";
-import { homeRowState, updateAllOutdatedSkills } from "./home-inbox-data";
+import { homeRowState, updateAllFailureMessage, updateAllOutdatedSkills } from "./home-inbox-data";
 
 function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
@@ -207,7 +207,7 @@ describe("updateAllOutdatedSkills", () => {
       "owner:v1/global/beta",
       "owner:v1/global/gamma",
     ]);
-    expect(tally).toEqual({ attempted: 3, succeeded: 3, failures: 0 });
+    expect(tally).toEqual({ attempted: 3, succeeded: 3, failures: 0, firstError: null });
   });
 
   it("update_all_pulls_a_fork_upstream_separately_from_the_batched_owner_call_or_names_the_extra_call", async () => {
@@ -239,7 +239,7 @@ describe("updateAllOutdatedSkills", () => {
 
     expect(pullForkCalls).toBe(1);
     expect(updateAllCalls).toBe(1);
-    expect(tally).toEqual({ attempted: 2, succeeded: 2, failures: 0 });
+    expect(tally).toEqual({ attempted: 2, succeeded: 2, failures: 0, firstError: null });
   });
 
   it("update_all_counts_every_owner_update_all_skills_reports_as_failed_or_names_the_uncounted_owner", async () => {
@@ -256,7 +256,12 @@ describe("updateAllOutdatedSkills", () => {
       async (targets) => failAll(targets.map((target) => target.owner_id ?? "")),
     );
 
-    expect(tally).toEqual({ attempted: 2, succeeded: 0, failures: 2 });
+    expect(tally).toEqual({
+      attempted: 2,
+      succeeded: 0,
+      failures: 2,
+      firstError: "update failed",
+    });
   });
 
   it("update_all_summary_counts_each_failed_owner_or_names_the_overcounted_success", async () => {
@@ -282,6 +287,105 @@ describe("updateAllOutdatedSkills", () => {
       async (targets) => failAll(targets.map(() => "alpha")),
     );
 
-    expect(tally).toEqual({ attempted: 2, succeeded: 0, failures: 2 });
+    expect(tally).toEqual({
+      attempted: 2,
+      succeeded: 0,
+      failures: 2,
+      firstError: "update failed",
+    });
+  });
+
+  it("update_all_reports_the_first_item_error_and_counts_each_failed_item_or_names_the_lost_reason", async () => {
+    const skills = [
+      ownerSkill("alpha", "owner:v1/global/alpha"),
+      ownerSkill("beta", "owner:v1/global/beta"),
+      ownerSkill("gamma", "owner:v1/global/gamma"),
+    ];
+
+    const tally = await updateAllOutdatedSkills(
+      skills,
+      async () => {
+        throw new Error("no forks in this batch");
+      },
+      async () => ({
+        items: [
+          { skill: "alpha", outcome: outcomeFor("alpha") },
+          { skill: "beta", outcome: null },
+          { skill: "gamma", outcome: null },
+        ],
+        errors: { beta: "beta is wildcard-dotagents (read-only)", gamma: "gamma failed" },
+      }),
+    );
+
+    expect(tally).toEqual({
+      attempted: 3,
+      succeeded: 1,
+      failures: 2,
+      firstError: "beta is wildcard-dotagents (read-only)",
+    });
+  });
+
+  it("update_all_counts_every_target_failed_and_keeps_the_error_text_when_the_call_rejects_or_drops_the_ipc_error", async () => {
+    const skills = [
+      ownerSkill("alpha", "owner:v1/global/alpha"),
+      ownerSkill("beta", "owner:v1/global/beta"),
+    ];
+
+    const tally = await updateAllOutdatedSkills(
+      skills,
+      async () => {
+        throw new Error("no forks in this batch");
+      },
+      async () => {
+        throw new Error("backend unreachable");
+      },
+    );
+
+    expect(tally).toEqual({
+      attempted: 2,
+      succeeded: 0,
+      failures: 2,
+      firstError: "backend unreachable",
+    });
+  });
+
+  it("update_all_progress_counts_forks_then_owner_targets_toward_one_total_or_names_the_skipped_step", async () => {
+    const seen: [number, number][] = [];
+
+    await updateAllOutdatedSkills(
+      [forkSkill, ownerSkill("alpha", "owner:v1/global/alpha")],
+      async () => ({
+        from_commit: "aaa",
+        to_commit: "bbb",
+        merged: [],
+        conflicts: [],
+        added: [],
+        removed: [],
+        unchanged: 0,
+        message: null,
+      }),
+      async (targets, onOwnerDone) => {
+        onOwnerDone(1);
+        return succeedAll(targets.map((target) => target.owner_id ?? ""));
+      },
+      (done, total) => seen.push([done, total]),
+    );
+
+    expect(seen).toEqual([
+      [0, 2],
+      [1, 2],
+      [2, 2],
+    ]);
+  });
+});
+
+describe("updateAllFailureMessage", () => {
+  it("update_all_toast_names_the_first_error_and_truncates_a_long_one_or_hides_why_it_failed", () => {
+    const tally = { attempted: 5, succeeded: 2, failures: 3, firstError: "read-only" };
+    expect(updateAllFailureMessage(tally)).toBe("3 failed: read-only");
+    expect(updateAllFailureMessage({ ...tally, failures: 0, firstError: null })).toBeUndefined();
+    const long = updateAllFailureMessage({ ...tally, firstError: "x".repeat(500) }) ?? "";
+    expect(long.length).toBeLessThan(170);
+    expect(long.endsWith("…")).toBe(true);
   });
 });

@@ -258,12 +258,23 @@ export function skillRemovalEmptiesSkill(
   );
 }
 
-/** Exact owner targets whose persisted update state reports a newer commit. */
+/**
+ * Exact owner targets whose persisted update state reports a newer commit. An
+ * owner whose deployments are all read-only is skipped: the backend refuses to
+ * update it, so offering it only produces a failure.
+ */
 export function skillUpdateOwnerTargets(
-  skill: Pick<InstalledSkill, "update_owner_ids" | "update_owners">,
+  skill: Pick<InstalledSkill, "update_owner_ids" | "update_owners"> &
+    Partial<Pick<InstalledSkill, "deployments">>,
 ): LifecycleTarget[] {
   const ownerIds = skill.update_owners?.map((update) => update.owner_id) ?? skill.update_owner_ids;
-  return [...new Set(ownerIds)].map((owner_id) => ({ owner_id }));
+  const deployments = skill.deployments ?? [];
+  return [...new Set(ownerIds)].flatMap((owner_id) => {
+    const owned = deployments.filter((deployment) => deployment.owner_id === owner_id);
+    const runnable =
+      owned.length === 0 || owned.some((deployment) => deployment.mutability === "mutable");
+    return runnable ? [{ owner_id }] : [];
+  });
 }
 
 /** Resolve an update only when the selected scope has one owner and that owner has an update. */
@@ -298,7 +309,8 @@ export function skillUpdateAvailability(
 
 /** Run each owner update and return every failure for the UI. */
 export async function updateSkillOwners(
-  skill: Pick<InstalledSkill, "update_owner_ids" | "update_owners">,
+  skill: Pick<InstalledSkill, "update_owner_ids" | "update_owners"> &
+    Partial<Pick<InstalledSkill, "deployments">>,
   updateOwner: (target: LifecycleTarget) => Promise<{ success: boolean; error?: string | null }>,
 ): Promise<SkillOwnerUpdateSummary> {
   const targets = skillUpdateOwnerTargets(skill);

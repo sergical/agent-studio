@@ -8,11 +8,12 @@
 
 import { useState } from "react";
 import type { InstalledSkill } from "@skill-studio/lib";
-import { removeSkill, updateAllSkills } from "../../lib/skill-api";
+import { removeSkill, updateAllSkillsWithProgress } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import {
   bulkActionToast,
   bulkProgressLabel,
+  bulkUpdateProgressLabel,
   bulkRemovalTargets,
   bulkUpdateResult,
   bulkUpdateTargets,
@@ -31,9 +32,15 @@ async function runRemoval(skill: InstalledSkill): Promise<void> {
   }
 }
 
-async function runUpdateBatch(skills: InstalledSkill[]): Promise<BulkRunResult> {
+async function runUpdateBatch(
+  skills: InstalledSkill[],
+  onProgress: (done: number, total: number) => void,
+): Promise<BulkRunResult> {
   const targets = skills.flatMap(bulkUpdateTargets);
-  return bulkUpdateResult(skills, await updateAllSkills(targets));
+  const outcome = await updateAllSkillsWithProgress(targets, ({ done, total }) =>
+    onProgress(done, total),
+  );
+  return bulkUpdateResult(skills, outcome);
 }
 
 interface UseSkillBulkActions {
@@ -55,7 +62,10 @@ export function useSkillBulkActions(
     setProgress(bulkProgressLabel(action, 1, plan.applicable.length));
     let result: BulkRunResult;
     try {
-      if (action.kind === "update") result = await runUpdateBatch(plan.applicable);
+      if (action.kind === "update")
+        result = await runUpdateBatch(plan.applicable, (done, total) =>
+          setProgress(bulkUpdateProgressLabel(done, total)),
+        );
       else if (action.kind === "remove")
         result = await runBulkSequentially(plan.applicable, runRemoval, (current, total) =>
           setProgress(bulkProgressLabel(action, current, total)),

@@ -45,6 +45,7 @@ import type {
   SplitOutcome,
   TrackedProjects,
   UpdateAllOutcome,
+  UpdateAllProgress,
   UpdateOutcome,
   UpdateStatus,
 } from "@skill-studio/lib";
@@ -321,8 +322,29 @@ export async function updateSkill(
  * for every non-fork owner target; forks still pull upstream one at a time
  * through `pullForkUpstream`, since that CLI call has no batched form.
  */
-export async function updateAllSkills(targets: LifecycleTarget[]): Promise<UpdateAllOutcome> {
+async function updateAllSkills(targets: LifecycleTarget[]): Promise<UpdateAllOutcome> {
   return callCommand("update_all_skills", { targets });
+}
+
+/** Event name each finished "Update all" target is reported on. */
+const UPDATE_ALL_PROGRESS_EVENT = "skills://update-all-progress";
+
+/**
+ * `updateAllSkills` that reports each finished target (updated or refused)
+ * to `onProgress` while the batch runs.
+ */
+export async function updateAllSkillsWithProgress(
+  targets: LifecycleTarget[],
+  onProgress: (progress: UpdateAllProgress) => void,
+): Promise<UpdateAllOutcome> {
+  const unlisten = await listen<UpdateAllProgress>(UPDATE_ALL_PROGRESS_EVENT, (event) => {
+    onProgress(event.payload);
+  });
+  try {
+    return await updateAllSkills(targets);
+  } finally {
+    unlisten();
+  }
 }
 
 /**

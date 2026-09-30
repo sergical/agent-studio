@@ -250,6 +250,29 @@ describe("lifecycleTargetForSkill", () => {
 });
 
 describe("skill update owner targets", () => {
+  it("skips an owner whose deployments are all read-only, because the backend refuses to update it; fails if Home offers a wildcard-dotagents owner", () => {
+    // SAFETY: skillUpdateOwnerTargets reads only `owner_id` and `mutability`.
+    const deployment = (owner_id: string, mutability: Deployment["mutability"]) =>
+      ({ owner_id, mutability }) as Deployment;
+    const update = (owner_id: string) => ({
+      owner_id,
+      latest_commit: "next",
+      latest_commit_at: null,
+    });
+
+    expect(
+      skillUpdateOwnerTargets({
+        update_owner_ids: ["owner:v1/global/wild", "owner:v1/global/sh"],
+        update_owners: [update("owner:v1/global/wild"), update("owner:v1/global/sh")],
+        deployments: [
+          deployment("owner:v1/global/wild", "read-only"),
+          deployment("owner:v1/global/sh", "read-only"),
+          deployment("owner:v1/global/sh", "mutable"),
+        ],
+      }),
+    ).toEqual([{ owner_id: "owner:v1/global/sh" }]);
+  });
+
   it("keeps a project-only update on its exact owner", () => {
     expect(
       skillUpdateOwnerTargets({

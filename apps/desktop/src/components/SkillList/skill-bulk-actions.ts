@@ -179,6 +179,11 @@ export function bulkProgressLabel(action: BulkAction, current: number, total: nu
     : `${verb} ${skillCount(total)}…`;
 }
 
+/** "Updating 12 of 80…" as `update_all_skills` reports each finished location. */
+export function bulkUpdateProgressLabel(done: number, total: number): string {
+  return `Updating ${done} of ${total}…`;
+}
+
 /** "2 already parked, 1 no editable file" - the skipped skills grouped by reason. */
 export function describeSkipped(skipped: BulkSkipped[]): string {
   const counts = new Map<string, number>();

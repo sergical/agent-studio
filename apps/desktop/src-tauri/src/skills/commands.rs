@@ -2323,6 +2323,12 @@ type ResolvedUpdateTarget = (
     (String, Option<String>, PathBuf),
 );
 
+/// A batch's outcome plus the owner rows `owners_to_clear` matches against.
+type UpdateAllBatchResult = (
+    skill_studio_core::dto::UpdateAllOutcome,
+    Vec<(String, Option<String>, PathBuf)>,
+);
+
 /// The per-target loop of "Update all". A target that fails to resolve
 /// becomes one failed item in the returned outcome, so one refused target
 /// never aborts the batch; every resolvable target still goes through
@@ -2337,13 +2343,7 @@ fn run_update_all_batch(
         &mut dyn FnMut(&str),
     ) -> Result<skill_studio_core::dto::UpdateAllOutcome, String>,
     mut on_progress: impl FnMut(UpdateAllProgress),
-) -> Result<
-    (
-        skill_studio_core::dto::UpdateAllOutcome,
-        Vec<(String, Option<String>, PathBuf)>,
-    ),
-    String,
-> {
+) -> Result<UpdateAllBatchResult, String> {
     let total = targets.len();
     let mut requests = Vec::with_capacity(total);
     let mut owners = Vec::with_capacity(total);
@@ -2403,8 +2403,7 @@ fn unresolved_target_skill(
 ) -> skill_studio_core::identity::SkillName {
     let name = match (&target.owner_id, &target.deployment_id) {
         (Some(owner_id), _) => super::skill_ownership::parse_owner_id(owner_id)
-            .map(|parsed| parsed.name)
-            .unwrap_or_else(|| owner_id.clone()),
+            .map_or_else(|| owner_id.clone(), |parsed| parsed.name),
         (None, Some(id)) => snapshot
             .skills
             .iter()
