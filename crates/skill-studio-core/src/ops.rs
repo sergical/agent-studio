@@ -2351,7 +2351,7 @@ fn codex_write_config_document(
     let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
     fs.create_dir_all(guard, &scoped_parent)
         .map_err(|e| CoreError::io(&parent, e))?;
-    let scoped_path = crate::ports::confine(&rt.scope, fs, &path)?;
+    let scoped_path = crate::ports::confine_write_through(&rt.scope, fs, &path)?;
     fs.write_atomic(guard, &scoped_path, doc.to_string().as_bytes())
         .map_err(|e| CoreError::io(&path, e))
 }
