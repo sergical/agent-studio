@@ -8,7 +8,8 @@
 # a leg that failed (or any step that failed after an upload) can never leave a
 # public release that only carries one architecture. This asserts, from the
 # release's own uploaded assets, that both legs landed: two DMGs, two updater
-# archives with their signatures, the two dSYM archives, and a latest.json
+# archives with their signatures, the two dSYM archives, the two signed CLI
+# archives that the npm-publish job repackages, and a latest.json
 # that names both darwin-aarch64 and darwin-x86_64. A single-target
 # latest.json is exactly the dead end the updater hits when the other
 # architecture is missing.
@@ -39,6 +40,11 @@ fi
 if [[ "$(count '\.dSYM\.zip$')" -ne 2 ]]; then
   problems+=("expected 2 .dSYM.zip debug-symbol archives, found $(count '\.dSYM\.zip$')")
 fi
+for target in aarch64-apple-darwin x86_64-apple-darwin; do
+  if ! printf '%s\n' "$assets" | grep -qx "skill-studio-cli-$target\.tar\.gz"; then
+    problems+=("missing CLI archive skill-studio-cli-$target.tar.gz")
+  fi
+done
 
 if printf '%s\n' "$assets" | grep -qx 'latest.json'; then
   tmp="$(mktemp -d)"
@@ -65,4 +71,4 @@ if [[ ${#problems[@]} -ne 0 ]]; then
   exit 1
 fi
 
-echo "Release $tag is complete: 2 DMGs, 2 updater archives with signatures, 2 dSYM archives, and a latest.json covering darwin-aarch64 and darwin-x86_64."
+echo "Release $tag is complete: 2 DMGs, 2 updater archives with signatures, 2 dSYM archives, 2 CLI archives, and a latest.json covering darwin-aarch64 and darwin-x86_64."

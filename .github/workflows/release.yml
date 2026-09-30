@@ -273,6 +273,92 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.ref_name }}" "$dsym_zip" --clobber
 
+      # The npm packages ship the CLI binary on its own, outside the .app, so
+      # it needs its own build, signature and notarization. Same compile-time
+      # env as the tauri-action step above, so the CLI reports the same commit
+      # and telemetry DSN as the app.
+      - name: Build the CLI
+        env:
+          SKILL_STUDIO_COMMIT: ${{ github.sha }}
+          SKILL_STUDIO_SERVER_URL: ${{ vars.SKILL_STUDIO_SERVER_URL }}
+          SKILL_STUDIO_SENTRY_DSN: ${{ vars.SKILL_STUDIO_SENTRY_DSN }}
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p skill-studio-cli --target "${{ matrix.target }}"
+          cli_dir="$RUNNER_TEMP/cli"
+          mkdir -p "$cli_dir"
+          cp "target/${{ matrix.target }}/release/skill-studio" "$cli_dir/skill-studio"
+          echo "cli_bin=$cli_dir/skill-studio" >> "$GITHUB_ENV"
+
+      # Runs on the native leg only: both legs build the same source, and the
+      # x86_64 binary would need Rosetta to run on this arm64 runner.
+      - name: Check the CLI has every command the npm README documents
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: ./scripts/release/check-cli-commands.sh "$cli_bin"
+
+      # Uses the certificate that "Configure Apple code signing" wrote to
+      # $GITHUB_ENV. tauri-bundler deletes its own signing keychain when it
+      # finishes, so this step imports the certificate into a keychain of its
+      # own and deletes that keychain on exit.
+      - name: Sign the CLI
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/skill-studio-cli.keychain-db"
+          cert="$RUNNER_TEMP/skill-studio-cli.p12"
+          trap 'rm -f "$cert"; security delete-keychain "$keychain" 2>/dev/null || true' EXIT
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$cert" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain" > /dev/null
+          # shellcheck disable=SC2046 # the existing list is space-separated paths
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          codesign --force --options runtime --timestamp --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" "$cli_bin"
+          codesign --verify --strict --verbose=2 "$cli_bin"
+
+      # A bare Mach-O binary cannot be stapled, so Gatekeeper looks the ticket
+      # up online if a quarantined copy is ever opened. npm does not set the
+      # quarantine flag, so most installs never ask.
+      - name: Notarize the CLI
+        run: |
+          set -euo pipefail
+          zip="$RUNNER_TEMP/skill-studio-cli-notarize.zip"
+          ditto -c -k --keepParent "$cli_bin" "$zip"
+          # Read the status from the JSON rather than trust the exit code, so
+          # an "Invalid" result can never pass.
+          result="$(xcrun notarytool submit "$zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_PASSWORD" --wait --output-format json)" || true
+          status="$(jq -r '.status // empty' <<< "$result" 2> /dev/null || true)"
+          if [[ "$status" != "Accepted" ]]; then
+            echo "::error::Notarization of the CLI for ${{ matrix.target }} ended with status '${status:-unknown}'."
+            id="$(jq -r '.id // empty' <<< "$result" 2> /dev/null || true)"
+            if [[ -n "$id" ]]; then
+              xcrun notarytool log "$id" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_PASSWORD" || true
+            fi
+            exit 1
+          fi
+          echo "The CLI for ${{ matrix.target }} is notarized."
+
+      - name: Package the CLI
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/skill-studio-cli-${{ matrix.target }}.tar.gz"
+          # tar keeps the exec bit, which upload-artifact's zip would drop.
+          COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "$archive" -C "$(dirname "$cli_bin")" skill-studio
+          echo "cli_archive=$archive" >> "$GITHUB_ENV"
+
+      - name: Attach the CLI to the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" "$cli_archive" --clobber
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: skill-studio-cli-${{ matrix.target }}
+          path: ${{ env.cli_archive }}
+          if-no-files-found: error
+          overwrite: true
+
   # Publication is a separate job on purpose: it runs only after both matrix
   # legs have finished, and it verifies the draft release actually carries both
   # architectures before anyone can download it. This is what makes a release
@@ -291,19 +377,117 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/release/check-release-complete.sh "${{ github.ref_name }}"
+      # npmjs.com lets you set a trusted publisher only on a package that
+      # already exists, so a package never published by hand cannot accept
+      # the OIDC publish in `npm-publish`. Checked here, while the release is
+      # still a draft, so a missing package never leaves a public release
+      # with no matching npm version.
+      - name: Assert every npm package exists on the registry
+        run: |
+          set -euo pipefail
+          status=0
+          for package in cli-darwin-arm64 cli-darwin-x64 skill-studio; do
+            name="$(jq -r .name "packages/npm/$package/package.json")"
+            if ! npm view "$name" name --registry https://registry.npmjs.org > /dev/null 2>&1; then
+              echo "::error::$name is not on npm. Publish a 0.0.0 placeholder by hand and set its trusted publisher before tagging."
+              status=1
+            fi
+          done
+          exit "$status"
       # A pre-release tag (e.g. v0.1.0-rc.1) stays a GitHub pre-release; a
       # plain vX.Y.Z tag becomes the latest release. Same rule tauri-action's
       # `prerelease` input used when it created the draft.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.ref_name }}" == *-* ]]; then
-            gh release edit "${{ github.ref_name }}" --draft=false --prerelease
+          if [[ "$REF_NAME" == *-* ]]; then
+            gh release edit "$REF_NAME" --draft=false --prerelease
           else
-            gh release edit "${{ github.ref_name }}" --draft=false --latest
+            gh release edit "$REF_NAME" --draft=false --latest
           fi
+
+  # Publishes the CLI to npm only after `publish` has verified the GitHub
+  # release, so npm never carries a version whose release is incomplete.
+  # Auth is npm trusted publishing (GitHub OIDC, hence id-token: write): no
+  # stored token. One-time setup before the first tag, for each of the three
+  # packages: publish a 0.0.0 placeholder by hand (npmjs.com offers trusted
+  # publisher settings only on a package that exists), then set this
+  # repository and release.yml as its trusted publisher. `publish` checks
+  # that the packages exist before it makes the release public.
+  npm-publish:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # Trusted publishing needs Node 22.14.0+ and npm 11.5.1+.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g "npm@^11.5.1"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: skill-studio-cli-*
+          path: ${{ runner.temp }}/cli
+          merge-multiple: true
+      - name: Put each binary in its platform package and stamp the version
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for pair in aarch64-apple-darwin:cli-darwin-arm64:arm64 x86_64-apple-darwin:cli-darwin-x64:x86_64; do
+            IFS=: read -r target package arch <<< "$pair"
+            dir="packages/npm/$package"
+            mkdir -p "$dir/bin"
+            tar -xzf "$RUNNER_TEMP/cli/skill-studio-cli-$target.tar.gz" -C "$dir/bin" skill-studio
+            chmod 755 "$dir/bin/skill-studio"
+            if ! file "$dir/bin/skill-studio" | grep -q "Mach-O 64-bit.*$arch"; then
+              echo "::error::$dir/bin/skill-studio is not a $arch Mach-O binary: $(file -b "$dir/bin/skill-studio")"
+              exit 1
+            fi
+          done
+          # A pre-release tag publishes its full version (0.1.0-rc.1), not the
+          # committed base version, so the platform pins must follow it.
+          for package in cli-darwin-arm64 cli-darwin-x64 skill-studio; do
+            manifest="packages/npm/$package/package.json"
+            jq --arg v "$version" '.version = $v | if .optionalDependencies then .optionalDependencies |= map_values($v) else . end' "$manifest" > "$manifest.tmp"
+            mv "$manifest.tmp" "$manifest"
+          done
+          for package in cli-darwin-arm64 cli-darwin-x64; do
+            mode="$(npm pack "./packages/npm/$package" --dry-run --json | jq '.[0].files[] | select(.path == "bin/skill-studio") | .mode')"
+            if [[ "$mode" != "493" ]]; then
+              echo "::error::@skill-studio/$package would ship bin/skill-studio with mode '$mode', expected 755 (493)."
+              exit 1
+            fi
+          done
+      # Platform packages first: the main package pins them, so publishing it
+      # first would leave a window where installs resolve no binary. A package
+      # already on npm at this version is skipped, so a re-run can finish a
+      # half-done publish.
+      - name: Publish to npm
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          dist_tag=()
+          if [[ "$version" == *-* ]]; then
+            dist_tag=(--tag next)
+          fi
+          for package in cli-darwin-arm64 cli-darwin-x64 skill-studio; do
+            dir="packages/npm/$package"
+            name="$(jq -r .name "$dir/package.json")"
+            if npm view "$name@$version" version > /dev/null 2>&1; then
+              echo "$name@$version is already on npm; skipping."
+              continue
+            fi
+            npm publish "./$dir" --access public --provenance "${dist_tag[@]}"
+          done
 
   # Unit 6.3: prints the rollback rehearsal checklist once per release
   # (not once per `build` matrix leg) so the release author has one place
