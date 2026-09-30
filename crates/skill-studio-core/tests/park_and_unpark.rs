@@ -388,6 +388,37 @@ fn park_of_a_dev_linked_skill_leaves_a_whole_folder_claude_link_alone() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// `a_park_that_fails_after_removing_the_links_puts_them_back_or_names_the_skill_left_unlinked`:
+/// the move to `skills-parked` fails after the per-skill links came down.
+/// Expect the skill still at its Universal path and the Claude Code link
+/// back, pointing at it. Fails when the link stays gone: the skill is neither
+/// parked nor visible to Claude Code, and the row only says "failed".
+#[cfg(unix)]
+#[test]
+fn a_park_that_fails_after_removing_the_links_puts_them_back_or_names_the_skill_left_unlinked() {
+    let home = unique_temp_dir("park_fail_restores_links");
+    parkable_home(&home);
+    let failing_fs = Arc::new(FailingFs::wrap(Arc::new(RealFs::new())));
+    let rt = runtime_with(&home, failing_fs.clone());
+    let deployment_id = universal_deployment_id(&rt);
+
+    failing_fs.fail_next_rename();
+    ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap_err();
+
+    let link = home.join(CLAUDE_ROOT_RELATIVE).join("gamma");
+    assert_eq!(
+        std::fs::read_link(&link).ok(),
+        Some(home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma")),
+        "the Claude Code link must be back after the failed park"
+    );
+    assert!(home
+        .join(UNIVERSAL_ROOT_RELATIVE)
+        .join("gamma/SKILL.md")
+        .exists());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `park_journal_row_is_durable_before_the_directory_moves`: `record` runs
 /// before any filesystem step. Proven by failing the rename after `record`
 /// already ran: the row exists (and, once recovery runs, reads
@@ -408,10 +439,9 @@ fn park_journal_row_is_durable_before_the_directory_moves() {
     // the one that was there before the call - the rename never committed.
     assert!(home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma").exists());
     assert!(!home.join(PARKED_ROOT_RELATIVE).join("gamma").exists());
-    // The link removal step ran before the failed rename: it is not left
-    // dangling, and it is not silently restored either - the row a retry
-    // will see is not `done`, so nothing here claims the mutation finished.
-    assert!(std::fs::symlink_metadata(home.join(CLAUDE_ROOT_RELATIVE).join("gamma")).is_err());
+    // The link removal step ran before the failed rename, so the failure
+    // path puts the link back: a failed park leaves the skill linked.
+    assert!(std::fs::symlink_metadata(home.join(CLAUDE_ROOT_RELATIVE).join("gamma")).is_ok());
 
     let events = ops::list_events(&rt, &ctx(), &ListEventsRequest::default()).unwrap();
     // The row was recorded (this is the point of the test): it exists

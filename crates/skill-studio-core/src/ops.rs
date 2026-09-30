@@ -5315,14 +5315,17 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
         .iter()
         .map(|link| crate::ports::confine(&rt.scope, fs, link))
         .collect::<Result<Vec<_>, _>>()?;
-    let link_targets: serde_json::Map<String, serde_json::Value> = links
+    let link_pairs: Vec<(PathBuf, PathBuf)> = links
         .iter()
-        .filter_map(|link| {
-            let target = fs.read_link(link).ok()?;
-            Some((
+        .filter_map(|link| fs.read_link(link).ok().map(|target| (link.clone(), target)))
+        .collect();
+    let link_targets: serde_json::Map<String, serde_json::Value> = link_pairs
+        .iter()
+        .map(|(link, target)| {
+            (
                 link.to_string_lossy().into_owned(),
                 serde_json::Value::String(target.to_string_lossy().into_owned()),
-            ))
+            )
         })
         .collect();
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
@@ -5394,6 +5397,15 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
         )
     })();
     if let Err(e) = write_result {
+        // While the folder is still at its own path, the links that came
+        // down are the only change left to undo.
+        if fs.symlink_metadata(&deployment.path).is_ok() {
+            for (link, target) in &link_pairs {
+                if fs.symlink_metadata(link).is_err() {
+                    let _ = recreate_link(rt, &session.guard, link, target);
+                }
+            }
+        }
         let _ = session.store.finish(
             &session.guard,
             &id,
