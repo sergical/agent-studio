@@ -252,10 +252,18 @@ pub(crate) fn gather_copy_files(
             } else {
                 let commit = match &source.git_ref {
                     Some(r) => r.clone(),
-                    None => lookup
-                        .latest_commit(&repo, &path, None)?
-                        .map(|(sha, _)| sha)
-                        .ok_or("Could not determine the skill's latest commit")?,
+                    // A store install sends the bare skill name as `path`.
+                    // GitHub has no commit for a path the skill does not
+                    // live at, so the tarball comes from the repo's latest
+                    // commit and `locate_extracted_skill_dir` finds the
+                    // skill in it by name.
+                    None => match lookup.latest_commit(&repo, &path, None)? {
+                        Some((sha, _)) => sha,
+                        None => lookup
+                            .latest_commit(&repo, "", None)?
+                            .map(|(sha, _)| sha)
+                            .ok_or("Could not determine the skill's latest commit")?,
+                    },
                 };
                 fetch.fetch_skill_dir(&repo, &path, &commit, staging.path())?;
             }
@@ -872,6 +880,62 @@ mod tests {
             )))
         }
     }
+    /// Answers only for the repo root, like GitHub for a store install's
+    /// bare skill name when the skill lives at `skills/<name>`.
+    struct RootOnlyLookup;
+    impl CommitLookup for RootOnlyLookup {
+        fn latest_commit(
+            &self,
+            _repo: &str,
+            path: &str,
+            _until: Option<&str>,
+        ) -> Result<Option<(String, String)>, String> {
+            Ok(path
+                .is_empty()
+                .then(|| ("headsha".to_string(), "2024-01-01T00:00:00Z".to_string())))
+        }
+    }
+    struct RecordingFetch(std::sync::Mutex<Option<String>>);
+    impl UpstreamFetch for RecordingFetch {
+        fn fetch_skill_dir(
+            &self,
+            _repo: &str,
+            _path: &str,
+            commit: &str,
+            into: &Path,
+        ) -> Result<(), String> {
+            *self.0.lock().unwrap() = Some(commit.to_string());
+            super::super::test_support::write_skill(into, "find-bugs");
+            Ok(())
+        }
+    }
+
+    /// Flow: a Copy install from the store sends `path: "find-bugs"` with no
+    /// ref, and GitHub has no commit for that path because the skill lives
+    /// at `skills/find-bugs`. Expect the files read from the tarball at the
+    /// repo's latest commit. Catches an install that fails with "Could not
+    /// determine the skill's latest commit" before the by-name search runs.
+    #[test]
+    fn copy_install_of_a_bare_skill_name_fetches_the_repo_head_when_the_path_has_no_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut source = github_source("getsentry/skills", "find-bugs");
+        source.path = Some("find-bugs".to_string());
+        let fetch = RecordingFetch(std::sync::Mutex::new(None));
+
+        let files = gather_copy_files(
+            &source,
+            tmp.path(),
+            &tmp.path().join("dest"),
+            &fetch,
+            &RootOnlyLookup,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(fetch.0.lock().unwrap().as_deref(), Some("headsha"));
+        assert!(!files.is_empty(), "the skill's files must be read");
+    }
+
     fn stub_github() -> GithubTools {
         (Box::new(StubFetch), Box::new(StubLookup))
     }
