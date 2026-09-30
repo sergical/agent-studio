@@ -7,7 +7,7 @@ import { useKeyboard } from "@opentui/react";
 
 import type { InstalledSkillDto } from "../cli-types.ts";
 
-export interface DetailScreenProps {
+interface DetailScreenProps {
   skill: InstalledSkillDto;
   onBack: () => void;
 }

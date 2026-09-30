@@ -26,7 +26,7 @@ const RichTooltipHandleContext = createContext<TooltipHandle<RichTooltipPayload>
 
 /** A trigger's content, resolved when the tooltip opens - it returns `null` to show nothing, e.g.
  * a chip whose name only needs a tooltip once it has actually clipped. */
-export type RichTooltipPayload = () => ReactNode;
+type RichTooltipPayload = () => ReactNode;
 
 /** The active scope's handle, for a caller (e.g. `SkillLocationCell`'s clipped-only project chip)
  * that needs to build its own detached trigger instead of going through `RichTooltip` directly.

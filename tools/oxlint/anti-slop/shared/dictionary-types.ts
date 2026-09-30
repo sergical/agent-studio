@@ -23,7 +23,7 @@ type TypeSubstitution = ResolvedType | typeof UNRESOLVED_TYPE_PARAMETER;
 
 type TypeSubstitutionEnvironment = ReadonlyMap<string, TypeSubstitution>;
 
-export type UnsafeDictionary = {
+type UnsafeDictionary = {
 	readonly kind: "unsafe-dictionary";
 	readonly unsafeValue: "any" | "empty-object" | "object" | "union" | "unknown";
 };
@@ -924,19 +924,6 @@ function classifyAliasBroadTarget(
 		nextSubstitutions,
 		nextResolving,
 	);
-}
-
-export function isPopulatedObjectExpression(expression: ESTree.Expression): boolean {
-	let current = expression;
-	while (
-		current.type === "ParenthesizedExpression" ||
-		current.type === "TSAsExpression" ||
-		current.type === "TSTypeAssertion" ||
-		current.type === "TSNonNullExpression"
-	) {
-		current = current.expression;
-	}
-	return current.type === "ObjectExpression" && current.properties.length > 0;
 }
 
 export function isKnownEvidenceExpression(expression: ESTree.Expression): boolean {

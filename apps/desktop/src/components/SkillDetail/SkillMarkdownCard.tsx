@@ -18,7 +18,7 @@ import { SkillMarkdownEditor } from "./SkillMarkdownEditor";
  * `isEditing`/`isEditorDirty`/`isSaving` booleans, since a dirty or saving
  * draft only ever means anything while `kind` is `"editing"`.
  */
-export type SkillMarkdownEditState =
+type SkillMarkdownEditState =
   | { kind: "viewing" }
   | { kind: "editing"; openedContent: string; isDirty: boolean; isSaving: boolean };
 

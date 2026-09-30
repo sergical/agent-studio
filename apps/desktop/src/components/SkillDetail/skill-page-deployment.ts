@@ -13,7 +13,7 @@ import {
 } from "@skill-studio/lib";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 
-export interface SkillPageDeployment {
+interface SkillPageDeployment {
   deployment: Deployment | undefined;
   /** A caller-requested `deploymentPath` that no longer matches any deployment (the copy was
    * removed by a rescan) - must not silently fall back to a different copy of the skill. */

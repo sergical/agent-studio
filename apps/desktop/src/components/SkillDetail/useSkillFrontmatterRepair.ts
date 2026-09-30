@@ -11,7 +11,7 @@ import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import type { Deployment, FrontmatterRepairPreview } from "@skill-studio/lib";
 import { frontmatterPreviewKey, hasMalformedYamlWarning } from "./skill-frontmatter-repair-policy";
 
-export interface UseSkillFrontmatterRepair {
+interface UseSkillFrontmatterRepair {
   selectedFrontmatterRepair: FrontmatterRepairPreview | null;
   /** True when no backend preview is pending for the file on screen: it answered, failed, or does not apply. */
   isFrontmatterPreviewSettled: boolean;

@@ -21,16 +21,16 @@ export interface SkillRemovalPreview {
   linkedDeployments: Deployment[];
 }
 
-export type SkillRemovalAvailability =
+type SkillRemovalAvailability =
   | { available: true; preview: SkillRemovalPreview }
   | { available: false; reason: string };
 
-export interface SkillOwnerUpdateFailure {
+interface SkillOwnerUpdateFailure {
   ownerId: string;
   message: string;
 }
 
-export interface SkillOwnerUpdateSummary {
+interface SkillOwnerUpdateSummary {
   attempted: number;
   succeeded: number;
   failures: SkillOwnerUpdateFailure[];

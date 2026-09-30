@@ -9,7 +9,7 @@ export type WatchStatus =
   | { kind: "connected" }
   | { kind: "restarting"; attempt: number; delayMs: number };
 
-export interface StatusLineProps {
+interface StatusLineProps {
   revision: number | null;
   lastRefreshedAt: Date | null;
   watchStatus: WatchStatus;

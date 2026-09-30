@@ -11,7 +11,8 @@
       "project": ["tools/oxlint/anti-slop/**/*.ts", "*.ts"]
     },
     "apps/desktop": {
-      "project": ["src/**/*.{ts,tsx}"]
+      "project": ["src/**/*.{ts,tsx}"],
+      "ignoreDependencies": ["tailwindcss"]
     },
     "apps/server": {
       "project": ["src/**/*.ts"]
@@ -20,13 +21,14 @@
       "project": ["src/**/*.{ts,tsx}"]
     },
     "packages/lib": {
-      "project": ["src/**/*.{ts,tsx}"]
+      "project": ["src/**/*.{ts,tsx}"],
+      "entry": ["src/skill-types.generated.ts"]
     },
     "packages/ui": {
       "project": ["src/**/*.{ts,tsx}"]
     },
     "packages/marketing": {
-      "entry": ["src/remotion/Root.tsx"],
+      "entry": ["src/remotion/index.ts"],
       "project": ["src/**/*.{ts,tsx}"]
     }
   }
