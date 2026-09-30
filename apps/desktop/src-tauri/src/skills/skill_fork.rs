@@ -510,12 +510,113 @@ fn locate_extracted_skill_dir(extract_dir: &Path, path: &str) -> Result<PathBuf,
     let candidate = top.join(path);
     let canonical_extract = fs::canonicalize(extract_dir)
         .map_err(|e| format!("Failed to resolve {}: {e}", extract_dir.display()))?;
-    let canonical_candidate = fs::canonicalize(&candidate)
-        .map_err(|_| format!("{path} was not found in the fetched tarball"))?;
+    let canonical_candidate = match fs::canonicalize(&candidate) {
+        Ok(found) => found,
+        Err(_) => return find_skill_dir_by_name(&top, path, &canonical_extract),
+    };
     if !canonical_candidate.starts_with(&canonical_extract) {
         return Err("Refusing to extract a path outside the tarball".to_string());
     }
     Ok(canonical_candidate)
+}
+
+/// Deepest folder level below the tarball's top directory that the by-name
+/// search visits.
+const SKILL_SEARCH_MAX_DEPTH: usize = 6;
+/// Most folders the by-name search reads, so a huge repo cannot stall an install.
+const SKILL_SEARCH_MAX_DIRS: usize = 5_000;
+
+/// Fallback for a `path` that is only a skill name (the store sends one) when
+/// the repo keeps its skills under a subfolder such as `skills/<name>`. Like
+/// the `npx skills` CLI, it accepts a folder holding `SKILL.md` whose own name
+/// or whose frontmatter `name` equals the skill. Exactly one match is used;
+/// several are an error that lists them. Never follows symlinks and skips
+/// `node_modules` and `.git`.
+fn find_skill_dir_by_name(
+    top: &Path,
+    path: &str,
+    canonical_extract: &Path,
+) -> Result<PathBuf, String> {
+    let not_found = || format!("{path} was not found in the fetched tarball");
+    let Some(name) = Path::new(path).file_name().and_then(|n| n.to_str()) else {
+        return Err(not_found());
+    };
+    let mut matches: Vec<PathBuf> = Vec::new();
+    let mut pending = vec![(top.to_path_buf(), 0usize)];
+    let mut visited = 0usize;
+    while let Some((dir, depth)) = pending.pop() {
+        visited += 1;
+        if visited > SKILL_SEARCH_MAX_DIRS {
+            break;
+        }
+        if dir != top && skill_dir_matches(&dir, name) {
+            matches.push(dir.clone());
+        }
+        if depth >= SKILL_SEARCH_MAX_DEPTH {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(std::result::Result::ok) {
+            let file_name = entry.file_name();
+            if file_name == ".git" || file_name == "node_modules" {
+                continue;
+            }
+            // `DirEntry::file_type` does not follow a symlink.
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending.push((entry.path(), depth + 1));
+            }
+        }
+    }
+    matches.sort();
+    match matches.as_slice() {
+        [] => Err(not_found()),
+        [only] => {
+            let canonical = fs::canonicalize(only).map_err(|_| not_found())?;
+            if canonical.starts_with(canonical_extract) {
+                Ok(canonical)
+            } else {
+                Err("Refusing to extract a path outside the tarball".to_string())
+            }
+        }
+        several => {
+            let listed: Vec<String> = several
+                .iter()
+                .map(|dir| {
+                    dir.strip_prefix(top)
+                        .unwrap_or(dir)
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            Err(format!(
+                "{name} matches several folders in the fetched tarball: {}",
+                listed.join(", ")
+            ))
+        }
+    }
+}
+
+/// True when `dir` holds a regular `SKILL.md` and either `dir`'s folder name
+/// or the file's frontmatter `name` equals `name`.
+fn skill_dir_matches(dir: &Path, name: &str) -> bool {
+    use std::io::Read;
+
+    let skill_md = dir.join("SKILL.md");
+    if !fs::symlink_metadata(&skill_md).is_ok_and(|meta| meta.is_file()) {
+        return false;
+    }
+    if dir.file_name().and_then(|n| n.to_str()) == Some(name) {
+        return true;
+    }
+    let mut head = String::new();
+    let read =
+        fs::File::open(&skill_md).and_then(|file| file.take(64 * 1024).read_to_string(&mut head));
+    read.is_ok()
+        && super::frontmatter::frontmatter_fields(&head)
+            .get("name")
+            .is_some_and(|declared| declared == name)
 }
 
 /// Every relative file path (`/`-separated) under `dir`, skipping `.git` and
@@ -3487,5 +3588,83 @@ mod tests {
 
         let err = locate_extracted_skill_dir(&extract_dir, "../../etc").unwrap_err();
         assert!(err.contains("outside") || err.contains("not found"));
+    }
+
+    fn extraction_with(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        for (relative, body) in files {
+            write_file(&tmp.path().join("owner-repo-abc1234").join(relative), body);
+        }
+        tmp
+    }
+
+    /// Flow: a Copy install sends the bare skill name as the path, and the repo
+    /// keeps the skill under `skills/<name>`. Expectation: the folder is found
+    /// by name. Failure means the install stops with "<name> was not found in
+    /// the fetched tarball" for every repo that nests its skills.
+    #[test]
+    fn locate_extracted_skill_dir_falls_back_to_a_nested_folder_named_like_the_skill_or_reports_not_found(
+    ) {
+        let tmp = extraction_with(&[
+            ("skills/find-bugs/SKILL.md", "body"),
+            ("skills/other/SKILL.md", "body"),
+        ]);
+
+        let found = locate_extracted_skill_dir(tmp.path(), "find-bugs").unwrap();
+        assert!(found.ends_with("skills/find-bugs"), "{found:?}");
+    }
+
+    #[test]
+    fn locate_extracted_skill_dir_matches_a_skill_by_frontmatter_name_when_no_folder_carries_it() {
+        let tmp = extraction_with(&[
+            (
+                "skills/renamed-folder/SKILL.md",
+                "---\nname: find-bugs\ndescription: d\n---\nbody",
+            ),
+            ("skills/other/SKILL.md", "---\nname: other\n---\nbody"),
+        ]);
+
+        let found = locate_extracted_skill_dir(tmp.path(), "find-bugs").unwrap();
+        assert!(found.ends_with("skills/renamed-folder"), "{found:?}");
+    }
+
+    #[test]
+    fn locate_extracted_skill_dir_prefers_the_exact_path_over_a_nested_match() {
+        let tmp = extraction_with(&[
+            ("find-bugs/SKILL.md", "exact"),
+            ("skills/find-bugs/SKILL.md", "nested"),
+        ]);
+
+        let found = locate_extracted_skill_dir(tmp.path(), "find-bugs").unwrap();
+        assert_eq!(fs::read_to_string(found.join("SKILL.md")).unwrap(), "exact");
+    }
+
+    #[test]
+    fn locate_extracted_skill_dir_names_every_candidate_when_several_folders_match() {
+        let tmp = extraction_with(&[
+            ("skills/find-bugs/SKILL.md", "a"),
+            ("plugins/x/skills/find-bugs/SKILL.md", "b"),
+        ]);
+
+        let err = locate_extracted_skill_dir(tmp.path(), "find-bugs").unwrap_err();
+        assert!(err.contains("skills/find-bugs"), "{err}");
+        assert!(err.contains("plugins/x/skills/find-bugs"), "{err}");
+    }
+
+    #[test]
+    fn locate_extracted_skill_dir_keeps_the_not_found_error_and_skips_node_modules_and_symlinks() {
+        let tmp = extraction_with(&[
+            ("node_modules/pkg/find-bugs/SKILL.md", "vendored"),
+            ("skills/other/SKILL.md", "body"),
+        ]);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            tmp.path().join("owner-repo-abc1234/skills/other"),
+            tmp.path().join("owner-repo-abc1234/skills/find-bugs"),
+        )
+        .unwrap();
+
+        let err = locate_extracted_skill_dir(tmp.path(), "find-bugs").unwrap_err();
+        assert_eq!(err, "find-bugs was not found in the fetched tarball");
     }
 }
