@@ -510,9 +510,8 @@ fn locate_extracted_skill_dir(extract_dir: &Path, path: &str) -> Result<PathBuf,
     let candidate = top.join(path);
     let canonical_extract = fs::canonicalize(extract_dir)
         .map_err(|e| format!("Failed to resolve {}: {e}", extract_dir.display()))?;
-    let canonical_candidate = match fs::canonicalize(&candidate) {
-        Ok(found) => found,
-        Err(_) => return find_skill_dir_by_name(&top, path, &canonical_extract),
+    let Ok(canonical_candidate) = fs::canonicalize(&candidate) else {
+        return find_skill_dir_by_name(&top, path, &canonical_extract);
     };
     if !canonical_candidate.starts_with(&canonical_extract) {
         return Err("Refusing to extract a path outside the tarball".to_string());
