@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use skill_studio_core::dto::{
-    InstallFile, InstallLinkMode, InstallMethod, InstallRequest,
-    ListEventsRequest, RestoreRequest, ScanRequest, UpdateOutcome, UpdateRequest,
+    InstallFile, InstallLinkMode, InstallMethod, InstallRequest, ListEventsRequest, RestoreRequest,
+    ScanRequest, UpdateOutcome, UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::{AgentId, LifecycleOwnerKind, RootScope, SkillName};

@@ -1043,7 +1043,7 @@ fn project_scoped_codex_switch_changes_only_the_project_copy_or_names_the_row_it
 }
 
 /// `project_scoped_opencode_switch_is_refused_and_writes_nothing_or_names_the_global_config_it_changed`:
-/// OpenCode's off switch is a rule in the global `opencode.json`, which every
+/// `OpenCode`'s off switch is a rule in the global `opencode.json`, which every
 /// project reads, so a switch from a project row would change the skill
 /// everywhere. It must be refused with `Unsupported`, and no config written.
 #[test]
