@@ -8,7 +8,7 @@ import { useRef } from "react";
 import type { InstalledSkill } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
-export interface UseSkillListSelection {
+interface UseSkillListSelection {
   selectedPaths: Set<string>;
   clearSkillSelection: () => void;
   selectSkills: (paths: string[]) => void;

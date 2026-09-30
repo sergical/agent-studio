@@ -47,6 +47,7 @@ mod skill_uses;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 mod tools;
+mod usage_report;
 
 pub use builder::{default_ports, default_ports_with_discovery, default_ports_with_history};
 pub use clock::SystemClock;
@@ -72,3 +73,7 @@ pub use skill_uses::{
     SkillUseWatchPath,
 };
 pub use tools::{LoginShellToolLookup, PathToolLookup};
+pub use usage_report::{
+    desktop_usage_cache_path, usage_report, SkillUsage, SkillUsageRow, UsageReport,
+    DEFAULT_USAGE_DAYS,
+};

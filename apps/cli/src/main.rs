@@ -74,43 +74,308 @@ impl From<AddMethod> for InstallMethod {
 }
 
 #[derive(Parser)]
-#[command(name = "skill-studio", about = "Manage agent skills across harnesses", version = VERSION)]
+#[command(
+    name = "skill-studio",
+    about = "Tidy up your agent skills: find broken, duplicate and unused skills, and clear them out safely, with undo.",
+    version = VERSION
+)]
 struct Cli {
-    /// Print each op's and each of its steps' elapsed time to stderr.
+    /// Print how long each step took, to stderr.
     #[arg(long, global = true)]
     time: bool,
     #[command(subcommand)]
     command: Command,
 }
 
+// clap lists subcommands in declaration order: the user commands come first,
+// in the order a person tidies skills, and the `hide = true` dev commands
+// follow.
 #[derive(Subcommand)]
 enum Command {
-    /// Inventory every installed skill.
+    /// List every skill installed for your agents.
     Scan {
         #[command(flatten)]
         scope: ScopeArgs,
-        /// Restrict to these skill names.
+        /// Only show this skill. Repeat for more than one.
         #[arg(long = "skill")]
         skills: Vec<String>,
         /// Include per-phase timings.
-        #[arg(long)]
+        #[arg(long, hide = true)]
         timings: bool,
-        /// Print the result envelope as JSON.
+        /// Print the result as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Inventory every installed skill and derive issues.
+    /// Find broken skills and say what is wrong with each.
     Diagnose {
         #[command(flatten)]
         scope: ScopeArgs,
+        /// Only check this skill. Repeat for more than one.
         #[arg(long = "skill")]
         skills: Vec<String>,
-        #[arg(long)]
+        /// Include per-phase timings.
+        #[arg(long, hide = true)]
         timings: bool,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Find skills that have different copies in different places.
+    Conflicts {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show which skills your agents used, and which they never used.
+    Usage {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// How many days back to count uses.
+        #[arg(long, default_value_t = skill_studio_host::DEFAULT_USAGE_DAYS)]
+        days: u32,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Turn a skill off for all agents. You can turn it on again later.
+    Park {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        #[command(flatten)]
+        target: TargetArgs,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Turn a parked skill on again.
+    Unpark {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        #[command(flatten)]
+        target: TargetArgs,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Turn a skill on for one agent.
+    Enable {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        #[command(flatten)]
+        switch: AgentSwitchArgs,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Turn a skill off for one agent. Other agents keep it.
+    Disable {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        #[command(flatten)]
+        switch: AgentSwitchArgs,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a skill. Copies you made go to a recovery folder.
+    Remove {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        #[command(flatten)]
+        target: TargetArgs,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Repair a skill's problems and list the ones it cannot repair.
+    Fix {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Skill to fix.
+        #[arg(long)]
+        skill: String,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reverse your last change.
+    Undo {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Reverse it even if the files changed after it.
+        #[arg(long)]
+        force: bool,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List your past changes, newest first.
+    #[command(visible_alias = "history")]
+    Events {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Only show changes to this skill.
+        #[arg(long)]
+        skill: Option<String>,
+        /// Most changes to show. 0 shows the default number.
+        #[arg(long, default_value_t = 0)]
+        limit: u32,
+        /// Only show changes older than this one. Use an id from this list.
+        #[arg(long)]
+        after: Option<String>,
+        /// Also check which files changed after each change.
+        #[arg(long)]
+        check_drift: bool,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reverse one change from your history.
+    Restore {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Change to reverse, as printed by `events`.
+        #[arg(long)]
+        event_id: String,
+        /// Reverse it even if the files changed after it.
+        #[arg(long)]
+        force: bool,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a skill for one or more agents.
+    Add {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Where the skill comes from: a repo such as owner/repo for
+        /// skills-sh or dotagents, or a local folder for copy.
+        source: String,
+        /// How to install the skill.
+        #[arg(long, value_enum, default_value_t = AddMethod::SkillsSh)]
+        method: AddMethod,
+        /// Agent to install for. Repeat for more than one: universal (the
+        /// shared folder), claude-code, codex, opencode, cursor, pi or
+        /// grok-build. Default: universal.
+        #[arg(long = "agent", alias = "harness", value_name = "AGENT")]
+        harnesses: Vec<String>,
+        /// Put a real copy in each agent's folder, not a link to the shared
+        /// copy.
+        #[arg(long)]
+        copy: bool,
+        /// Install for your user account. This is the default.
+        #[arg(long, conflicts_with = "project_path")]
+        global: bool,
+        /// Install into this project instead of for your user account.
+        // Not `--project`: `ScopeArgs` already flattens a repeatable
+        // `--project` for discovery.
+        #[arg(long)]
+        project_path: Option<PathBuf>,
+        /// Folder name for the skill. Needed for skills-sh and dotagents: it
+        /// is the skill's name in the repo. For copy, the default is the
+        /// source folder's name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Trust a dotagents source you have not used before.
+        #[arg(long)]
+        trust: bool,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List skills that have an update.
+    Outdated {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Only check this skill. Repeat for more than one.
+        #[arg(long = "skill")]
+        skills: Vec<String>,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Update installed skills.
+    Update {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Skill to update. Repeat for more than one.
+        #[arg(long = "skill", required = true)]
+        skills: Vec<String>,
+        /// How the skill was installed.
+        #[arg(long, value_parser = ["copy", "dotagents", "skills-sh"])]
+        method: String,
+        /// Project the skill is in. Leave it out for your global skills.
+        #[arg(long)]
+        project_path: Option<PathBuf>,
+        /// For copy: the folder to read the new files from.
+        #[arg(long)]
+        source_dir: Option<PathBuf>,
+        /// For skills-sh or dotagents: where to get the skill again, such as
+        /// owner/repo.
+        #[arg(long)]
+        source: Option<String>,
+        /// For dotagents: the commit to update to.
+        #[arg(long)]
+        ref_pin: Option<String>,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start the MCP server so an agent can tidy your skills.
+    Mcp,
+    /// Turn a skill's native per-harness switch on or off (Claude Code,
+    /// Codex, `OpenCode`). pi, Cursor, and Grok Build have none: `park`
+    /// turns a skill off for every harness.
+    #[command(hide = true)]
+    SetHarnessEnabled {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Skill to toggle.
+        #[arg(long)]
+        skill: String,
+        /// Harness whose switch to flip.
+        #[arg(long, alias = "agent")]
+        harness: String,
+        /// Sets the switch to enabled; pass `--enabled=false` to disable.
+        #[arg(long, default_value_t = true)]
+        enabled: bool,
+        /// Project the targeted row is scoped to; omit for the global row.
+        /// Only Claude Code's switch (a per-scope symlink slot) reads this.
+        #[arg(long)]
+        project_path: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run every lifecycle invariant in `docs/action-map/lifecycle-states.md`
+    /// over the whole scope; writes nothing. Exit code 0 with an empty
+    /// violation list on a healthy home, 1 when any violation is found
+    /// (the same "found something" code `scan`/`diagnose`/`fix` use).
+    #[command(hide = true)]
+    Doctor {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace a Universal skill folder with one real copy per chosen
+    /// harness. Harnesses not named lose the skill.
+    #[command(hide = true)]
+    Split {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Universal deployment to split, as printed by `scan`.
+        #[arg(long)]
+        deployment_id: String,
+        /// A harness that keeps the skill. Repeat for more than one.
+        #[arg(long = "harness", required = true)]
+        harnesses: Vec<String>,
         #[arg(long)]
         json: bool,
     },
     /// Report harness capability facts.
+    #[command(hide = true)]
     Capabilities {
         #[command(flatten)]
         scope: ScopeArgs,
@@ -128,6 +393,7 @@ enum Command {
     },
     /// Detect first-class harnesses installed on this machine: `PATH`,
     /// version, install method, configured, and used evidence.
+    #[command(hide = true)]
     Harnesses {
         #[command(flatten)]
         scope: ScopeArgs,
@@ -135,6 +401,7 @@ enum Command {
         json: bool,
     },
     /// Preview a frontmatter repair for one deployment, without writing.
+    #[command(hide = true)]
     PreviewRepair {
         #[command(flatten)]
         scope: ScopeArgs,
@@ -145,6 +412,7 @@ enum Command {
         json: bool,
     },
     /// Apply a previously-previewed frontmatter repair.
+    #[command(hide = true)]
     ApplyRepair {
         #[command(flatten)]
         scope: ScopeArgs,
@@ -155,127 +423,10 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// List history rows, newest first.
-    Events {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        /// Restrict to one skill.
-        #[arg(long)]
-        skill: Option<String>,
-        /// Maximum rows; 0 means the core default.
-        #[arg(long, default_value_t = 0)]
-        limit: u32,
-        /// Pagination cursor: only rows older than this event id.
-        #[arg(long)]
-        after: Option<String>,
-        /// Compare live fingerprints with the recorded ones.
-        #[arg(long)]
-        check_drift: bool,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Revert one event.
-    Restore {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        /// Event to revert.
-        #[arg(long)]
-        event_id: String,
-        /// Proceed even if the touched paths have drifted.
-        #[arg(long)]
-        force: bool,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Revert the most recent unreverted event.
-    Undo {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        /// Proceed even if the touched paths have drifted.
-        #[arg(long)]
-        force: bool,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Turn a skill's native per-harness switch on or off (Claude Code,
-    /// Codex, `OpenCode`). pi, Cursor, and Grok Build have none: `park`
-    /// turns a skill off for every harness.
-    SetHarnessEnabled {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        /// Skill to toggle.
-        #[arg(long)]
-        skill: String,
-        /// Harness whose switch to flip.
-        #[arg(long)]
-        harness: String,
-        /// Sets the switch to enabled; pass `--enabled=false` to disable.
-        #[arg(long, default_value_t = true)]
-        enabled: bool,
-        /// Project the targeted row is scoped to; omit for the global row.
-        /// Only Claude Code's switch (a per-scope symlink slot) reads this.
-        #[arg(long)]
-        project_path: Option<PathBuf>,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Run the doctor invariants for one skill and repair whatever it can;
-    /// anything it cannot repair is named with its path.
-    Fix {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        /// Skill to fix.
-        #[arg(long)]
-        skill: String,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Install one skill by `copy`, `dotagents`, or `skills-sh`.
-    Add {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        /// For `copy`: the local skill folder to stage. For `dotagents`/
-        /// `skills-sh`: the source argument passed to the CLI's own `add`.
-        source: String,
-        /// Which method writes the bytes.
-        #[arg(long, value_enum, default_value_t = AddMethod::SkillsSh)]
-        method: AddMethod,
-        /// Harnesses to install for (repeatable), the same set as the
-        /// `skills` CLI's `--agent`: `universal`, `claude-code`, `codex`,
-        /// `open-code`, `cursor`, `pi`, `grok-build`. None means
-        /// `universal` alone.
-        #[arg(long = "harness")]
-        harnesses: Vec<String>,
-        /// Write a real folder for each harness instead of linking it to
-        /// the shared copy. One chosen folder always gets a copy.
-        #[arg(long)]
-        copy: bool,
-        /// Install under the scope home. Default when neither this nor
-        /// `--project-path` is given.
-        #[arg(long, conflicts_with = "project_path")]
-        global: bool,
-        /// Install under this project instead of the scope home. Named
-        /// `--project-path`, not `--project`: `ScopeArgs` already flattens a
-        /// repeatable `--project` for discovery scoping.
-        #[arg(long)]
-        project_path: Option<PathBuf>,
-        /// Folder name the skill is installed under. For `copy`, defaults to
-        /// `source`'s final path segment. For `dotagents`/`skills-sh`,
-        /// required: it is the skill slug the repo publishes, which the CLI
-        /// this build shells out to always writes under - a derived name
-        /// can name the wrong folder for a multi-skill or differently named
-        /// repo.
-        #[arg(long)]
-        name: Option<String>,
-        /// Confirms the trust prompt for an untrusted dotagents source.
-        #[arg(long)]
-        trust: bool,
-        #[arg(long)]
-        json: bool,
-    },
     /// Print the method and harnesses the next `add` pre-selects: the last
     /// install's saved preference, or the environment default when nothing
     /// has been saved for this scope yet.
+    #[command(hide = true)]
     InstallPreferences {
         #[command(flatten)]
         scope: ScopeArgs,
@@ -287,121 +438,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Find differing copies of a skill without merging them; writes
-    /// nothing.
-    Conflicts {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Run every lifecycle invariant in `docs/action-map/lifecycle-states.md`
-    /// over the whole scope; writes nothing. Exit code 0 with an empty
-    /// violation list on a healthy home, 1 when any violation is found
-    /// (the same "found something" code `scan`/`diagnose`/`fix` use).
-    Doctor {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Take a mutable deployment off disk. `Copy`/`Fork` land intact in
-    /// quarantine; `Dotagents`/`SkillsSh` are removed by their own CLI.
-    Remove {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        /// Deployment to remove, as printed by `scan`.
-        #[arg(long)]
-        deployment_id: String,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Move a universal deployment's directory to the parked root and
-    /// remove its Claude Code link, if any.
-    Park {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        /// Universal deployment to park, as printed by `scan`.
-        #[arg(long)]
-        deployment_id: String,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Replace a Universal skill folder with one real copy per chosen
-    /// harness. Harnesses not named lose the skill.
-    Split {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        /// Universal deployment to split, as printed by `scan`.
-        #[arg(long)]
-        deployment_id: String,
-        /// A harness that keeps the skill. Repeat for more than one.
-        #[arg(long = "harness", required = true)]
-        harnesses: Vec<String>,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Move a parked deployment's directory back to the universal root and
-    /// recreate its Claude Code link, if it had one.
-    Unpark {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        /// Parked deployment to restore, as printed by `scan`.
-        #[arg(long)]
-        deployment_id: String,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Report per-skill currency ("update available") for every install
-    /// method that tracks one: skills.sh by tree SHA, dotagents by pinned
-    /// commit, plugin by marketplace manifest version.
-    Outdated {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        #[arg(long = "skill")]
-        skills: Vec<String>,
-        #[arg(long)]
-        json: bool,
-    },
     /// Prune the global quarantine cap without a `remove` call, via
     /// `ops::sweep_quarantine`. Global scope only - see that function's
     /// own doc.
+    #[command(hide = true)]
     SweepQuarantine {
         #[command(flatten)]
         scope: ScopeArgs,
         #[arg(long)]
         json: bool,
     },
-    /// Refresh one or more already-installed skills in place.
-    Update {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        /// Skill to refresh. Repeat the flag to refresh several in one
-        /// batch; each one gets its own journal row via `ops::update_all`.
-        #[arg(long = "skill", required = true)]
-        skills: Vec<String>,
-        /// Which method wrote the deployment being refreshed.
-        #[arg(long, value_parser = ["copy", "dotagents", "skills-sh"])]
-        method: String,
-        /// Project the targeted deployment lives under; omit for the
-        /// global (`.agents/skills`) deployment.
-        #[arg(long)]
-        project_path: Option<PathBuf>,
-        /// `Copy` only: directory to read fresh files from, recursively.
-        #[arg(long)]
-        source_dir: Option<PathBuf>,
-        /// `Dotagents`/`SkillsSh` only: the source argument the CLI's
-        /// `add` command needs to re-fetch.
-        #[arg(long)]
-        source: Option<String>,
-        /// `Dotagents` only: an already-resolved commit for a pinned
-        /// (`declared_ref`) ledger entry.
-        #[arg(long)]
-        ref_pin: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
     /// Write one JSON Schema file per request/result DTO.
+    #[command(hide = true)]
     Schema {
         /// Directory to write schema files into.
         #[arg(long)]
@@ -409,6 +457,7 @@ enum Command {
     },
     /// Print the command health rollup: count, failures, p50/p95 duration,
     /// and last error, per command, over the last 7 days of `timing.jsonl`.
+    #[command(hide = true)]
     Health {
         /// Path to the timing log to read. Defaults to the desktop app's
         /// own `timing.jsonl` (its app data dir, resolved through `dirs` -
@@ -422,6 +471,7 @@ enum Command {
     /// Stream one JSON line per revision change: an initial line with the
     /// current revision and inventory, then one line per change, until
     /// interrupted.
+    #[command(hide = true)]
     Watch {
         #[command(flatten)]
         scope: ScopeArgs,
@@ -434,7 +484,48 @@ enum Command {
     },
 }
 
+/// The copy `park`, `unpark` and `remove` act on: a skill name, or the id
+/// `scan` prints when the name matches more than one copy.
+#[derive(clap::Args)]
+struct TargetArgs {
+    /// Name of the skill.
+    #[arg(required_unless_present = "id", conflicts_with = "id")]
+    skill: Option<String>,
+    /// Id of one copy, as printed by `scan`. Use it when the name matches
+    /// more than one copy.
+    // `--deployment-id` is the flag's name before names were accepted;
+    // scripts and the test suite still pass it.
+    #[arg(long, alias = "deployment-id")]
+    id: Option<String>,
+}
+
+/// `enable`'s and `disable`'s shared arguments.
+#[derive(clap::Args)]
+struct AgentSwitchArgs {
+    /// Name of the skill.
+    skill: String,
+    /// Agent to change: claude-code, codex or opencode.
+    #[arg(long, alias = "harness")]
+    agent: String,
+    /// Project the skill is in. Leave it out for your global skills.
+    #[arg(long)]
+    project_path: Option<PathBuf>,
+}
+
 fn main() -> ExitCode {
+    // Parse before telemetry starts: `mcp` reports as its own surface, and
+    // `run_stdio` sets that up itself.
+    let cli = Cli::parse();
+    if matches!(cli.command, Command::Mcp) {
+        return match skill_studio_mcp::run_stdio() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("The MCP server stopped: {err}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     // Consent lives in the same home `ScopeArgs::resolve`'s unflagged branch
     // reads, resolved once here rather than per-command: `--fixture`/`--home`
     // point a single invocation's scope elsewhere, but the switch itself
@@ -452,7 +543,6 @@ fn main() -> ExitCode {
         consent,
     );
 
-    let cli = Cli::parse();
     let time = cli.time;
     match cli.command {
         Command::Scan {
@@ -508,6 +598,34 @@ fn main() -> ExitCode {
             project_path,
             json,
         } => run_set_harness_enabled(&scope, skill, &harness, enabled, project_path, json, time),
+        Command::Enable {
+            scope,
+            switch,
+            json,
+        } => run_set_harness_enabled(
+            &scope,
+            switch.skill,
+            &switch.agent,
+            true,
+            switch.project_path,
+            json,
+            time,
+        ),
+        Command::Disable {
+            scope,
+            switch,
+            json,
+        } => run_set_harness_enabled(
+            &scope,
+            switch.skill,
+            &switch.agent,
+            false,
+            switch.project_path,
+            json,
+            time,
+        ),
+        Command::Usage { scope, days, json } => run_usage(&scope, days, json, time),
+        Command::Mcp => unreachable!("handled before telemetry starts"),
         Command::Add {
             scope,
             source,
@@ -550,14 +668,14 @@ fn main() -> ExitCode {
         Command::Doctor { scope, json } => run_doctor(&scope, json, time),
         Command::Remove {
             scope,
-            deployment_id,
+            target,
             json,
-        } => run_remove(&scope, &deployment_id, json, time),
+        } => run_remove(&scope, &target, json, time),
         Command::Park {
             scope,
-            deployment_id,
+            target,
             json,
-        } => run_park(&scope, &deployment_id, json, time),
+        } => run_park(&scope, &target, json, time),
         Command::Split {
             scope,
             deployment_id,
@@ -566,9 +684,9 @@ fn main() -> ExitCode {
         } => run_split(&scope, &deployment_id, &harnesses, json, time),
         Command::Unpark {
             scope,
-            deployment_id,
+            target,
             json,
-        } => run_unpark(&scope, &deployment_id, json, time),
+        } => run_unpark(&scope, &target, json, time),
         Command::Outdated {
             scope,
             skills,
@@ -1070,7 +1188,7 @@ fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode
     let harnesses = match args
         .harnesses
         .iter()
-        .map(|h| AgentId::parse(h))
+        .map(|h| AgentId::parse_harness(h))
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(harnesses) => harnesses,
@@ -1554,8 +1672,103 @@ fn run_set_harness_enabled(
     )
 }
 
+/// Which command a skill name is being matched for: each one accepts a
+/// different kind of copy, so the name matches only copies the command can
+/// act on.
+#[derive(Clone, Copy)]
+enum TargetKind {
+    Park,
+    Unpark,
+    Remove,
+}
+
+impl TargetKind {
+    /// Mirrors the first checks `ops::park`, `ops::unpark` and `ops::remove`
+    /// make, so a name never picks a copy the op then refuses.
+    fn accepts(self, deployment: &skill_studio_core::dto::DeploymentDto) -> bool {
+        use skill_studio_core::identity::{BackingRelationship, RootKind};
+        match self {
+            TargetKind::Park => {
+                deployment.root.kind == RootKind::Universal
+                    && deployment.backing == BackingRelationship::Canonical
+            }
+            TargetKind::Remove => {
+                deployment.root.kind == RootKind::Universal
+                    && deployment.backing == BackingRelationship::Canonical
+                    && deployment.owner_kind.is_mutable()
+            }
+            TargetKind::Unpark => deployment.root.kind == RootKind::Parked,
+        }
+    }
+
+    fn past_tense(self) -> &'static str {
+        match self {
+            TargetKind::Park => "parked",
+            TargetKind::Unpark => "unparked",
+            TargetKind::Remove => "removed",
+        }
+    }
+}
+
+/// Turns `--id`, or a skill name, into the id of the one copy to act on.
+/// A name that matches more than one copy is an `ambiguous_target` error
+/// whose message lists each match's path and id.
+fn resolve_target(
+    rt: &Runtime,
+    target: &TargetArgs,
+    kind: TargetKind,
+) -> Result<DeploymentId, skill_studio_core::CoreError> {
+    if let Some(id) = &target.id {
+        return DeploymentId::parse(id);
+    }
+    let name = target.skill.as_deref().unwrap_or_default();
+    // Its own context: the op that follows records its timing on the
+    // caller's context, and a scan there would be reported as part of it.
+    let scan_ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let inventory = ops::scan(
+        rt,
+        &scan_ctx,
+        &ScanRequest {
+            skills: vec![SkillName(name.to_string())],
+            timings: false,
+        },
+    )?;
+    let Some(skill) = inventory.skills.iter().find(|skill| skill.name.0 == name) else {
+        return Err(skill_studio_core::CoreError::new(
+            skill_studio_core::ErrorCode::InvalidRequest,
+            format!("No skill named {name} was found."),
+        ));
+    };
+    let matches: Vec<_> = skill
+        .deployments
+        .iter()
+        .filter(|deployment| kind.accepts(deployment))
+        .collect();
+    match matches.as_slice() {
+        [] => Err(skill_studio_core::CoreError::new(
+            skill_studio_core::ErrorCode::InvalidRequest,
+            format!("{name} has no copy that can be {}.", kind.past_tense()),
+        )),
+        [only] => Ok(only.id.clone()),
+        several => {
+            let mut message =
+                format!("{name} has more than one copy. Pass --id with one of these ids:");
+            for deployment in several {
+                message.push_str("\n  ");
+                message.push_str(&deployment.path.display().to_string());
+                message.push_str("  id ");
+                message.push_str(deployment.id.as_str());
+            }
+            Err(skill_studio_core::CoreError::new(
+                skill_studio_core::ErrorCode::AmbiguousTarget,
+                message,
+            ))
+        }
+    }
+}
+
 /// Takes a mutable deployment off disk, via `ops::remove`.
-fn run_remove(scope: &ScopeArgs, deployment_id: &str, json: bool, time: bool) -> ExitCode {
+fn run_remove(scope: &ScopeArgs, target: &TargetArgs, json: bool, time: bool) -> ExitCode {
     let rt = match build_runtime_write::<skill_studio_core::dto::RemoveOutcome>(
         scope,
         Operation::Remove,
@@ -1565,26 +1778,19 @@ fn run_remove(scope: &ScopeArgs, deployment_id: &str, json: bool, time: bool) ->
         Err(code) => return code,
     };
     let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-    let deployment_id = match DeploymentId::parse(deployment_id) {
-        Ok(id) => id,
-        Err(err) => {
-            let envelope = ResultEnvelope::<skill_studio_core::dto::RemoveOutcome>::from_result(
-                Operation::Remove,
-                &rt.scope,
-                &ctx,
-                Err(err),
-            );
-            return finish(&envelope, json, time, output::print_remove_outcome_table);
-        }
-    };
-    let req = skill_studio_core::dto::RemoveRequest { deployment_id };
-    let result = ops::remove(&rt, &ctx, &req);
+    let result = resolve_target(&rt, target, TargetKind::Remove).and_then(|deployment_id| {
+        ops::remove(
+            &rt,
+            &ctx,
+            &skill_studio_core::dto::RemoveRequest { deployment_id },
+        )
+    });
     let envelope = ResultEnvelope::from_result(Operation::Remove, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_remove_outcome_table)
 }
 
 /// Moves a universal deployment to the parked root, via `ops::park`.
-fn run_park(scope: &ScopeArgs, deployment_id: &str, json: bool, time: bool) -> ExitCode {
+fn run_park(scope: &ScopeArgs, target: &TargetArgs, json: bool, time: bool) -> ExitCode {
     let rt = match build_runtime_write::<skill_studio_core::dto::ParkOutcome>(
         scope,
         Operation::Park,
@@ -1594,20 +1800,8 @@ fn run_park(scope: &ScopeArgs, deployment_id: &str, json: bool, time: bool) -> E
         Err(code) => return code,
     };
     let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-    let deployment_id = match DeploymentId::parse(deployment_id) {
-        Ok(id) => id,
-        Err(err) => {
-            let envelope = ResultEnvelope::<skill_studio_core::dto::ParkOutcome>::from_result(
-                Operation::Park,
-                &rt.scope,
-                &ctx,
-                Err(err),
-            );
-            return finish(&envelope, json, time, output::print_park_outcome_table);
-        }
-    };
-    let req = ParkRequest { deployment_id };
-    let result = ops::park(&rt, &ctx, &req);
+    let result = resolve_target(&rt, target, TargetKind::Park)
+        .and_then(|deployment_id| ops::park(&rt, &ctx, &ParkRequest { deployment_id }));
     let envelope = ResultEnvelope::from_result(Operation::Park, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_park_outcome_table)
 }
@@ -1645,7 +1839,7 @@ fn run_split(
 }
 
 /// Moves a parked deployment back to the universal root, via `ops::unpark`.
-fn run_unpark(scope: &ScopeArgs, deployment_id: &str, json: bool, time: bool) -> ExitCode {
+fn run_unpark(scope: &ScopeArgs, target: &TargetArgs, json: bool, time: bool) -> ExitCode {
     let rt = match build_runtime_write::<skill_studio_core::dto::UnparkOutcome>(
         scope,
         Operation::Unpark,
@@ -1655,22 +1849,33 @@ fn run_unpark(scope: &ScopeArgs, deployment_id: &str, json: bool, time: bool) ->
         Err(code) => return code,
     };
     let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-    let deployment_id = match DeploymentId::parse(deployment_id) {
-        Ok(id) => id,
-        Err(err) => {
-            let envelope = ResultEnvelope::<skill_studio_core::dto::UnparkOutcome>::from_result(
-                Operation::Unpark,
-                &rt.scope,
-                &ctx,
-                Err(err),
-            );
-            return finish(&envelope, json, time, output::print_unpark_outcome_table);
-        }
-    };
-    let req = UnparkRequest { deployment_id };
-    let result = ops::unpark(&rt, &ctx, &req);
+    let result = resolve_target(&rt, target, TargetKind::Unpark)
+        .and_then(|deployment_id| ops::unpark(&rt, &ctx, &UnparkRequest { deployment_id }));
     let envelope = ResultEnvelope::from_result(Operation::Unpark, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_unpark_outcome_table)
+}
+
+/// Counts each skill's uses over the last `days` days, via
+/// [`skill_studio_host::usage_report`]. Reads the desktop app's use cache
+/// only for the real home, and never writes it.
+fn run_usage(scope: &ScopeArgs, days: u32, json: bool, time: bool) -> ExitCode {
+    let rt =
+        match build_runtime::<skill_studio_host::UsageReport>(scope, Operation::SkillUsage, json) {
+            Ok(rt) => rt,
+            Err(code) => return code,
+        };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let cache = scope.desktop_usage_cache();
+    let result = ops::scan(&rt, &ctx, &ScanRequest::default()).map(|inventory| {
+        skill_studio_host::usage_report(
+            &rt.scope.home.canonical,
+            &inventory,
+            days,
+            cache.as_deref(),
+        )
+    });
+    let envelope = ResultEnvelope::from_result(Operation::SkillUsage, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_usage_table)
 }
 
 /// A [`skill_studio_core::skill_update_check::SourceTreeLookup`],

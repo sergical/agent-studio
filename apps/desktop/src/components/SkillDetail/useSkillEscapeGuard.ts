@@ -8,7 +8,7 @@ import { useEffect, useEffectEvent, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { useAppStore } from "../../store/appStore";
 
-export interface UseSkillEscapeGuard {
+interface UseSkillEscapeGuard {
   pendingDiscard: (() => void) | null;
   setPendingDiscard: Dispatch<SetStateAction<(() => void) | null>>;
 }

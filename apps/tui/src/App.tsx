@@ -33,7 +33,7 @@ const TABS: TabSelectOption[] = [
   { name: "Issues", description: "diagnose output", value: "issues" },
 ];
 
-export interface AppProps {
+interface AppProps {
   transport?: Transport;
   scopeConfig?: ScopeConfig;
   /** Called on `q`. Defaults to a no-op so component tests never exit the process. */

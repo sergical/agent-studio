@@ -186,11 +186,6 @@ const EXPECTED_WRAPPER_COMMANDS = {
     command: "get_add_method_defaults",
     registeredInLibRs: true,
   },
-  installPreferences: {
-    kind: "command",
-    command: "install_preferences",
-    registeredInLibRs: true,
-  },
   parkSkill: { kind: "command", command: "park_skill", registeredInLibRs: true },
   unparkSkill: { kind: "command", command: "unpark_skill", registeredInLibRs: true },
   splitSkill: { kind: "command", command: "split_skill", registeredInLibRs: true },

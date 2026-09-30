@@ -21,7 +21,7 @@ export type Operation =
 export type OpStatus = "ok" | "partial" | "error";
 
 /** `ErrorCode` (`error.rs`), stable wire strings. */
-export type ErrorCode =
+type ErrorCode =
   | "invalid_request"
   | "invalid_scope"
   | "ambiguous_target"
@@ -44,7 +44,7 @@ export interface ErrorEntry {
 }
 
 /** `ScopeKind` (`scope.rs`). */
-export type ScopeKind = "live" | "fixture";
+type ScopeKind = "live" | "fixture";
 
 /** `EffectiveScope` (`scope.rs`). */
 export interface EffectiveScope {
@@ -68,10 +68,10 @@ export interface Envelope<T> {
 }
 
 /** `RootScope` (`identity.rs`): adjacently tagged on `scope`/`project`. */
-export type RootScope = { scope: "global" } | { scope: "project"; project: string };
+type RootScope = { scope: "global" } | { scope: "project"; project: string };
 
 /** `RootKind` (`identity.rs`): adjacently tagged on `kind`/`harness`. */
-export type RootKind =
+type RootKind =
   | { kind: "harness"; harness: string }
   | { kind: "universal" }
   | { kind: "parked" }
@@ -164,10 +164,10 @@ export interface Inventory {
 }
 
 /** `Severity` (`dto.rs`). */
-export type Severity = "off" | "warning" | "error";
+type Severity = "off" | "warning" | "error";
 
 /** `IssueKind` (`dto.rs`). */
-export type IssueKind =
+type IssueKind =
   | "broken_link"
   | "unreadable_link"
   | "spec_violation"

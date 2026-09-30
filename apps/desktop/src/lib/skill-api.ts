@@ -18,8 +18,6 @@ import type {
   BulkTargetResult,
   DiscoverySourceSetting,
   ImportResult,
-  InstallPreferences,
-  InstallScope,
   FixSkillOutcome,
   ForkRecord,
   FrontmatterRepairApplyMode,
@@ -562,25 +560,6 @@ export async function getAddMethodDefaults(
   projectPath: string | null = null,
 ): Promise<AddMethodDefaults> {
   return callCommand("get_add_method_defaults", { projectPath });
-}
-
-/**
- * The saved method/harnesses for `scope` (falling back to the environment
- * default when nothing has been saved yet), so the Add Skill sheet can
- * pre-fill a second install the way `getAddMethodDefaults` pre-fills the
- * first.
- *
- * No screen calls this yet. It stays because lib.rs registers
- * `install_preferences` and command_registration_parity.rs requires a caller
- * here for every registered command.
- *
- * @public
- */
-export async function installPreferences(
-  scope: InstallScope,
-  projectPath?: string,
-): Promise<InstallPreferences> {
-  return callCommand("install_preferences", { scope, projectPath });
 }
 
 // ============================================================================

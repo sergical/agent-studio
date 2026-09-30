@@ -11,12 +11,12 @@ import {
 
 import type { SiteTheme } from "../SiteTheme.stylex";
 
-export type WalkthroughFeature = "map" | "repair" | "install" | "activity";
-export type WalkthroughFormat = "desktop" | "mobile";
+type WalkthroughFeature = "map" | "repair" | "install" | "activity";
+type WalkthroughFormat = "desktop" | "mobile";
 
 // A type alias, not an interface: Remotion needs props assignable to `Record<string, unknown>`,
 // and only an alias gets that implicit index signature.
-export type ProductWalkthroughProps = {
+type ProductWalkthroughProps = {
   feature: WalkthroughFeature;
   format: WalkthroughFormat;
   theme: SiteTheme;

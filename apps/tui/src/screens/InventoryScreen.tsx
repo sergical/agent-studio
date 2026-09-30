@@ -11,7 +11,7 @@ import { useMemo } from "react";
 import type { Inventory } from "../cli-types.ts";
 import { buildSkillRows } from "../inventory-rows.ts";
 
-export interface InventoryScreenProps {
+interface InventoryScreenProps {
   inventory: Inventory;
   onOpenSkill: (skillName: string) => void;
 }

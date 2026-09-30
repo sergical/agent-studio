@@ -1,6 +1,6 @@
 import * as stylex from "@stylexjs/stylex";
 
-export type PaletteId = "mono" | "cobalt" | "ember" | "violet";
+type PaletteId = "mono" | "cobalt" | "ember" | "violet";
 
 export const paletteVars = stylex.defineVars({
   darkBackground: "oklch(0.11 0 0)",

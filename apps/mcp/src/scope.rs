@@ -56,6 +56,19 @@ pub fn resolve() -> (RuntimeScope, PathBuf) {
     (scope, lease_root)
 }
 
+/// The desktop app's use cache, for `skill_usage` to seed from, only when
+/// neither `SKILL_STUDIO_FIXTURE` nor `SKILL_STUDIO_HOME` is set: that cache
+/// indexes the real home's session history, and a refresh over another home
+/// would keep those real uses.
+pub fn desktop_usage_cache() -> Option<PathBuf> {
+    if std::env::var_os("SKILL_STUDIO_FIXTURE").is_some()
+        || std::env::var_os("SKILL_STUDIO_HOME").is_some()
+    {
+        return None;
+    }
+    dirs::data_dir().map(|dir| skill_studio_host::desktop_usage_cache_path(&dir))
+}
+
 /// `SKILL_STUDIO_PROJECT` is a `PATH`-style list of project directories,
 /// split with the platform's path-list separator (`:` on Unix, `;` on
 /// Windows) via [`std::env::split_paths`].

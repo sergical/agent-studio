@@ -15,7 +15,7 @@ import { SOURCE_KIND_LABELS } from "@skill-studio/lib";
  * on/off pairs (e.g. `isLoadingMore` true while `hideInstalledIndicator` is
  * also true) that no call site ever actually produces.
  */
-export type SkillBrowserMode =
+type SkillBrowserMode =
   | {
       kind: "browse";
       isLoading: boolean;

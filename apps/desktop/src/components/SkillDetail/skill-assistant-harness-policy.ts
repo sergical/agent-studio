@@ -8,7 +8,7 @@ import { skillVisibleToAgent } from "@skill-studio/lib";
 import type { HarnessId, InstalledSkill } from "@skill-studio/lib";
 import { HARNESS_LABELS } from "../../lib/harness-labels";
 
-export interface SkillAssistantHarnessPolicy {
+interface SkillAssistantHarnessPolicy {
   defaultHarness: HarnessId;
   items: { value: HarnessId; label: string }[];
 }

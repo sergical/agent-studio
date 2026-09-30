@@ -91,7 +91,7 @@ export function issueActionLabel(kind: HealthIssueKind): string {
   }
 }
 
-export interface UpdateAllTally {
+interface UpdateAllTally {
   attempted: number;
   succeeded: number;
   failures: number;

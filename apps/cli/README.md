@@ -8,6 +8,31 @@ core, so the CLI, the desktop app, and any future MCP server or TUI agree.
 
 ## Commands
 
+`skill-studio --help` lists these:
+
+```
+skill-studio scan       [--home <dir>] [--project <dir>]... [--skill <name>]... [--json]
+skill-studio diagnose   (same flags)
+skill-studio usage      [--days <n>] [--json]
+skill-studio park       <skill> | --id <id>
+skill-studio unpark     <skill> | --id <id>
+skill-studio remove     <skill> | --id <id>
+skill-studio enable     <skill> --agent <agent> [--project-path <dir>]
+skill-studio disable    <skill> --agent <agent> [--project-path <dir>]
+skill-studio mcp
+```
+
+- `park`, `unpark` and `remove` take a skill name. When the name matches
+  more than one copy, the command lists each copy's path and id and exits 2;
+  run it again with `--id`. `scan` prints the id of each copy.
+- `usage` lists skills not used in the last `--days` (default 30) first,
+  then the used ones, then a summary line.
+- `mcp` serves the Skill Studio MCP server over stdio.
+
+`--fixture`, `--timings` and the commands below other than `scan` and
+`diagnose` are hidden from `--help`. They stay for tests and
+tooling.
+
 ```
 skill-studio scan         [--home <dir>] [--project <dir>]... [--fixture <dir>] [--skill <name>]... [--timings] [--json]
 skill-studio diagnose     (same flags)

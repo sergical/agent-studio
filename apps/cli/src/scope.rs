@@ -11,12 +11,13 @@ use skill_studio_core::RuntimeScope;
 #[derive(Args)]
 pub struct ScopeArgs {
     /// Use a fixture directory as the home root instead of the real machine.
-    #[arg(long)]
+    #[arg(long, hide = true)]
     fixture: Option<PathBuf>,
-    /// Home root to scan, instead of the host's home directory.
+    /// Use this folder as the home folder instead of yours.
     #[arg(long)]
     home: Option<PathBuf>,
-    /// Explicit project directories. Without one, projects are discovered.
+    /// Project folder to include. Repeat for more than one. Without it,
+    /// Skill Studio finds your projects for you.
     #[arg(long = "project")]
     projects: Vec<PathBuf>,
     /// Shared-lease wait budget for this call, in milliseconds. Hidden: only
@@ -45,6 +46,16 @@ impl ScopeArgs {
     /// `~/.local/share/skill-studio`).
     pub fn resolve(&self) -> (RuntimeScope, PathBuf) {
         self.resolve_with_extra_project(None)
+    }
+
+    /// The desktop app's use cache, for `usage` to read. `None` under
+    /// `--fixture` or `--home`: the cache indexes the real home's session
+    /// history, so a report over another home would count those real uses.
+    pub fn desktop_usage_cache(&self) -> Option<PathBuf> {
+        if self.fixture.is_some() || self.home.is_some() {
+            return None;
+        }
+        dirs::data_dir().map(|dir| skill_studio_host::desktop_usage_cache_path(&dir))
     }
 
     /// Like [`Self::resolve`], but folds `extra_project` into the scope's

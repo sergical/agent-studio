@@ -23,7 +23,7 @@ type TypeSubstitution = ResolvedType | typeof UNRESOLVED_TYPE_PARAMETER;
 
 type TypeSubstitutionEnvironment = ReadonlyMap<string, TypeSubstitution>;
 
-export type UnsafeDictionary = {
+type UnsafeDictionary = {
 	readonly kind: "unsafe-dictionary";
 	readonly unsafeValue: "any" | "empty-object" | "object" | "union" | "unknown";
 };

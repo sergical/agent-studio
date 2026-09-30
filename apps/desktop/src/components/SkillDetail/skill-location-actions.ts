@@ -72,7 +72,7 @@ interface UseLocationActionsResult {
 
 type SplitLocationRequest = Omit<Extract<LocationAction, { kind: "split" }>, "kind">;
 
-export interface MaterializeLocationRequest {
+interface MaterializeLocationRequest {
   target: LifecycleTarget;
   harness: string;
   harnessLabel: string;

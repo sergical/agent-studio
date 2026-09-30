@@ -123,6 +123,10 @@ pub enum Operation {
     SweepQuarantine,
     /// Replace a Universal folder with one real copy per chosen harness.
     Split,
+    /// Per-skill use counts over a rolling window. No `ops` function backs
+    /// it: the host crate's `usage_report` reads agent session history,
+    /// which the core never touches.
+    SkillUsage,
 }
 
 /// Outcome status of one call.
@@ -7788,6 +7792,7 @@ mod tests {
                 Operation::Outdated,
                 Operation::SweepQuarantine,
                 Operation::Split,
+                Operation::SkillUsage,
             ];
             for operation in all {
                 let expected = match operation {
@@ -7813,6 +7818,7 @@ mod tests {
                     Operation::Outdated => "outdated",
                     Operation::SweepQuarantine => "sweep_quarantine",
                     Operation::Split => "split",
+                    Operation::SkillUsage => "skill_usage",
                 };
                 let value = serde_json::to_value(operation).unwrap();
                 assert_eq!(

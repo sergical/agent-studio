@@ -26,7 +26,7 @@
     },
     "packages/lib": {
       "project": ["src/**/*.{ts,tsx}"],
-      "ignore": ["src/skill-types.generated.ts"]
+      "entry": ["src/skill-types.generated.ts"]
     },
     "packages/ui": {
       "project": ["src/**/*.{ts,tsx}"]

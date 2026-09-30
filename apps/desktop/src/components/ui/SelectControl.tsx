@@ -6,7 +6,7 @@
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@skill-studio/ui";
 
-export interface SelectControlItem {
+interface SelectControlItem {
   value: string;
   label: string;
 }

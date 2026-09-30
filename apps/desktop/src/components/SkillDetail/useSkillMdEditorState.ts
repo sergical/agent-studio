@@ -7,7 +7,7 @@
 import { useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 
-export interface UseSkillMdEditorState {
+interface UseSkillMdEditorState {
   editorOpenedContent: string | null;
   setEditorOpenedContent: Dispatch<SetStateAction<string | null>>;
   isEditing: boolean;
