@@ -230,7 +230,8 @@ export function SkillPage({
   const { deployment, deploymentUnresolved, isDeploymentBroken, skillMdPath, isPluginManaged } =
     resolveSkillPageDeployment(skill, deploymentPath);
 
-  const { selectedFrontmatterRepair, setFrontmatterRepair } = useSkillFrontmatterRepair(deployment);
+  const { selectedFrontmatterRepair, isFrontmatterPreviewSettled, clearFrontmatterRepair } =
+    useSkillFrontmatterRepair(deployment);
 
   const {
     rawContent,
@@ -317,6 +318,7 @@ export function SkillPage({
             skill={skill}
             deployment={deployment ?? undefined}
             frontmatterRepair={selectedFrontmatterRepair}
+            isFrontmatterPreviewSettled={isFrontmatterPreviewSettled}
             skillMdContent={rawContent}
             onQuoteRepair={isPluginManaged ? undefined : handleQuoteRepair}
             onFixYaml={() => setIsFrontmatterRepairOpen(true)}
@@ -395,7 +397,7 @@ export function SkillPage({
           onClose={() => setIsFrontmatterRepairOpen(false)}
           onEditManually={startEditing}
           onApplied={() => {
-            setFrontmatterRepair(null);
+            clearFrontmatterRepair();
             if (skillMdPath) loadContent(skillMdPath, false);
           }}
         />

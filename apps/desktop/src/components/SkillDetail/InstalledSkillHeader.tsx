@@ -21,12 +21,15 @@ import type {
   InstalledSkill,
 } from "@skill-studio/lib";
 import { TooltipControl } from "../ui/TooltipControl";
+import { canOfferLocalQuote } from "./skill-frontmatter-repair-policy";
 
 interface InstalledSkillHeaderProps {
   skill: InstalledSkill;
   /** The deployment whose SKILL.md the page renders - the header's violation line follows it. */
   deployment?: Deployment;
   frontmatterRepair?: FrontmatterRepairPreview | null;
+  /** False while the backend preview is pending; the local quote repair waits for it. */
+  isFrontmatterPreviewSettled?: boolean;
   /** The rendered copy's SKILL.md text; the quote repair and the line hint are derived from it. */
   skillMdContent?: string | null;
   /** Omitted when the rendered copy cannot be edited in place (plugin-managed). */
@@ -52,6 +55,7 @@ export function InstalledSkillHeader({
   skill,
   deployment,
   frontmatterRepair,
+  isFrontmatterPreviewSettled = false,
   skillMdContent,
   onQuoteRepair,
   onFixYaml,
@@ -74,12 +78,16 @@ export function InstalledSkillHeader({
   const hasMalformedYaml = yamlViolation !== undefined;
   const yamlLocation = yamlViolation ? parseYamlFrontmatterError(yamlViolation) : null;
   // A backend "Fix" preview wins; the local quote repair covers what it declines.
+  const canQuote = canOfferLocalQuote({
+    isPreviewSettled: isFrontmatterPreviewSettled,
+    hasPreview: Boolean(frontmatterRepair),
+  });
   const quoteRepair =
-    yamlLocation && skillMdContent && !frontmatterRepair && onQuoteRepair
+    yamlLocation && skillMdContent && canQuote && onQuoteRepair
       ? proposeFrontmatterQuoteRepair(skillMdContent, yamlLocation.line)
       : null;
   const lineHint =
-    yamlLocation && skillMdContent && !frontmatterRepair
+    yamlLocation && skillMdContent && canQuote
       ? describeFrontmatterErrorLine(skillMdContent, yamlLocation.line)
       : null;
   const violationText = quoteRepair
