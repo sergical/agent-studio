@@ -91,5 +91,5 @@ run the change themselves before submitting it.
 
 ## Where to ask
 
-Open a [GitHub issue](https://github.com/sergical/agent-studio/issues) for
+Open a [GitHub issue](https://github.com/sergical/skill-studio/issues) for
 questions, bugs, and feature ideas.
