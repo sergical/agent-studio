@@ -597,6 +597,11 @@ fn update_body(
         backup_targets.push(plan.config.clone());
         backup_targets.push(plan.lock.clone());
     }
+    if req.method == InstallMethod::Copy {
+        // The update rewrites the row's `content_hash` here; undo must put
+        // the old hash back with the old bytes, or the folder reads as unowned.
+        backup_targets.push(ops_install::registry_path(&rt.scope.home.lexical));
+    }
     let manifest = session
         .store
         .backup_paths(&session.guard, &id, &backup_targets)?;
