@@ -98,7 +98,23 @@ impl ProcessSpawner for FakeNpxSpawner {
             .expect("--skill or --name flag with a value")
             .clone();
         let cwd = spec.cwd.clone().unwrap_or_else(|| self.home.clone());
-        let dir = cwd.join(UNIVERSAL_ROOT_RELATIVE).join(&skill);
+        // The real CLI copies into the one folder when every `--agent` shares
+        // it (`uniqueDirs.size <= 1`), and writes no shared copy.
+        let agent_folders: std::collections::BTreeSet<&str> = spec
+            .args
+            .windows(2)
+            .filter(|w| w[0] == "--agent")
+            .map(|w| match w[1].as_str() {
+                "claude-code" => ".claude/skills",
+                "pi" => ".pi/skills",
+                _ => UNIVERSAL_ROOT_RELATIVE,
+            })
+            .collect();
+        let single_folder = agent_folders.len() == 1;
+        let dir = match agent_folders.iter().next() {
+            Some(folder) if single_folder => cwd.join(folder).join(&skill),
+            _ => cwd.join(UNIVERSAL_ROOT_RELATIVE).join(&skill),
+        };
         std::fs::create_dir_all(&dir).unwrap();
         if let Some(trace_files) = &self.trace_files {
             for (relative_path, content) in trace_files {
@@ -119,7 +135,7 @@ impl ProcessSpawner for FakeNpxSpawner {
             .args
             .windows(2)
             .any(|w| w[0] == "--agent" && w[1] == "claude-code");
-        if has_claude_code_agent {
+        if has_claude_code_agent && !single_folder {
             let claude_dir = cwd.join(".claude").join("skills");
             std::fs::create_dir_all(&claude_dir).unwrap();
             let link_path = claude_dir.join(&skill);
@@ -891,6 +907,48 @@ fn skills_sh_project_install_leaves_a_skipped_pi_out_of_the_cli_agents_or_names_
         "pi must be reported as skipped: {results:?}"
     );
 
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `skills_sh_project_install_with_one_served_harness_copies_into_its_folder_or_names_the_missing_destination`:
+/// `add --harness claude-code --harness pi` in a project with no `.pi`. The
+/// plan skips pi, so only the Claude Code folder is served. The skills CLI
+/// sees one distinct folder and copies into `.claude/skills/<name>` on its
+/// own, so core must expect a copy there. Fails when core still expects
+/// a shared copy plus a link: the install errors with "the CLI did not create
+/// the expected destination".
+#[test]
+fn skills_sh_project_install_with_one_served_harness_copies_into_its_folder_or_names_the_missing_destination(
+) {
+    let home = unique_temp_dir("install_skills_sh_one_served");
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
+    let rt = runtime_with(&home, Arc::new(RealFs::new()), Some(spawner));
+    let mut req = cli_request("one-served", InstallMethod::SkillsSh);
+    req.harnesses = vec![
+        AgentId::from(AgentId::CLAUDE_CODE),
+        AgentId::from(AgentId::PI),
+    ];
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+
+    let outcome = ops::install(&rt, &ctx(), &req).expect("the install must succeed");
+
+    let InstallOutcome::Installed {
+        deployment_path, ..
+    } = outcome
+    else {
+        panic!("expected Installed");
+    };
+    assert_eq!(
+        deployment_path,
+        project.join(".claude/skills/one-served"),
+        "the one served harness holds the real copy"
+    );
+    assert!(
+        deployment_path.join("SKILL.md").exists(),
+        "the copy must hold the skill"
+    );
     std::fs::remove_dir_all(&home).ok();
 }
 

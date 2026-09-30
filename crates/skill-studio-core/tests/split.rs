@@ -171,6 +171,58 @@ fn split_to_claude_and_codex_leaves_only_two_real_copies_in_the_scan() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// Flow: `gamma` is off in Codex through a `[[skills.config]]` row that names
+/// the Universal `SKILL.md`. Split it to Claude Code and Codex. Expect the
+/// new Codex copy to be off too, and the Claude copy to stay untouched: a
+/// split must not turn a skill on that the user switched off. Fails when the
+/// Codex copy is on, because Codex keys its rows by path and the row still
+/// names the folder the split moved away.
+#[test]
+fn split_keeps_a_skill_off_in_codex_off_for_the_new_codex_copy_or_names_the_path_left_on() {
+    let home = unique_temp_dir("split_codex_off");
+    splittable_home(&home);
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(
+        home.join(".codex/config.toml"),
+        format!(
+            "model = \"o3\"\n\n[[skills.config]]\npath = \"{}\"\nenabled = false\n",
+            universal(&home).join("SKILL.md").display()
+        ),
+    )
+    .unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+
+    ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["claude-code", "codex"]),
+        },
+    )
+    .unwrap();
+
+    let fs = RealFs::new();
+    let off = ops::codex_disabled_skill_md_paths(&fs, &home.join(".codex"));
+    assert!(
+        off.contains(&ops::codex_path_form(
+            &fs,
+            &codex_copy(&home).join("SKILL.md")
+        )),
+        "the Codex copy must stay off after the split, off paths: {off:?}"
+    );
+    assert!(
+        !off.contains(&ops::codex_path_form(
+            &fs,
+            &claude_copy(&home).join("SKILL.md")
+        )),
+        "no row may name the Claude copy: {off:?}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// Flow: split, then undo the split event. Expect the Universal folder and
 /// both links back, and the copies gone. Catches an undo that writes the
 /// Universal folder back but leaves the copies (the Claude copy would block

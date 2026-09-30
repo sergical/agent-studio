@@ -2309,6 +2309,33 @@ pub(crate) fn codex_rewrite_skill_path(
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
+/// Adds a disabled `[[skills.config]]` row for `new_skill_md` when `old_skill_md`
+/// is off in Codex's config, and leaves the old row where it is so an undo
+/// still finds it. A no-op when the old path is not off, or the new one
+/// already is.
+///
+/// `ops::split` calls this for the Codex copy it writes: Codex keys its rows
+/// by path, so the copy would otherwise start on.
+pub(crate) fn codex_carry_disabled_row(
+    rt: &Runtime,
+    guard: &ExclusiveGuard,
+    old_skill_md: &Path,
+    new_skill_md: &Path,
+) -> Result<(), CoreError> {
+    let fs = rt.ports.fs.as_ref();
+    let codex_home = &rt.scope.codex_home;
+    let mut doc = read_codex_config_document(fs, codex_home)?;
+    let off = codex_disabled_forms(fs, &doc);
+    if !off.contains(&codex_path_form(fs, old_skill_md))
+        || off.contains(&codex_path_form(fs, new_skill_md))
+    {
+        return Ok(());
+    }
+    codex_write_disabled_row(fs, &mut doc, new_skill_md, true)
+        .map_err(|e| e.at(codex_config_path(codex_home)))?;
+    codex_write_config_document(rt, fs, guard, codex_home, &doc)
+}
+
 fn codex_write_config_document(
     rt: &Runtime,
     fs: &dyn ScopeFs,
@@ -2324,7 +2351,7 @@ fn codex_write_config_document(
     let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
     fs.create_dir_all(guard, &scoped_parent)
         .map_err(|e| CoreError::io(&parent, e))?;
-    let scoped_path = crate::ports::confine(&rt.scope, fs, &path)?;
+    let scoped_path = crate::ports::confine_write_through(&rt.scope, fs, &path)?;
     fs.write_atomic(guard, &scoped_path, doc.to_string().as_bytes())
         .map_err(|e| CoreError::io(&path, e))
 }
@@ -5288,14 +5315,17 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
         .iter()
         .map(|link| crate::ports::confine(&rt.scope, fs, link))
         .collect::<Result<Vec<_>, _>>()?;
-    let link_targets: serde_json::Map<String, serde_json::Value> = links
+    let link_pairs: Vec<(PathBuf, PathBuf)> = links
         .iter()
-        .filter_map(|link| {
-            let target = fs.read_link(link).ok()?;
-            Some((
+        .filter_map(|link| fs.read_link(link).ok().map(|target| (link.clone(), target)))
+        .collect();
+    let link_targets: serde_json::Map<String, serde_json::Value> = link_pairs
+        .iter()
+        .map(|(link, target)| {
+            (
                 link.to_string_lossy().into_owned(),
                 serde_json::Value::String(target.to_string_lossy().into_owned()),
-            ))
+            )
         })
         .collect();
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
@@ -5367,6 +5397,15 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
         )
     })();
     if let Err(e) = write_result {
+        // While the folder is still at its own path, the links that came
+        // down are the only change left to undo.
+        if fs.symlink_metadata(&deployment.path).is_ok() {
+            for (link, target) in &link_pairs {
+                if fs.symlink_metadata(link).is_err() {
+                    let _ = recreate_link(rt, &session.guard, link, target);
+                }
+            }
+        }
         let _ = session.store.finish(
             &session.guard,
             &id,
@@ -5667,7 +5706,17 @@ fn set_harness_enabled_body(
             req.enabled,
         )?,
         AgentId::OPEN_CODE => {
-            set_opencode_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?
+            set_opencode_switch(
+                rt,
+                &mut session,
+                fs,
+                &home,
+                req.project_path.as_deref(),
+                &skill,
+                &id,
+                kind,
+                req.enabled,
+            )?
         }
         other => {
             return Err(CoreError::new(
@@ -5916,7 +5965,7 @@ const CLAUDE_OVERRIDE_BEFORE_KEY: &str = "skill_override_before";
 /// value its last off replaced.
 const CLAUDE_OVERRIDE_HISTORY_LIMIT: u32 = 200;
 
-/// The `skillOverrides` value the newest completed Claude Code off replaced,
+/// The `skillOverrides` value the newest completed, not undone Claude Code off replaced,
 /// so an on puts it back (`"user-invocable-only"`, say) instead of dropping
 /// it. `None` - remove the key - when there was no entry, when the newest
 /// settings write for this skill was itself an on, or when no event records
@@ -5935,6 +5984,7 @@ fn claude_override_before_last_off(
         .ok()?;
     let last_write = events.iter().find(|e| {
         e.status == crate::events::EventStatus::Done
+            && e.reverted_by.is_none()
             && e.harness
                 .as_ref()
                 .is_some_and(|h| h.as_str() == AgentId::CLAUDE_CODE)
@@ -5976,7 +6026,11 @@ fn is_codex_visible_root(kind: &RootKind) -> bool {
 
 /// One `SKILL.md` path per distinct file Codex loads for `skill`, sorted for
 /// a deterministic write order.
-fn codex_skill_md_paths(fs: &dyn ScopeFs, skill: &InstalledSkillDto) -> Vec<PathBuf> {
+fn codex_skill_md_paths(
+    fs: &dyn ScopeFs,
+    skill: &InstalledSkillDto,
+    project_path: Option<&Path>,
+) -> Vec<PathBuf> {
     // `scan` groups every harness's copy of a skill under one
     // `InstalledSkillDto`, so without the `is_codex_visible_root` filter
     // this also picked up deployments at roots Codex never reads - a Claude
@@ -5989,6 +6043,13 @@ fn codex_skill_md_paths(fs: &dyn ScopeFs, skill: &InstalledSkillDto) -> Vec<Path
         .deployments
         .iter()
         .filter(|d| is_codex_visible_root(&d.root.kind))
+        // A project row's switch stays with that project's copies: Codex
+        // keys rows by path, so the global and other projects' copies keep
+        // their own state.
+        .filter(|d| match (project_path, &d.root.scope) {
+            (Some(project), scope) => matches!(scope, RootScope::Project(p) if p.0 == project),
+            (None, _) => true,
+        })
         .map(|d| d.path.join("SKILL.md"))
         .collect();
     paths.sort();
@@ -6013,7 +6074,7 @@ fn set_codex_switch(
     (id, kind): (&EventId, crate::events::EventKind),
     enabled: bool,
 ) -> Result<(u32, u32), CoreError> {
-    let paths = codex_skill_md_paths(fs, skill);
+    let paths = codex_skill_md_paths(fs, skill, project_path);
     let total = u32::try_from(paths.len()).unwrap_or(u32::MAX);
     if paths.is_empty() {
         return Err(CoreError::new(
@@ -6221,11 +6282,18 @@ fn set_opencode_switch(
     session: &mut crate::ports::MutationSession,
     fs: &dyn ScopeFs,
     home: &Path,
+    project_path: Option<&Path>,
     skill: &InstalledSkillDto,
     id: &EventId,
     kind: crate::events::EventKind,
     enabled: bool,
 ) -> Result<(u32, u32), CoreError> {
+    if project_path.is_some() {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            "OpenCode's off switch is a rule in opencode.json, which every project reads; switch the skill from its Global row",
+        ));
+    }
     refuse_opencode_name_collision(skill)?;
     let config_dir = rt
         .scope

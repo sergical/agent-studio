@@ -73,8 +73,9 @@ use crate::ports::{
 /// project-scope update (`commands.rs`'s `run_update_skill`:
 /// `command.current_dir(project_path)`), the same fix `install`'s own
 /// `cli_args_and_cwd` carries for a project-scope install (`skills@1.7.0`
-/// has neither a `--cwd` nor a `--project` flag; `add`/`update`/`remove`
-/// all run in the project directory as the process's own cwd instead).
+/// has no `--cwd` flag). `skills update` without a scope flag means scope
+/// "both", so a project update names `--project` to leave the global copy of
+/// the same name alone.
 fn update_cli_args_and_cwd(
     method: InstallMethod,
     skill: &SkillName,
@@ -87,9 +88,13 @@ fn update_cli_args_and_cwd(
     match method {
         InstallMethod::SkillsSh => {
             let mut args = vec!["skills".to_string(), "update".to_string(), skill.0.clone()];
-            if matches!(scope, RootScope::Global) {
-                args.push("--global".to_string());
-            }
+            args.push(
+                match scope {
+                    RootScope::Global => "--global",
+                    RootScope::Project(_) => "--project",
+                }
+                .to_string(),
+            );
             (args, cwd)
         }
         InstallMethod::Dotagents => {
@@ -110,6 +115,8 @@ struct DotagentsPlan {
     /// real file and the link survives.
     config: PathBuf,
     lock: PathBuf,
+    /// `agents.toml` as read, written back when the install fails.
+    original_config: String,
     /// The edited `agents.toml` text to write once the row is recorded;
     /// `None` when no new ref is pinned.
     edited_config: Option<String>,
@@ -183,6 +190,7 @@ fn plan_dotagents_update(
     Ok(DotagentsPlan {
         config,
         lock: dir.join("agents.lock"),
+        original_config: text,
         edited_config: pinned.map(|()| doc.to_string()),
     })
 }
@@ -488,15 +496,32 @@ fn update_write(
                 }
             }
             let held_before = harness_dirs_holding(rt, &req.scope, &req.skill);
-            update_via_cli(rt, ctx, req, destination)?;
-            if req.method == InstallMethod::SkillsSh {
-                remove_links_the_cli_added(
-                    rt,
-                    &session.guard,
-                    &req.scope,
-                    &req.skill,
-                    &held_before,
-                )?;
+            let refreshed = update_via_cli(rt, ctx, req, destination).and_then(|()| {
+                if req.method == InstallMethod::SkillsSh {
+                    remove_links_the_cli_added(
+                        rt,
+                        &session.guard,
+                        &req.scope,
+                        &req.skill,
+                        &held_before,
+                    )?;
+                }
+                Ok(())
+            });
+            if let Err(e) = refreshed {
+                if let Some(plan) = dotagents.filter(|p| p.edited_config.is_some()) {
+                    // Best effort: the original error is the one to report.
+                    let _ = crate::ports::confine_write_through(&rt.scope, fs, &plan.config).map(
+                        |scoped| {
+                            fs.write_atomic(
+                                &session.guard,
+                                &scoped,
+                                plan.original_config.as_bytes(),
+                            )
+                        },
+                    );
+                }
+                return Err(e);
             }
             Ok(())
         }
@@ -571,6 +596,11 @@ fn update_body(
     if let Some(plan) = &dotagents {
         backup_targets.push(plan.config.clone());
         backup_targets.push(plan.lock.clone());
+    }
+    if req.method == InstallMethod::Copy {
+        // The update rewrites the row's `content_hash` here; undo must put
+        // the old hash back with the old bytes, or the folder reads as unowned.
+        backup_targets.push(ops_install::registry_path(&rt.scope.home.lexical));
     }
     let manifest = session
         .store
@@ -713,6 +743,22 @@ mod tests {
     use super::*;
     use crate::identity::ProjectRef;
 
+    /// `project_skills_sh_update_names_the_project_scope_or_also_updates_the_global_copy`:
+    /// `skills update <name>` with no scope flag means scope "both" in
+    /// skills 1.7.0, so it also rewrites `~/.agents/skills/<name>`. A
+    /// project-scope update must pass `--project` and never `--global`. Fails
+    /// when the flag is missing: the global copy of the same name changes too.
+    #[test]
+    fn project_skills_sh_update_names_the_project_scope_or_also_updates_the_global_copy() {
+        let skill = SkillName("alpha".to_string());
+        let project = RootScope::Project(ProjectRef(PathBuf::from("/proj")));
+
+        let (args, _) = update_cli_args_and_cwd(InstallMethod::SkillsSh, &skill, &project);
+
+        assert!(args.contains(&"--project".to_string()), "argv: {args:?}");
+        assert!(!args.contains(&"--global".to_string()), "argv: {args:?}");
+    }
+
     /// `update_cli_args_and_cwd_builds_skills_update_or_dotagents_install_and_never_dotagents_add`:
     /// table test over {global, project} x {`SkillsSh`, `Dotagents`}. Fails
     /// if dotagents ever goes back to `add`, which breaks on repos whose
@@ -742,7 +788,7 @@ mod tests {
                 "skills.sh project",
                 InstallMethod::SkillsSh,
                 &project,
-                vec!["skills", "update", "alpha"],
+                vec!["skills", "update", "alpha", "--project"],
                 Some(PathBuf::from("/proj")),
             ),
             (

@@ -13,10 +13,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use skill_studio_core::dto::{
-    InstallFile, InstallMethod, ListEventsRequest, RestoreRequest, UpdateOutcome, UpdateRequest,
+    InstallFile, InstallLinkMode, InstallMethod, InstallRequest, ListEventsRequest, RestoreRequest,
+    ScanRequest, UpdateOutcome, UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
-use skill_studio_core::identity::{RootScope, SkillName};
+use skill_studio_core::identity::{AgentId, LifecycleOwnerKind, RootScope, SkillName};
 use skill_studio_core::ops;
 use skill_studio_core::ports::{
     CancelToken, MutationSession, Ports, ProcessOutput, ProcessSpawner, ProcessSpec, Runtime,
@@ -865,6 +866,111 @@ fn a_failed_cli_update_says_which_command_failed_with_the_tool_line_and_no_npm_c
 
         std::fs::remove_dir_all(&home).ok();
     }
+}
+
+/// Flow: install a Copy skill, update it to new bytes, then undo the update.
+/// Expectation: the scan still classifies the restored folder as a `Copy`
+/// deployment, because the registry's `content_hash` for it went back with
+/// the bytes. Failure here means undo left the hash of the new bytes in the
+/// registry, so the restored folder reads as unowned and loses its update
+/// path.
+#[test]
+fn undo_of_a_copy_update_keeps_the_skill_owned_as_a_copy_or_names_the_stale_content_hash() {
+    let home = unique_temp_dir("update_undo_copy_owner");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home, "v2");
+    let files = |revision: &str| {
+        vec![InstallFile {
+            relative_path: PathBuf::from("SKILL.md"),
+            contents: format!(
+                "---\nname: eta\ndescription: a copied skill\n---\nBody at {revision}.\n"
+            )
+            .into_bytes(),
+            mode: None,
+        }]
+    };
+    ops::install(
+        &rt,
+        &ctx(),
+        &InstallRequest {
+            skill: SkillName("eta".to_string()),
+            method: InstallMethod::Copy,
+            scope: RootScope::Global,
+            harnesses: vec![AgentId::from("universal")],
+            files: files("v1"),
+            source: None,
+            trust_identity: None,
+            trust_confirmed: false,
+            save_as_preference: false,
+            link_mode: InstallLinkMode::Link,
+        },
+    )
+    .unwrap();
+    let owner_kinds = |rt: &Runtime| {
+        ops::scan(rt, &ctx(), &ScanRequest::default())
+            .unwrap()
+            .skills
+            .iter()
+            .filter(|s| s.name.0 == "eta")
+            .flat_map(|s| s.deployments.iter().map(|d| d.owner_kind))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        owner_kinds(&rt),
+        vec![LifecycleOwnerKind::Copy],
+        "setup: a fresh Copy install is owned as a Copy"
+    );
+
+    let mut req = copy_request("eta", "v2");
+    req.files = files("v2");
+    let outcome = ops::update(&rt, &ctx(), &req).unwrap();
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        owner_kinds(&rt),
+        vec![LifecycleOwnerKind::Copy],
+        "after undoing the update the folder must still be owned as a Copy"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: a dotagents update pins `delta` to a new ref, and `dotagents
+/// install` fails. Expectation: `agents.toml` holds its original bytes,
+/// including the old `ref`. Failure here means a failed update leaves the
+/// declaration pinned to a ref that never installed, so the next
+/// `dotagents install` fetches it.
+#[test]
+fn a_failed_dotagents_update_leaves_agents_toml_on_its_old_ref_or_names_the_pin_left_behind() {
+    let home = unique_temp_dir("update_dotagents_failed_pin");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "delta", "v1");
+    seed_dotagents_files(&home, DECLARED_TOML);
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(FailingNpxSpawner)),
+    );
+    let mut req = cli_request("delta", InstallMethod::Dotagents);
+    req.ref_pin = Some("bbb".to_string());
+
+    ops::update(&rt, &ctx(), &req).unwrap_err();
+
+    assert_eq!(
+        std::fs::read_to_string(home.join(".agents/agents.toml")).unwrap(),
+        DECLARED_TOML,
+        "the failed install left agents.toml pinned to the new ref"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
 }
 
 /// Flow: a global skills.sh update over a skill only the Universal folder

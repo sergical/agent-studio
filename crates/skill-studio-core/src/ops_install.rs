@@ -425,7 +425,32 @@ fn install_body(
     let harnesses = install_targets::requested_harnesses(&req.harnesses);
     let mode =
         install_targets::effective_link_mode(req.method, &harnesses, &req.scope, req.link_mode)?;
-    let plan = install_targets::plan_install(fs, &root, &req.scope, &req.skill, &harnesses, mode)?;
+    let mut plan =
+        install_targets::plan_install(fs, &root, &req.scope, &req.skill, &harnesses, mode)?;
+    // A skipped harness never reaches the skills CLI, so its folder must not
+    // count toward the link mode: the CLI copies when it sees one distinct
+    // folder. The native `Copy` method keeps the requested set's mode.
+    let served_mode = if req.method == InstallMethod::SkillsSh {
+        install_targets::effective_link_mode(
+            req.method,
+            &plan.served_harnesses(),
+            &req.scope,
+            req.link_mode,
+        )?
+    } else {
+        mode
+    };
+    if served_mode != mode {
+        plan = install_targets::plan_install(
+            fs,
+            &root,
+            &req.scope,
+            &req.skill,
+            &harnesses,
+            served_mode,
+        )?;
+    }
+    let mode = plan.mode;
     let destination = plan
         .primary_path()
         .ok_or_else(|| {

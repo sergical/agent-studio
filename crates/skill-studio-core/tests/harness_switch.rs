@@ -1002,6 +1002,84 @@ fn project_scoped_claude_code_disable_is_refused_and_writes_nothing_or_names_the
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// `project_scoped_codex_switch_changes_only_the_project_copy_or_names_the_row_it_wrote_elsewhere`:
+/// `gamma` is installed globally and in one project. Switching it off for
+/// Codex from the project row must add a row for the project's `SKILL.md`
+/// only. Fails when the global copy's path gets a row too: the switch on one
+/// project would turn the skill off everywhere.
+#[test]
+fn project_scoped_codex_switch_changes_only_the_project_copy_or_names_the_row_it_wrote_elsewhere() {
+    let home = unique_temp_dir("codex_project_scope");
+    install_universal_skill(&home, "gamma");
+    let project = home.join("proj");
+    install_project_universal_skill(&project, "gamma");
+    let rt = runtime_with(&home, vec![project.clone()], Arc::new(RealFs::new()));
+
+    ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::CODEX),
+            enabled: false,
+            project_path: Some(project.clone()),
+        },
+    )
+    .unwrap();
+
+    let fs = RealFs::new();
+    let off = ops::codex_disabled_skill_md_paths(&fs, &home.join(".codex"));
+    let form = |dir: &Path| ops::codex_path_form(&fs, &dir.join("gamma/SKILL.md"));
+    assert!(
+        off.contains(&form(&project.join(UNIVERSAL_ROOT_RELATIVE))),
+        "the project copy must be off: {off:?}"
+    );
+    assert!(
+        !off.contains(&form(&home.join(UNIVERSAL_ROOT_RELATIVE))),
+        "the global copy must stay on: {off:?}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `project_scoped_opencode_switch_is_refused_and_writes_nothing_or_names_the_global_config_it_changed`:
+/// `OpenCode`'s off switch is a rule in the global `opencode.json`, which every
+/// project reads, so a switch from a project row would change the skill
+/// everywhere. It must be refused with `Unsupported`, and no config written.
+#[test]
+fn project_scoped_opencode_switch_is_refused_and_writes_nothing_or_names_the_global_config_it_changed(
+) {
+    let home = unique_temp_dir("opencode_project_scope");
+    let project = home.join("proj");
+    install_project_universal_skill(&project, "gamma");
+    let rt = runtime_with(&home, vec![project.clone()], Arc::new(RealFs::new()));
+
+    let err = ops::set_harness_enabled(
+        &rt,
+        &ctx(),
+        &SetHarnessEnabledRequest {
+            skill: SkillName("gamma".into()),
+            harness: AgentId::from(AgentId::OPEN_CODE),
+            enabled: false,
+            project_path: Some(project.clone()),
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Unsupported);
+    assert!(
+        err.message.contains("opencode.json"),
+        "the refusal should name the shared file, got: {}",
+        err.message
+    );
+    assert!(
+        std::fs::symlink_metadata(home.join(".config/opencode/opencode.json")).is_err(),
+        "a refused project-scoped switch must not write the shared opencode.json"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `disabling_a_skill_already_off_in_claude_settings_records_no_undo_or_names_the_bytes_undo_would_rewrite`:
 /// `gamma` is already `"off"` in `skillOverrides`; switching it off again is
 /// a no-op, so the file's bytes stay as they were and the journal row
@@ -1290,6 +1368,49 @@ fn claude_code_on_restores_the_override_the_off_replaced_or_names_the_value_it_d
         claude_override(&home, "gamma"),
         "user-invocable-only",
         "on should restore the value off replaced, not drop it"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `claude_code_on_after_an_undone_on_still_restores_the_users_override_or_names_the_value_it_dropped`:
+/// `gamma` starts as `"user-invocable-only"`. Flow: off, on, undo the on,
+/// on again. The undo puts `"off"` back, so the next on must still restore
+/// the user's own value: the last off that was not reverted is the one that
+/// replaced it. Fails when the second on drops the key, which means the
+/// undone on hid the earlier off's record.
+#[test]
+fn claude_code_on_after_an_undone_on_still_restores_the_users_override_or_names_the_value_it_dropped(
+) {
+    let home = unique_temp_dir("claude_on_after_undone_on");
+    install_universal_skill(&home, "gamma");
+    install_claude_link(&home, "gamma");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::write(
+        claude_settings_path(&home),
+        r#"{"model":"x","skillOverrides":{"gamma":"user-invocable-only"}}"#,
+    )
+    .unwrap();
+    let rt = runtime_for(&home);
+
+    ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", false)).unwrap();
+    let on = ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: on.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(claude_override(&home, "gamma"), "off");
+    ops::set_harness_enabled(&rt, &ctx(), &claude_request("gamma", true)).unwrap();
+
+    assert_eq!(
+        claude_override(&home, "gamma"),
+        "user-invocable-only",
+        "the on after an undone on should restore the value the off replaced"
     );
 
     std::fs::remove_dir_all(&home).ok();

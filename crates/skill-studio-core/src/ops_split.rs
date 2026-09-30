@@ -2,8 +2,9 @@
 //! chosen harness's own skills folder.
 //!
 //! Harnesses the caller does not choose lose the skill: the Universal folder
-//! and every per-skill link into it go away. The op writes no harness config
-//! (a native off switch set before the split stays as it was) and never
+//! and every per-skill link into it go away. A Codex copy keeps the skill off
+//! when Codex's config turned the Universal folder off (its rows are keyed by
+//! path). The op writes no other harness config and never
 //! touches `.skill-lock.json`, so `npx skills update` keeps pointing at a
 //! Universal copy that no longer exists.
 
@@ -367,6 +368,14 @@ fn write_split(
         let root = copy.path.parent().unwrap_or(&copy.path);
         crate::ops::ensure_dir_all(rt, session, fs, root)?;
         crate::ops::restore_write_dir(rt, &session.guard, &copy.path, writes.files)?;
+        if copy.harness.as_str() == AgentId::CODEX {
+            crate::ops::codex_carry_disabled_row(
+                rt,
+                &session.guard,
+                &writes.universal.join("SKILL.md"),
+                &copy.path.join("SKILL.md"),
+            )?;
+        }
     }
     crate::ops::ensure_dir_all(rt, session, fs, writes.quarantine_dir)?;
     let scoped_from = crate::ports::confine(&rt.scope, fs, writes.universal)?;
