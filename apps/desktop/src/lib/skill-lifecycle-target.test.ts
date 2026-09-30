@@ -3,13 +3,18 @@ import {
   lifecycleTargetForDeployment,
   lifecycleTargetForHarnessRoot,
   lifecycleTargetForSkill,
-  skillGlobalRemovalTarget,
+  skillCanPark,
+  skillParkVerb,
   skillLifecycleScopeSelection,
   skillMutableLifecycleScopes,
   skillRemovalAvailability,
+  skillRemovalBlockedReason,
+  skillRemovalChoices,
+  skillRemovalEmptiesSkill,
   skillRemovalDescription,
   skillRemovalPreview,
   skillUpdateOwnerTargets,
+  skillUpdateToast,
   updateSkillOwners,
 } from "./skill-lifecycle-target";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
@@ -36,6 +41,13 @@ function deployment(id: string, ownerId?: string, projectPath?: string): Deploym
     spec_violations: [],
     shared_via_whole_dir_link: false,
   };
+}
+
+function globalRemovalTarget(skill: Pick<InstalledSkill, "name" | "deployments" | "source_kind">) {
+  return (
+    skillRemovalChoices(skill).find((choice) => choice.selection.scope === "global")?.preview
+      .target ?? null
+  );
 }
 
 describe("lifecycleTargetForSkill", () => {
@@ -238,6 +250,29 @@ describe("lifecycleTargetForSkill", () => {
 });
 
 describe("skill update owner targets", () => {
+  it("skips an owner whose deployments are all read-only, because the backend refuses to update it; fails if Home offers a wildcard-dotagents owner", () => {
+    // SAFETY: skillUpdateOwnerTargets reads only `owner_id` and `mutability`.
+    const deployment = (owner_id: string, mutability: Deployment["mutability"]) =>
+      ({ owner_id, mutability }) as Deployment;
+    const update = (owner_id: string) => ({
+      owner_id,
+      latest_commit: "next",
+      latest_commit_at: null,
+    });
+
+    expect(
+      skillUpdateOwnerTargets({
+        update_owner_ids: ["owner:v1/global/wild", "owner:v1/global/sh"],
+        update_owners: [update("owner:v1/global/wild"), update("owner:v1/global/sh")],
+        deployments: [
+          deployment("owner:v1/global/wild", "read-only"),
+          deployment("owner:v1/global/sh", "read-only"),
+          deployment("owner:v1/global/sh", "mutable"),
+        ],
+      }),
+    ).toEqual([{ owner_id: "owner:v1/global/sh" }]);
+  });
+
   it("keeps a project-only update on its exact owner", () => {
     expect(
       skillUpdateOwnerTargets({
@@ -277,7 +312,38 @@ describe("skill update owner targets", () => {
   });
 });
 
-describe("skillGlobalRemovalTarget", () => {
+describe("skillUpdateToast", () => {
+  const failure = { ownerId: "owner:v1/project/%2Fp/x", message: "project update failed" };
+
+  it("names the skill alone when every copy updated, or names the count that leaked in", () => {
+    expect(skillUpdateToast("find-bugs", { attempted: 2, succeeded: 2, failures: [] })).toEqual({
+      type: "success",
+      title: "Updated find-bugs",
+    });
+  });
+
+  it("reports how many copies updated when only some did, or hides the failed ones", () => {
+    expect(
+      skillUpdateToast("find-bugs", { attempted: 2, succeeded: 1, failures: [failure] }),
+    ).toEqual({
+      type: "warning",
+      title: "Updated 1 of 2 copies of find-bugs",
+      message: "project update failed",
+    });
+  });
+
+  it("reports an error with the failure text when no copy updated, or reads as a success", () => {
+    expect(
+      skillUpdateToast("find-bugs", { attempted: 1, succeeded: 0, failures: [failure] }),
+    ).toEqual({
+      type: "error",
+      title: "Could not update find-bugs",
+      message: "project update failed",
+    });
+  });
+});
+
+describe("skillRemovalChoices global target", () => {
   function skill(
     deployments: Deployment[],
     sourceKind: InstalledSkill["source_kind"] = "skills-sh",
@@ -290,7 +356,7 @@ describe("skillGlobalRemovalTarget", () => {
   }
 
   it("returns an exact global owner target", () => {
-    expect(skillGlobalRemovalTarget(skill([deployment("global", "owner:v1/global/x")]))).toEqual({
+    expect(globalRemovalTarget(skill([deployment("global", "owner:v1/global/x")]))).toEqual({
       owner_id: "owner:v1/global/x",
     });
   });
@@ -301,7 +367,7 @@ describe("skillGlobalRemovalTarget", () => {
       owner_kind: "copy" as const,
     };
 
-    expect(skillGlobalRemovalTarget(skill([copy], "manual"))).toEqual({
+    expect(globalRemovalTarget(skill([copy], "manual"))).toEqual({
       deployment_id: "global-copy",
     });
   });
@@ -329,19 +395,101 @@ describe("skillGlobalRemovalTarget", () => {
       mutability: "read-only" as const,
     };
 
-    expect(skillGlobalRemovalTarget(skill([projectOnly]))).toBeNull();
-    expect(skillGlobalRemovalTarget(skill([plugin], "plugin"))).toBeNull();
-    expect(skillGlobalRemovalTarget(skill([parked]))).toBeNull();
-    expect(skillGlobalRemovalTarget(skill([manual], "manual"))).toBeNull();
-    expect(skillGlobalRemovalTarget(skill([ambiguous], "dotagents"))).toBeNull();
-    expect(skillGlobalRemovalTarget(skill([]))).toBeNull();
+    expect(globalRemovalTarget(skill([projectOnly]))).toBeNull();
+    expect(globalRemovalTarget(skill([plugin], "plugin"))).toBeNull();
+    expect(globalRemovalTarget(skill([parked]))).toBeNull();
+    expect(globalRemovalTarget(skill([manual], "manual"))).toBeNull();
+    expect(globalRemovalTarget(skill([ambiguous], "dotagents"))).toBeNull();
+    expect(globalRemovalTarget(skill([]))).toBeNull();
   });
 
   it("rejects a global scope with multiple mutable owners", () => {
     expect(
-      skillGlobalRemovalTarget(
-        skill([deployment("one", "owner:one"), deployment("two", "owner:two")]),
-      ),
+      globalRemovalTarget(skill([deployment("one", "owner:one"), deployment("two", "owner:two")])),
     ).toBeNull();
+  });
+});
+
+describe("skill page header removal and park choices", () => {
+  const view = (deployments: Deployment[]) =>
+    ({ name: "x", source_kind: "skills-sh", deployments }) satisfies Pick<
+      InstalledSkill,
+      "name" | "deployments" | "source_kind"
+    >;
+  const global = deployment("global", "owner:v1/global/x");
+  const project = deployment("project", "owner:v1/project/remix/x", "/code/remix");
+  const inRepo = {
+    ...deployment("in-repo", undefined, "/code/remix"),
+    owner_kind: "in-repo" as const,
+    mutability: "read-only" as const,
+  };
+
+  it("labels Remove by scope so a project uninstall never reads as a global one", () => {
+    const labels = (deployments: Deployment[]) =>
+      skillRemovalChoices(view(deployments)).map((choice) => choice.label);
+
+    expect(labels([global])).toEqual(["Remove"]);
+    expect(labels([project])).toEqual(["Remove from remix"]);
+    expect(labels([global, project])).toEqual(["Remove global install", "Remove from remix"]);
+  });
+
+  it("tells two projects with the same folder name apart, so Remove never targets the wrong one", () => {
+    const clientA = deployment("a", "owner:v1/project/a/x", "/work/client-a/app");
+    const clientB = deployment("b", "owner:v1/project/b/x", "/work/client-b/app");
+    const choices = skillRemovalChoices(view([clientA, clientB]));
+
+    expect(choices.map((choice) => choice.label)).toEqual([
+      "Remove from client-a/app",
+      "Remove from client-b/app",
+    ]);
+    expect(choices.map((choice) => choice.key)).toEqual([
+      "project:/work/client-a/app",
+      "project:/work/client-b/app",
+    ]);
+    expect(choices[0].confirmMessage).toContain("Project: /work/client-a/app");
+    expect(choices.map((choice) => choice.preview.target)).toEqual([
+      { owner_id: "owner:v1/project/a/x" },
+      { owner_id: "owner:v1/project/b/x" },
+    ]);
+  });
+
+  it("names the repository when an in-repo skill has nothing the app may delete", () => {
+    expect(skillRemovalChoices(view([inRepo]))).toEqual([]);
+    expect(skillRemovalBlockedReason(view([inRepo]))).toBe(
+      "Part of the remix repository; delete it there",
+    );
+    expect(skillRemovalBlockedReason(view([global]))).toBeNull();
+  });
+
+  it("keeps the page open when a project removal leaves the global install behind", () => {
+    const [globalChoice, projectChoice] = skillRemovalChoices(view([global, project]));
+
+    expect(skillRemovalEmptiesSkill(view([global, project]), projectChoice.selection)).toBe(false);
+    expect(skillRemovalEmptiesSkill(view([project]), projectChoice.selection)).toBe(true);
+    expect(skillRemovalEmptiesSkill(view([global]), globalChoice.selection)).toBe(true);
+  });
+
+  it("offers Park only where the core's park can move a folder, so the button never errors", () => {
+    const parked = { ...deployment("parked"), scope: "parked" as const };
+
+    expect(skillCanPark(view([global]))).toBe(true);
+    expect(skillCanPark(view([parked]))).toBe(true);
+    expect(skillCanPark(view([project]))).toBe(false);
+    expect(skillCanPark(view([inRepo]))).toBe(false);
+  });
+
+  it("the row menu offers no Park entry for a project-only skill and Park or Unpark for a Global one", () => {
+    const menuView = (deployments: Deployment[], parked = false) => ({
+      ...view(deployments),
+      parked,
+    });
+    const parked = { ...deployment("parked"), scope: "parked" as const };
+
+    expect(
+      skillParkVerb(menuView([project])),
+      "the row menu offers Park for a project-only skill, which ops::park refuses",
+    ).toBeNull();
+    expect(skillParkVerb(menuView([global]))).toBe("Park");
+    expect(skillParkVerb(menuView([parked], true))).toBe("Unpark");
   });
 });

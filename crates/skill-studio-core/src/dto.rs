@@ -689,6 +689,47 @@ pub struct UnparkOutcome {
     pub restored_path: PathBuf,
 }
 
+/// Request to split one Universal deployment into per-harness copies.
+///
+/// Every harness in `harnesses` gets a real folder copy; every other
+/// harness that read the Universal folder loses the skill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SplitRequest {
+    /// The Universal deployment to split.
+    pub deployment_id: DeploymentId,
+    /// The harnesses that keep the skill. Must not be empty.
+    pub harnesses: Vec<AgentId>,
+}
+
+/// One folder `split` wrote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SplitCopy {
+    /// The harness that reads this copy.
+    pub harness: AgentId,
+    /// The copy's folder.
+    pub path: PathBuf,
+}
+
+/// Result of `split`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SplitOutcome {
+    /// The `split` event.
+    pub event_id: EventId,
+    /// The Universal deployment that was split.
+    pub deployment_id: DeploymentId,
+    /// The skill's name.
+    pub skill: SkillName,
+    /// One entry per chosen harness.
+    pub copies: Vec<SplitCopy>,
+    /// Links into the Universal folder that were removed.
+    pub removed_links: Vec<PathBuf>,
+    /// Where the Universal folder was moved (quarantine), kept for undo.
+    pub quarantine_path: PathBuf,
+    /// Plain-language note: `npx skills update` updates only a Universal
+    /// copy, so these copies no longer get updates from it.
+    pub update_note: String,
+}
+
 /// Request to turn a skill's per-harness native switch on or off.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SetHarnessEnabledRequest {
@@ -745,6 +786,11 @@ pub struct InstallFile {
     pub relative_path: PathBuf,
     /// The file's bytes.
     pub contents: Vec<u8>,
+    /// The `0o777` permission bits the source file had, so a copied
+    /// `scripts/run.sh` stays executable. `None` gives the process default;
+    /// ignored off Unix.
+    #[serde(default)]
+    pub mode: Option<u32>,
 }
 
 /// Request to install one skill by [`InstallMethod::Copy`], `Dotagents`, or
@@ -760,11 +806,23 @@ pub struct InstallRequest {
     /// `Global` installs under the scope home; `Project` installs under one
     /// project.
     pub scope: RootScope,
-    /// Harnesses to link the new skill into right after install. Only
-    /// Claude Code has a per-skill link this build writes; other harnesses
-    /// read the universal root directly.
+    /// The harness set to install for, as the `skills` CLI's `--agent` list:
+    /// harness ids plus the pseudo id `universal` for the shared
+    /// `.agents/skills` folder alone. Empty means `universal` only. Codex,
+    /// `OpenCode`, Cursor, and `universal` read the shared folder; Claude
+    /// Code, pi, and Grok Build get their own folder (see `link_mode`).
     #[serde(default)]
     pub harnesses: Vec<AgentId>,
+    /// How each chosen harness with its own folder receives the skill. See
+    /// [`InstallLinkMode`].
+    #[serde(default)]
+    pub link_mode: InstallLinkMode,
+    /// `Universal` is the `skills` CLI's pick above. `PerHarness` (`Copy`
+    /// only) gives every chosen harness a real folder in its own skills
+    /// folder, Codex, `OpenCode`, and Cursor included, and writes no shared
+    /// copy; `link_mode` is ignored.
+    #[serde(default)]
+    pub destination: SkillDestination,
     /// `Copy` only: the folder's files, staged then swapped into place.
     #[serde(default)]
     pub files: Vec<InstallFile>,
@@ -804,9 +862,12 @@ pub enum InstallOutcome {
         skill: SkillName,
         /// Where its canonical folder now lives.
         deployment_path: PathBuf,
-        /// Harnesses actually linked (a subset of the request's
-        /// `harnesses` - only Claude Code gets a link this build).
+        /// Harnesses that now see the skill through a per-skill link or a
+        /// whole-folder link into the shared folder.
         linked_harnesses: Vec<AgentId>,
+        /// What happened for each requested harness, in request order.
+        #[serde(default)]
+        harness_results: Vec<InstallHarnessResult>,
     },
     /// `trust_identity` was set, is not yet trusted, and `trust_confirmed`
     /// was `false`. Nothing was written; retry with `trust_confirmed: true`
@@ -814,6 +875,64 @@ pub enum InstallOutcome {
     NeedsTrust {
         /// The normalized identity that needs confirming.
         identity: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Install for a harness set (`skills` CLI 1.7.0 `--agent`/`--copy`).
+// ---------------------------------------------------------------------------
+
+/// How `install` puts the skill into each chosen harness that has its own
+/// folder - the `skills` CLI's symlink/`--copy` choice. `install` forces
+/// `Copy` when the chosen harnesses resolve to one folder or fewer, the same
+/// as the CLI, and always uses `Link` for `Dotagents`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallLinkMode {
+    /// One real folder at `<scope>/.agents/skills/<name>`, and a relative
+    /// symlink to it in each other chosen harness folder.
+    #[default]
+    Link,
+    /// One real folder in each chosen harness folder. The shared folder
+    /// gets one only when a harness that reads it is chosen.
+    Copy,
+}
+
+/// What `install` did for one requested harness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum InstallHarnessResult {
+    /// The harness reads the skill from the shared folder at `path`, either
+    /// directly or because its own folder is a link to the shared folder.
+    ReadsShared {
+        /// The requested harness (or `universal`).
+        harness: AgentId,
+        /// The skill folder the harness reads.
+        path: PathBuf,
+    },
+    /// A relative symlink at `path` points to the shared folder's copy.
+    Linked {
+        /// The requested harness.
+        harness: AgentId,
+        /// The new link.
+        path: PathBuf,
+    },
+    /// A real folder at `path`.
+    Copied {
+        /// The requested harness.
+        harness: AgentId,
+        /// The new folder.
+        path: PathBuf,
+        /// `true` when a link was asked for but the symlink failed, so the
+        /// folder was copied instead.
+        link_failed: bool,
+    },
+    /// Nothing was written for this harness.
+    Skipped {
+        /// The requested harness.
+        harness: AgentId,
+        /// Why, in one plain sentence.
+        reason: String,
     },
 }
 
@@ -894,14 +1013,15 @@ pub struct UpdateRequest {
     /// `Copy` only: the fresh files to stage and swap in.
     #[serde(default)]
     pub files: Vec<InstallFile>,
-    /// `Dotagents`/`SkillsSh` only: the source argument the CLI's `add`
-    /// command needs to re-fetch (`skills update` itself only takes the
-    /// name; `dotagents`' argv still needs the original source).
+    /// `Dotagents` only: must be present, but no longer reaches the CLI -
+    /// the update runs `dotagents install`, which reads the source from the
+    /// scope's `agents.toml` entry (see `ops_update`'s module doc).
     #[serde(default)]
     pub source: Option<String>,
     /// `Dotagents` only: an already-resolved commit for a pinned
     /// (`declared_ref`) ledger entry - the caller's own concern, not
-    /// re-derived here (see `ops_update`'s module doc).
+    /// re-derived here (see `ops_update`'s module doc). The update writes it
+    /// into that entry's `ref` before running `dotagents install`.
     #[serde(default)]
     pub ref_pin: Option<String>,
 }

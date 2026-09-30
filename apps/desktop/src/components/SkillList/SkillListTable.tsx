@@ -398,7 +398,14 @@ export function SkillListTable({
           </div>
 
           {selectedPaths.size > 0 && (
-            <SkillListSelectionBar count={selectedPaths.size} onCancel={exitSelectionMode} />
+            <SkillListSelectionBar
+              selectedSkills={rows.filter((skill) => selectedPaths.has(rowPath(skill) ?? ""))}
+              onCancel={exitSelectionMode}
+              onActionFinished={(hadFailures) => {
+                // A failure keeps the selection so the user can retry.
+                if (!hadFailures) exitSelectionMode();
+              }}
+            />
           )}
         </div>
       </SkillRowMenuScope>

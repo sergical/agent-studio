@@ -24,15 +24,10 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@skill-studio/ui";
-import { UniversalVisibilitySelector } from "../SkillStore/UniversalVisibilitySelector";
-import {
-  universalDisabledHarnesses,
-  universalInstallHarnesses,
-} from "../SkillStore/universal-install-visibility";
+import { InstallHarnessSelector } from "../SkillStore/InstallHarnessSelector";
 import { ProjectDirectorySelect } from "../SkillStore/ProjectDirectorySelect";
 import { ScopeToggleGroup } from "../SkillStore/ScopeToggleGroup";
 import { SkillStore } from "../SkillStore/SkillStore";
-import { SkillDestinationSelector } from "../SkillStore/SkillDestinationSelector";
 import { CheckboxControl } from "../ui/CheckboxControl";
 import { availableAddSkillMethods, isAddSkillFormValid } from "./add-skill-form";
 import { TrustConfirmFooter } from "./TrustConfirmFooter";
@@ -57,6 +52,7 @@ import {
   applyAddSkillOperationEvent,
   listenForAddSkillOperation,
 } from "../../hooks/useAddSkillOperation";
+import { useKeptHarnesses } from "../../hooks/useKeptHarnesses";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 import {
   addSkillFinishAction,
@@ -64,10 +60,15 @@ import {
   addSkillOperationTerminalCopy,
   isAddSkillOperationCancellable,
   isAddSkillOperationTerminal,
-  normalizeInstallHarnesses,
+  chosenInstallHarnesses,
+  harnessesKeptWithoutUniversal,
+  installDestinationError,
+  installDestinationFields,
+  offeredInstallHarnesses,
   parseSkillSource,
   shouldConsumeAddSkillOperation,
   toWireParsedSkillSource,
+  universalLockReason,
 } from "@skill-studio/lib";
 import type {
   AddSkillOperationEvent,
@@ -84,6 +85,8 @@ import type {
   InstallScope,
 } from "@skill-studio/lib";
 
+type InstallDestinationFields = ReturnType<typeof installDestinationFields>;
+
 const SHEET_TAB_CLASS =
   "text-body font-medium text-text-tertiary after:bg-accent data-active:text-accent hover:text-text-secondary";
 
@@ -92,7 +95,10 @@ const SHEET_TAB_CLASS =
 const SECTION_LABEL_CLASS =
   "text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase";
 
-const ALL_METHODS = ["dotagents", "skills-sh", "copy"] as const satisfies AddMethod[];
+const ALL_METHODS = ["skills-sh", "dotagents", "copy"] as const satisfies AddMethod[];
+
+const DOTAGENTS_HARNESS_REASON =
+  "dotagents sets the folders itself, so you cannot change the harnesses for it.";
 
 /**
  * "Pack" isn't a real `AddMethod` - it doesn't run `addSkill`, it runs
@@ -144,11 +150,11 @@ interface FormState {
    * in skill_install.rs). Unused for every other source kind. */
   gitSkillName: string;
   methodChoice: SheetMethod;
-  /** The installed readers of the Universal folder left switched on. `null`
-   * until `getAddMethodDefaults` answers, which is what seeds it. */
-  enabledReaders: AgentId[] | null;
-  /** Whether Claude Code gets a link to the Universal deployment. */
-  claudeLink: boolean;
+  /** The harnesses the user picked. `null` until they change one, so the
+   * default follows `getAddMethodDefaults` when it answers late. */
+  pickedHarnesses: AgentId[] | null;
+  /** The Universal row's tick. Choosing skills.sh or dotagents sets it again. */
+  universal: boolean;
   scope: InstallScope;
   projectPath: string | null;
   isSubmitting: boolean;
@@ -160,9 +166,9 @@ function initialFormState(): FormState {
     sheetTab: "manual",
     source: "",
     gitSkillName: "",
-    methodChoice: "dotagents",
-    enabledReaders: null,
-    claudeLink: true,
+    methodChoice: "skills-sh",
+    pickedHarnesses: null,
+    universal: true,
     scope: "global",
     projectPath: null,
     isSubmitting: false,
@@ -176,9 +182,8 @@ type FormAction =
   | { type: "set_source"; source: string }
   | { type: "set_git_skill_name"; name: string }
   | { type: "set_method"; method: SheetMethod }
-  | { type: "set_readers"; readers: AgentId[] }
-  | { type: "set_reader_enabled"; agent: AgentId; enabled: boolean }
-  | { type: "set_claude_link"; claudeLink: boolean }
+  | { type: "set_harnesses"; harnesses: AgentId[] }
+  | { type: "set_universal"; universal: boolean; chosen: AgentId[] }
   | { type: "set_scope"; scope: InstallScope }
   | { type: "set_project_path"; path: string | null }
   | { type: "submit_start" }
@@ -200,18 +205,25 @@ function formReducer(state: FormState, action: FormAction): FormState {
     case "set_git_skill_name":
       return { ...state, gitSkillName: action.name };
     case "set_method":
-      return { ...state, methodChoice: action.method };
-    case "set_readers":
-      return { ...state, enabledReaders: action.readers };
-    case "set_reader_enabled":
       return {
         ...state,
-        enabledReaders: action.enabled
-          ? [...(state.enabledReaders ?? []), action.agent]
-          : (state.enabledReaders ?? []).filter((id) => id !== action.agent),
+        methodChoice: action.method,
+        universal:
+          state.universal || action.method === "skills-sh" || action.method === "dotagents",
       };
-    case "set_claude_link":
-      return { ...state, claudeLink: action.claudeLink };
+    case "set_harnesses":
+      return { ...state, pickedHarnesses: action.harnesses };
+    case "set_universal":
+      // A copy in each harness's own folder is the Copy method, and starts
+      // from the user's own ticks, not the harnesses that only read the shared folder.
+      return action.universal
+        ? { ...state, universal: true }
+        : {
+            ...state,
+            universal: false,
+            methodChoice: "copy",
+            pickedHarnesses: harnessesKeptWithoutUniversal(action.chosen),
+          };
     case "set_scope":
       return { ...state, scope: action.scope };
     case "set_project_path":
@@ -672,8 +684,7 @@ function useAddSkillSubmit(input: {
   parsed: ParsedSkillSource | { error: string };
   method: SheetMethod;
   noMethodsAvailable: boolean;
-  agents: AgentId[];
-  disabledHarnesses: AgentId[];
+  destination: InstallDestinationFields;
   scope: InstallScope;
   projectPath: string | null;
   githubEntries: GithubSkillEntry[] | null;
@@ -686,8 +697,7 @@ function useAddSkillSubmit(input: {
     parsed,
     method,
     noMethodsAvailable,
-    agents,
-    disabledHarnesses,
+    destination,
     scope,
     projectPath,
     githubEntries,
@@ -708,8 +718,8 @@ function useAddSkillSubmit(input: {
   const isValid = isAddSkillFormValid({
     parsed,
     noMethodsAvailable,
-    destination: "universal",
-    agents,
+    destination: destination.destination,
+    agents: destination.agents,
     scope,
     projectPath,
     githubEntries,
@@ -727,7 +737,7 @@ function useAddSkillSubmit(input: {
     method === "pack" && packSource
       ? {
           source: packSource,
-          agents,
+          agents: destination.agents,
           method: "pack",
           destination: "universal",
           scope: "global",
@@ -835,20 +845,14 @@ function useAddSkillSubmit(input: {
         queued = await startAddSkillsOperation(operationId, {
           source: toWireParsedSkillSource(parsed),
           skills: githubEntries,
-          method,
-          destination: "universal",
-          agents,
-          disabled_harnesses: disabledHarnesses,
+          ...destination,
           scope,
           project_path: projectArg,
         });
       } else {
         queued = await startAddSkillOperation(operationId, {
           source: toWireParsedSkillSource(parsed),
-          method,
-          destination: "universal",
-          agents,
-          disabled_harnesses: disabledHarnesses,
+          ...destination,
           scope,
           project_path: projectArg,
         });
@@ -977,12 +981,12 @@ function ManualTabFields({
   submitError,
   dispatch,
   onBrowseProject,
-  installedReaders,
-  enabledReaders,
-  onReaderEnabledChange,
+  offeredHarnesses,
+  chosenHarnesses,
+  universal,
+  universalLockedReason,
+  destinationError,
   claudeReadsShared,
-  claudeLink,
-  onClaudeLinkChange,
 }: {
   method: SheetMethod;
   scope: InstallScope;
@@ -991,12 +995,12 @@ function ManualTabFields({
   submitError: string | null;
   dispatch: Dispatch<FormAction>;
   onBrowseProject: () => void;
-  installedReaders: AgentId[];
-  enabledReaders: AgentId[];
-  onReaderEnabledChange: (agent: AgentId, enabled: boolean) => void;
+  offeredHarnesses: AgentId[];
+  chosenHarnesses: AgentId[];
+  universal: boolean;
+  universalLockedReason: string | null;
+  destinationError: string | null;
   claudeReadsShared: boolean;
-  claudeLink: boolean;
-  onClaudeLinkChange: (on: boolean) => void;
 }) {
   return (
     <>
@@ -1018,16 +1022,19 @@ function ManualTabFields({
         />
       )}
 
-      <SkillDestinationSelector scope={method === "pack" ? "global" : scope} />
-
-      <UniversalVisibilitySelector
-        readers={installedReaders}
-        enabledReaders={enabledReaders}
-        onReaderEnabledChange={onReaderEnabledChange}
+      <InstallHarnessSelector
+        offered={offeredHarnesses}
+        chosen={chosenHarnesses}
+        onChosenChange={(harnesses) => dispatch({ type: "set_harnesses", harnesses })}
+        universal={universal}
+        onUniversalChange={(next) =>
+          dispatch({ type: "set_universal", universal: next, chosen: chosenHarnesses })
+        }
+        universalLockedReason={universalLockedReason}
+        error={destinationError}
         claudeReadsShared={claudeReadsShared}
-        claudeLink={claudeLink}
-        onClaudeLinkChange={onClaudeLinkChange}
         scope={method === "pack" ? "global" : scope}
+        lockedReason={method === "dotagents" ? DOTAGENTS_HARNESS_REASON : undefined}
       />
 
       {submitError && (
@@ -1144,15 +1151,17 @@ function ManualTabFooter({
   );
 }
 
-/** Everything about the Method choice and Universal visibility that's purely
+/** Everything about the Method choice and the harness choice that's purely
  * derived from the form's own fields and the machine's `defaults` - pulled
  * out of `AddSkillSheet` so its body doesn't also carry this branch chain. */
 function deriveMethodAndVisibility(
   source: string,
   methodChoice: SheetMethod,
-  pickedReaders: AgentId[] | null,
-  claudeLink: boolean,
+  pickedHarnesses: AgentId[] | null,
+  universalChoice: boolean,
+  keptHarnesses: string[],
   defaults: AddMethodDefaults | null,
+  scope: InstallScope,
 ) {
   const parsed = parseSkillSource(source);
   const methods = availableAddSkillMethods(parsed, defaults);
@@ -1170,29 +1179,33 @@ function deriveMethodAndVisibility(
       ? "Git URLs need dotagents (not installed)"
       : METHOD_TOOLTIPS[method];
 
-  const installedReaders = (defaults?.installed_harnesses ?? []).filter(
-    (id) => id !== "claude-code",
-  );
+  const detected = defaults?.installed_harnesses ?? [];
+  // Universal stays ticked when the source has no Copy method, and for a pack.
+  const universalLockedReason =
+    method === "pack"
+      ? "Pack import always writes the shared folder."
+      : universalLockReason(methods);
+  const universal = universalChoice || universalLockedReason !== null;
   const claudeReadsShared = defaults?.claude_reads_shared_folder ?? false;
-  // Every installed reader starts on; `pickedReaders` only holds a choice
-  // once the user has made one, so the list survives `defaults` arriving
-  // after the sheet opened. Kept in `installedReaders`' order (`AgentId`'s
-  // declaration order) rather than the order the switches were flipped in.
-  const pickedReaderSet = new Set(pickedReaders ?? []);
-  const enabledReaders =
-    pickedReaders === null
-      ? installedReaders
-      : installedReaders.filter((id) => pickedReaderSet.has(id));
-  const agents = normalizeInstallHarnesses(
-    "universal",
-    universalInstallHarnesses(enabledReaders, claudeLink),
-  );
-  const disabledHarnesses = universalDisabledHarnesses(
-    installedReaders,
-    enabledReaders,
+  const offeredHarnesses = offeredInstallHarnesses(detected, keptHarnesses);
+  // dotagents keeps its own default: the user's pick does not reach it.
+  const dotagentsOnShared = method === "dotagents" && universal;
+  const chosenHarnesses = chosenInstallHarnesses(
+    offeredHarnesses,
+    dotagentsOnShared ? null : pickedHarnesses,
     claudeReadsShared,
-    claudeLink,
+    scope,
+    universal,
   );
+  const destination = installDestinationFields({
+    offered: offeredHarnesses,
+    chosen: chosenHarnesses,
+    scope,
+    // A pack has its own request; only its agents come from here.
+    method: method === "pack" ? "copy" : method,
+    universal,
+  });
+  const destinationError = installDestinationError(universal, chosenHarnesses);
 
   return {
     parsed,
@@ -1200,11 +1213,13 @@ function deriveMethodAndVisibility(
     noMethodsAvailable,
     method,
     methodCaption,
-    installedReaders,
     claudeReadsShared,
-    enabledReaders,
-    agents,
-    disabledHarnesses,
+    offeredHarnesses,
+    chosenHarnesses,
+    universal,
+    universalLockedReason,
+    destination,
+    destinationError,
   };
 }
 
@@ -1263,8 +1278,8 @@ export function AddSkillSheet() {
     source,
     gitSkillName,
     methodChoice,
-    enabledReaders: pickedReaders,
-    claudeLink,
+    pickedHarnesses,
+    universal: universalChoice,
     scope,
     projectPath,
     isSubmitting,
@@ -1274,9 +1289,11 @@ export function AddSkillSheet() {
   const sourceInputRef = useRef<HTMLInputElement>(null);
 
   // What dotagents/skills.sh/the Universal folder look like on this machine -
-  // fetched once when the sheet opens, so the Method and Harnesses defaults
-  // below reflect this machine instead of a generic guess.
+  // fetched when the sheet opens and again when the install scope changes, so
+  // the Method and Harnesses defaults below reflect this machine instead of a
+  // generic guess.
   const [defaults, setDefaults] = useState<AddMethodDefaults | null>(null);
+  const keptHarnesses = useKeptHarnesses();
 
   // Only `isOpen`/`prefill` should re-run the reset below - a project added
   // while the sheet is already open shouldn't reset the form out from under
@@ -1296,16 +1313,23 @@ export function AddSkillSheet() {
       prefill: prefill ?? "",
       projectPath: userAddedProjectsRef.current[0] ?? null,
     });
-    getAddMethodDefaults()
-      .then((next) => {
-        setDefaults(next);
-        dispatch({
-          type: "set_readers",
-          readers: next.installed_harnesses.filter((id) => id !== "claude-code"),
-        });
-      })
-      .catch(() => setDefaults(null));
   }, [isOpen, prefill]);
+
+  const defaultsProject = scope === "project" ? projectPath : null;
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    getAddMethodDefaults(defaultsProject)
+      .then((next) => {
+        if (!cancelled) setDefaults(next);
+      })
+      .catch(() => {
+        if (!cancelled) setDefaults(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, defaultsProject]);
 
   const closeSheet = () => {
     closeAddSkillSheet();
@@ -1317,12 +1341,22 @@ export function AddSkillSheet() {
     noMethodsAvailable,
     method,
     methodCaption,
-    installedReaders,
     claudeReadsShared,
-    enabledReaders,
-    agents,
-    disabledHarnesses,
-  } = deriveMethodAndVisibility(source, methodChoice, pickedReaders, claudeLink, defaults);
+    offeredHarnesses,
+    chosenHarnesses,
+    universal,
+    universalLockedReason,
+    destination,
+    destinationError,
+  } = deriveMethodAndVisibility(
+    source,
+    methodChoice,
+    pickedHarnesses,
+    universalChoice,
+    keptHarnesses,
+    defaults,
+    scope,
+  );
 
   // A plain git URL has no repo listing to name itself from - fold the
   // sheet's own Skill name field into `parsed` here, once, so every
@@ -1348,8 +1382,7 @@ export function AddSkillSheet() {
     parsed: submitParsed,
     method,
     noMethodsAvailable,
-    agents,
-    disabledHarnesses,
+    destination,
     scope,
     projectPath,
     githubEntries,
@@ -1469,14 +1502,12 @@ export function AddSkillSheet() {
               }
               dispatch={dispatch}
               onBrowseProject={handleBrowseProject}
-              installedReaders={installedReaders}
-              enabledReaders={enabledReaders}
-              onReaderEnabledChange={(agent, enabled) =>
-                dispatch({ type: "set_reader_enabled", agent, enabled })
-              }
+              offeredHarnesses={offeredHarnesses}
+              chosenHarnesses={chosenHarnesses}
+              universal={universal}
+              universalLockedReason={universalLockedReason}
+              destinationError={destinationError}
               claudeReadsShared={claudeReadsShared}
-              claudeLink={claudeLink}
-              onClaudeLinkChange={(on) => dispatch({ type: "set_claude_link", claudeLink: on })}
             />
           </TabsContent>
         </Tabs>

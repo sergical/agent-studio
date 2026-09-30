@@ -54,6 +54,8 @@ export type {
   SkillSearchResult,
   PullResult,
   RemoveOutcome,
+  SplitCopy,
+  SplitOutcome,
   SkillDetails,
   SkillEventDto,
   SkillEventDto as SkillEvent,
@@ -81,6 +83,8 @@ export type {
   UpdateAllItem,
   DoctorReport,
   DoctorViolation,
+  BulkTargetResult,
+  InvocationTarget,
 } from "./skill-types.generated";
 
 import type { Deployment, InstalledSkill, SkillSearchResult } from "./skill-types.generated";

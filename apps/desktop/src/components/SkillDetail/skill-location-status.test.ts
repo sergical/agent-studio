@@ -19,28 +19,32 @@ import {
   skillRollup,
   titleLink,
 } from "./skill-location-status";
+import {
+  perSkillLinkDeployment,
+  realCopyDeployment,
+  universalDeployment,
+  wholeFolderDeployment,
+  withScannerIdentity,
+} from "../../dev/harness/scanned-deployment";
 
+/**
+ * A Global Universal row, with `overrides` applied and then `id`,
+ * `destination`, and `backing` derived from the result the way the scanner
+ * derives them - so a test can move a row to another harness or scope and
+ * still get a shape the scanner produces.
+ */
 function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
-  return {
-    id: "dep:v1/global/universal/find-bugs",
-    destination: "universal",
-    owner_kind: "manual",
-    mutability: "read-only",
-    backing: { kind: "canonical" },
-    agent: "shared",
-    scope: "global",
-    path: "/home/.agents/skills/find-bugs",
-    is_symlink: false,
-    symlink_is_broken: false,
-    content_hash: "abc",
-    disabled: false,
-    codex_implicit_invocation: null,
-    disabled_by: null,
-    invocation: "both",
-    spec_violations: [],
-    shared_via_whole_dir_link: false,
+  return withScannerIdentity({
+    ...universalDeployment(
+      { universalPath: "/home/.agents/skills/find-bugs" },
+      {
+        owner_kind: "manual",
+        mutability: "read-only",
+        content_hash: "abc",
+      },
+    ),
     ...overrides,
-  };
+  });
 }
 
 function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
@@ -149,11 +153,10 @@ describe("buildScopeGroups", () => {
 
   it("treats a whole-root link as a plain link row with a switch", () => {
     const shared = fixtureDeployment();
-    const claude = fixtureDeployment({
+    const claude = wholeFolderDeployment({
       agent: "Claude Code",
-      is_symlink: true,
-      shared_via_whole_dir_link: true,
       path: "/home/.claude/skills/find-bugs",
+      universalPath: "/home/.agents/skills/find-bugs",
     });
     const skill = fixtureSkill({ deployments: [shared, claude] });
     const [global] = buildScopeGroups(skill);
@@ -167,6 +170,7 @@ describe("buildScopeGroups", () => {
   it.each([
     ["codex-config", "Off for Codex — switched off in ~/.codex/config.toml."],
     ["opencode-permission", "Off for OpenCode — denied in opencode.json."],
+    ["claude-skill-overrides", "Off for Claude Code — switched off in ~/.claude/settings.json."],
     ["claude-link-removed", "Off for Claude Code — the link under ~/.claude/skills was removed."],
     ["studio-moved", "Off for pi — moved into .skill-studio-disabled."],
   ] as const)("reports the %s off mode with its own sentence", (disabledBy, expectedWhat) => {
@@ -182,6 +186,7 @@ describe("buildScopeGroups", () => {
     const row = fixtureDeployment({
       agent: agentLabel,
       is_symlink: agentLabel === "Claude Code",
+      symlink_target: agentLabel === "Claude Code" ? "/home/.agents/skills/find-bugs" : null,
       disabled: true,
       disabled_by: disabledBy,
       path: `/home/.${agentLabel.toLowerCase()}/skills/find-bugs`,
@@ -201,8 +206,9 @@ describe("buildScopeGroups", () => {
     const claude = fixtureDeployment({
       agent: "Claude Code",
       is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
       disabled: true,
-      disabled_by: "claude-link-removed",
+      disabled_by: "claude-skill-overrides",
       path: "/home/.claude/skills/find-bugs",
     });
     const skill = fixtureSkill({
@@ -253,6 +259,7 @@ describe("buildScopeGroups", () => {
     const claude = fixtureDeployment({
       agent: "Claude Code",
       is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
       path: "/home/.claude/skills/find-bugs",
     });
     const skill = fixtureSkill({ deployments: [shared, claude] });
@@ -270,12 +277,14 @@ describe("buildScopeGroups", () => {
     const claude = fixtureDeployment({
       agent: "Claude Code",
       is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
       symlink_is_broken: true,
       path: "/home/.claude/skills/find-bugs",
     });
     const codex = fixtureDeployment({
       agent: "Codex",
       is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
       symlink_is_broken: true,
       path: "/home/.codex/skills/find-bugs",
     });
@@ -294,13 +303,15 @@ describe("buildScopeGroups", () => {
     const claude = fixtureDeployment({
       agent: "Claude Code",
       is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
       disabled: true,
-      disabled_by: "claude-link-removed",
+      disabled_by: "claude-skill-overrides",
       path: "/home/.claude/skills/find-bugs",
     });
     const codex = fixtureDeployment({
       agent: "Codex",
       is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
       disabled: true,
       disabled_by: "codex-config",
       path: "/home/.codex/skills/find-bugs",
@@ -311,11 +322,94 @@ describe("buildScopeGroups", () => {
     expect(global.folderTip.startsWith("Off everywhere:")).toBe(true);
   });
 
+  it("keeps_the_claude_code_row_visible_and_switchable_while_skill_overrides_has_it_off_or_names_the_layout", () => {
+    const universalPath = "/home/.agents/skills/find-bugs";
+    const path = "/home/.claude/skills/find-bugs";
+    const off = { disabled: true, disabled_by: "claude-skill-overrides" } as const;
+    const layouts = {
+      "per-skill link": perSkillLinkDeployment({ agent: "Claude Code", path, universalPath }, off),
+      "whole-folder link": wholeFolderDeployment(
+        { agent: "Claude Code", path, universalPath },
+        off,
+      ),
+      "real copy": realCopyDeployment({ agent: "Claude Code", path }, off),
+    };
+    for (const [layout, claude] of Object.entries(layouts)) {
+      const [global] = buildScopeGroups(
+        fixtureSkill({ deployments: [fixtureDeployment(), claude] }),
+      );
+      const row = global.rows.find((r) => r.harness === "claude-code");
+      expect(row, `${layout}: the Claude Code row is gone while off`).toBeDefined();
+      expect(row?.switchOn, `${layout}: the switch shows on`).toBe(false);
+      expect(row?.hasSwitch, `${layout}: the switch cannot turn it back on`).toBe(true);
+      expect(
+        row?.conditions.map((c) => c.what),
+        `${layout}: the off sentence is missing`,
+      ).toContain("Off for Claude Code — switched off in ~/.claude/settings.json.");
+    }
+  });
+
+  it("shows_a_not_linked_claude_code_row_for_a_universal_only_skill_whose_switch_links_it_or_names_what_is_missing", () => {
+    const shared = fixtureDeployment({ disabled_readers: ["claude-code"] });
+    const [global] = buildScopeGroups(fixtureSkill({ deployments: [shared] }));
+
+    const claudeRows = global.rows.filter((r) => r.harness === "claude-code");
+    expect(claudeRows, "expected exactly one Claude Code row").toHaveLength(1);
+    const [row] = claudeRows;
+    // A reader row's switch sends `set-reader-enabled` for its harness and
+    // lifecycle target (SkillLocationRow's LocationRowSwitch).
+    expect(row).toMatchObject({
+      kind: "reader",
+      hasSwitch: true,
+      switchOn: false,
+      level: "off",
+      lifecycleTarget: global.shared!.lifecycleTarget,
+    });
+    expect(row.conditions[0]?.status).toBe("Not linked");
+    const menu = rowMenu(row, global.label);
+    expect(menu.entries.map((entry) => entry.action)).toContainEqual({
+      kind: "set-reader-enabled",
+      target: global.shared!.lifecycleTarget,
+      agent: "claude-code",
+      enabled: true,
+    });
+  });
+
+  it("shows_no_not_linked_row_when_a_whole_folder_link_already_gives_claude_code_the_skill_or_names_the_extra_row", () => {
+    // Even a stale `disabled_readers` entry must not add a second Claude row
+    // beside the one the whole-folder link already produces.
+    const shared = fixtureDeployment({ disabled_readers: ["claude-code"] });
+    const claude = wholeFolderDeployment({
+      agent: "Claude Code",
+      path: "/home/.claude/skills/find-bugs",
+      universalPath: "/home/.agents/skills/find-bugs",
+    });
+    const [global] = buildScopeGroups(fixtureSkill({ deployments: [shared, claude] }));
+    const claudeRows = global.rows.filter((r) => r.harness === "claude-code");
+    expect(claudeRows.map((r) => r.kind)).toEqual(["link"]);
+    expect(claudeRows[0].conditions.map((c) => c.status)).not.toContain("Not linked");
+  });
+
+  it("shows_no_not_linked_row_for_a_project_universal_skill_or_names_the_extra_row", () => {
+    // Project-scope per-harness switches stay hidden in 0.1.0.
+    const shared = fixtureDeployment({
+      scope: "project",
+      project_path: "/repo",
+      path: "/repo/.agents/skills/find-bugs",
+      disabled_readers: ["claude-code"],
+    });
+    const project = buildScopeGroups(fixtureSkill({ deployments: [shared] })).find(
+      (g) => !g.isGlobal,
+    )!;
+    expect(project.rows.some((r) => r.harness === "claude-code")).toBe(false);
+  });
+
   it("puts Claude Code beside the folder, not inside it", () => {
     const shared = fixtureDeployment();
     const claude = fixtureDeployment({
       agent: "Claude Code",
       is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
       path: "/home/.claude/skills/find-bugs",
     });
     const skill = fixtureSkill({ deployments: [shared, claude] });
@@ -411,6 +505,7 @@ describe("skillRollup", () => {
     const claude = fixtureDeployment({
       agent: "Claude Code",
       is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
       symlink_is_broken: true,
       path: "/home/.claude/skills/find-bugs",
     });
@@ -469,6 +564,7 @@ describe("rowMenu", () => {
     const claude = fixtureDeployment({
       agent: "Claude Code",
       is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
       path: "/home/.claude/skills/find-bugs",
     });
     const [global] = buildScopeGroups(fixtureSkill({ deployments: [shared, claude] }));
@@ -481,11 +577,10 @@ describe("rowMenu", () => {
   });
 
   it("offers an independent copy only for a healthy enabled Universal-backed link", () => {
-    const linked = fixtureDeployment({
+    const linked = perSkillLinkDeployment({
       agent: "Claude Code",
-      is_symlink: true,
-      backing: { kind: "linked-to", deployment_id: "dep:v1/global/universal/find-bugs" },
       path: "/home/.claude/skills/find-bugs",
+      universalPath: "/home/.agents/skills/find-bugs",
     });
     const skill = fixtureSkill({ deployments: [fixtureDeployment(), linked] });
     const [global] = buildScopeGroups(skill);
@@ -498,8 +593,13 @@ describe("rowMenu", () => {
     for (const deployment of [
       { ...linked, disabled: true },
       { ...linked, symlink_is_broken: true },
-      { ...linked, backing: { kind: "independent" as const } },
-      { ...linked, is_symlink: false, shared_via_whole_dir_link: false },
+      fixtureDeployment({
+        agent: "Claude Code",
+        is_symlink: true,
+        symlink_target: "/home/src/find-bugs",
+        path: "/home/.claude/skills/find-bugs",
+      }),
+      realCopyDeployment({ agent: "Claude Code", path: "/home/.claude/skills/find-bugs" }),
     ]) {
       const [scope] = buildScopeGroups(
         fixtureSkill({ deployments: [fixtureDeployment(), deployment] }),
@@ -530,6 +630,7 @@ describe("rowMenu", () => {
     const claude = fixtureDeployment({
       agent: "Claude Code",
       is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
       path: "/home/.claude/skills/find-bugs",
     });
     const skill = fixtureSkill({ deployments: [shared, claude] });
@@ -545,6 +646,7 @@ describe("rowMenu", () => {
     const codex = fixtureDeployment({
       agent: "Codex",
       is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
       disabled: true,
       disabled_by: "codex-config",
       path: "/home/.codex/skills/find-bugs",
@@ -633,11 +735,12 @@ describe("buildInvocationFiles / invocationFooterNote", () => {
     const claude = fixtureDeployment({
       agent: "Claude Code",
       is_symlink: true,
+      symlink_target: "/home/.agents/skills/find-bugs",
       path: "/home/.claude/skills/find-bugs",
     });
     const skill = fixtureSkill({ deployments: [shared, claude] });
     const groups = buildScopeGroups(skill);
-    const files = buildInvocationFiles(groups, skill);
+    const files = buildInvocationFiles(groups);
     expect(files).toHaveLength(1);
     expect(files[0].kind).toBe("shared");
   });
@@ -646,7 +749,7 @@ describe("buildInvocationFiles / invocationFooterNote", () => {
     const shared = fixtureDeployment({ invocation: "user-only" });
     const skill = fixtureSkill({ deployments: [shared], invocation: "user-only" });
     const groups = buildScopeGroups(skill);
-    const files = buildInvocationFiles(groups, skill);
+    const files = buildInvocationFiles(groups);
     expect(invocationFooterNote(files, skill.name)).toBe("User only: only /find-bugs starts it.");
   });
 
@@ -660,7 +763,7 @@ describe("buildInvocationFiles / invocationFooterNote", () => {
     });
     const skill = fixtureSkill({ deployments: [shared, codexCopy] });
     const groups = buildScopeGroups(skill);
-    const files = buildInvocationFiles(groups, skill);
+    const files = buildInvocationFiles(groups);
     expect(files).toHaveLength(2);
     expect(invocationFooterNote(files, skill.name)).toBe(
       "Each file sets its own. Symlinks follow the folder they point to.",
@@ -672,7 +775,7 @@ describe("buildInvocationFiles editability", () => {
   it("keeps the global Universal folder editable even when the skill is managed", () => {
     const shared = fixtureDeployment();
     const skill = fixtureSkill({ deployments: [shared], source_kind: "dotagents" });
-    const files = buildInvocationFiles(buildScopeGroups(skill), skill);
+    const files = buildInvocationFiles(buildScopeGroups(skill));
     expect(files[0]).toMatchObject({ kind: "shared", editable: true });
   });
 
@@ -681,9 +784,10 @@ describe("buildInvocationFiles editability", () => {
       scope: "project",
       project_path: "/repo",
       path: "/repo/.agents/skills/find-bugs",
+      owner_kind: "skills-sh",
     });
     const skill = fixtureSkill({ deployments: [projectShared], source_kind: "skills-sh" });
-    const files = buildInvocationFiles(buildScopeGroups(skill), skill);
+    const files = buildInvocationFiles(buildScopeGroups(skill));
     expect(files[0]).toMatchObject({ kind: "shared", editable: false });
     expect(files[0].disabledReason).toContain("skills.sh");
   });
@@ -695,11 +799,32 @@ describe("buildInvocationFiles editability", () => {
       project_path: "/repo",
       is_symlink: false,
       path: "/repo/.cursor/skills/find-bugs",
+      owner_kind: "dotagents",
     });
     const skill = fixtureSkill({ deployments: [copy], source_kind: "dotagents" });
-    const files = buildInvocationFiles(buildScopeGroups(skill), skill);
+    const files = buildInvocationFiles(buildScopeGroups(skill));
     expect(files[0]).toMatchObject({ kind: "copy", editable: false });
     expect(files[0].disabledReason).toContain("dotagents");
+  });
+
+  it("keeps_an_ambiguous_copy_editable_even_though_the_skill_reads_as_dotagents", () => {
+    const copy = fixtureDeployment({
+      agent: "Cursor",
+      scope: "project",
+      project_path: "/repo",
+      is_symlink: false,
+      path: "/repo/.cursor/skills/find-bugs",
+      owner_kind: "ambiguous",
+    });
+    const skill = fixtureSkill({ deployments: [copy], source_kind: "dotagents" });
+    const files = buildInvocationFiles(buildScopeGroups(skill));
+    expect(
+      files[0],
+      "no ledger row owns it, so nothing upstream would overwrite an edit",
+    ).toMatchObject({
+      kind: "copy",
+      editable: true,
+    });
   });
 
   it("keeps a manual copy editable in place", () => {
@@ -711,7 +836,7 @@ describe("buildInvocationFiles editability", () => {
       path: "/repo/.cursor/skills/find-bugs",
     });
     const skill = fixtureSkill({ deployments: [copy], source_kind: "manual" });
-    const files = buildInvocationFiles(buildScopeGroups(skill), skill);
+    const files = buildInvocationFiles(buildScopeGroups(skill));
     expect(files[0]).toMatchObject({ kind: "copy", editable: true });
   });
 
@@ -730,7 +855,7 @@ describe("buildInvocationFiles editability", () => {
       },
     });
     const skill = fixtureSkill({ deployments: [plugin], source_kind: "manual" });
-    const files = buildInvocationFiles(buildScopeGroups(skill), skill);
+    const files = buildInvocationFiles(buildScopeGroups(skill));
     expect(files[0]).toMatchObject({ kind: "plugin", editable: false });
     expect(files[0].disabledReason).toContain("openai-templates");
   });

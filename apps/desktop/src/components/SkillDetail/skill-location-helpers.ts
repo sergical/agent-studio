@@ -17,8 +17,9 @@ export const NO_OFF_SWITCH_TITLE =
 export const REGISTRY_COPY_NO_SWITCH_TITLE =
   "This copy is tracked by the fork registry; restore it by hand or wait for the .skill-studio-disabled/ migration";
 
-/** The Harnesses rail's disabled-switch title for `row` - `REGISTRY_COPY_NO_SWITCH_TITLE` for a Copy-owned studio-moved row, `NO_OFF_SWITCH_TITLE` otherwise. */
+/** The Harnesses rail's disabled-switch title for `row` - a reader row's own reason, `REGISTRY_COPY_NO_SWITCH_TITLE` for a Copy-owned studio-moved row, `NO_OFF_SWITCH_TITLE` otherwise. */
 export function harnessSwitchOffTitle(row: AgentLocationRow): string {
+  if (row.kind === "reader" && row.switchDisabledReason) return row.switchDisabledReason;
   if (row.deployment?.disabled_by === "studio-moved" && row.deployment.owner_kind === "copy") {
     return REGISTRY_COPY_NO_SWITCH_TITLE;
   }
@@ -39,16 +40,16 @@ interface SharedFolderSwitchPolicy {
 /**
  * Whether the Enabled switch can actually change this deployment. The disable
  * mechanisms are global: Codex config, OpenCode permission, Claude Code's
- * global per-skill symlink. A project-scope copy has nothing to toggle, so
- * showing the switch there just produces an error - except when the row is
- * already disabled, which must stay re-enableable.
+ * `skillOverrides` in ~/.claude/settings.json. Each works however the entry
+ * got there (per-skill link, whole-folder link, or real copy). A project-scope
+ * row stays without a switch in 0.1.0 - except when it is already disabled,
+ * which must stay re-enableable.
  */
 export function canToggleHarness(deployment: Deployment): boolean {
   const id = agentIdFromDeploymentLabel(deployment.agent) ?? "";
   if (!HARNESSES_WITH_PER_SKILL_DISABLE.includes(id)) return false;
   if (deployment.disabled) return true;
-  if (deployment.scope !== "global") return false;
-  return id !== "claude-code" || deployment.is_symlink;
+  return deployment.scope === "global";
 }
 
 /**

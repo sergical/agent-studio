@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SplitOutcome",
+  "description": "Result of `split`.",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "description": "The `split` event.",
+      "$ref": "#/$defs/EventId"
+    },
+    "deployment_id": {
+      "description": "The Universal deployment that was split.",
+      "$ref": "#/$defs/DeploymentId"
+    },
+    "skill": {
+      "description": "The skill's name.",
+      "$ref": "#/$defs/SkillName"
+    },
+    "copies": {
+      "description": "One entry per chosen harness.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SplitCopy"
+      }
+    },
+    "removed_links": {
+      "description": "Links into the Universal folder that were removed.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "quarantine_path": {
+      "description": "Where the Universal folder was moved (quarantine), kept for undo.",
+      "type": "string"
+    },
+    "update_note": {
+      "description": "Plain-language note: `npx skills update` updates only a Universal\ncopy, so these copies no longer get updates from it.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "deployment_id",
+    "skill",
+    "copies",
+    "removed_links",
+    "quarantine_path",
+    "update_note"
+  ],
+  "$defs": {
+    "EventId": {
+      "description": "History event id (ULID string).\n\nInvariant: lexical order equals creation order inside one store.",
+      "type": "string"
+    },
+    "DeploymentId": {
+      "description": "Opaque deployment id.\n\nInvariant: the string starts with `dep:v1/`. Its internal layout is a core\ndetail; adapters and the UI compare it as a string and never split it.",
+      "type": "string"
+    },
+    "SkillName": {
+      "description": "Lexical skill name: the directory name that holds `SKILL.md`.\n\nInvariant: two deployments with the same `SkillName` are the same skill,\neven when their bytes differ. A symlink alias with another name is another\nskill.",
+      "type": "string"
+    },
+    "SplitCopy": {
+      "description": "One folder `split` wrote.",
+      "type": "object",
+      "properties": {
+        "harness": {
+          "description": "The harness that reads this copy.",
+          "$ref": "#/$defs/AgentIdentity"
+        },
+        "path": {
+          "description": "The copy's folder.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "harness",
+        "path"
+      ]
+    },
+    "AgentIdentity": {
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
+      "type": "string"
+    }
+  }
+}

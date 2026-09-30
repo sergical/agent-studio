@@ -109,7 +109,7 @@ const EXPECTED_WRAPPER_COMMANDS = {
   },
   removeSkill: { kind: "command", command: "remove_skill", registeredInLibRs: true },
   updateSkill: { kind: "command", command: "update_skill", registeredInLibRs: true },
-  updateAllSkills: { kind: "command", command: "update_all_skills", registeredInLibRs: true },
+  updateAllSkillsWithProgress: { kind: "event", event: "skills://update-all-progress" },
   readInstalledSkillMd: {
     kind: "command",
     command: "read_installed_skill_md",
@@ -193,6 +193,12 @@ const EXPECTED_WRAPPER_COMMANDS = {
   },
   parkSkill: { kind: "command", command: "park_skill", registeredInLibRs: true },
   unparkSkill: { kind: "command", command: "unpark_skill", registeredInLibRs: true },
+  splitSkill: { kind: "command", command: "split_skill", registeredInLibRs: true },
+  splitSkillTargets: {
+    kind: "command",
+    command: "split_skill_targets",
+    registeredInLibRs: true,
+  },
   setHarnessEnabled: { kind: "command", command: "set_harness_enabled", registeredInLibRs: true },
   restoreMovedDeployment: {
     kind: "command",
@@ -204,6 +210,13 @@ const EXPECTED_WRAPPER_COMMANDS = {
     command: "set_skill_invocation",
     registeredInLibRs: true,
   },
+  setSkillsInvocation: {
+    kind: "command",
+    command: "set_skills_invocation",
+    registeredInLibRs: true,
+  },
+  parkSkills: { kind: "command", command: "park_skills", registeredInLibRs: true },
+  unparkSkills: { kind: "command", command: "unpark_skills", registeredInLibRs: true },
   setPluginEnabled: { kind: "command", command: "set_plugin_enabled", registeredInLibRs: true },
   uninstallPlugin: { kind: "command", command: "uninstall_plugin", registeredInLibRs: true },
   listSkillEvents: { kind: "command", command: "list_skill_events", registeredInLibRs: true },

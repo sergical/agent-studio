@@ -41,7 +41,7 @@
           "default": []
         },
         "source": {
-          "description": "`Dotagents`/`SkillsSh` only: the source argument the CLI's `add`\ncommand needs to re-fetch (`skills update` itself only takes the\nname; `dotagents`' argv still needs the original source).",
+          "description": "`Dotagents` only: must be present, but no longer reaches the CLI -\nthe update runs `dotagents install`, which reads the source from the\nscope's `agents.toml` entry (see `ops_update`'s module doc).",
           "type": [
             "string",
             "null"
@@ -49,7 +49,7 @@
           "default": null
         },
         "ref_pin": {
-          "description": "`Dotagents` only: an already-resolved commit for a pinned\n(`declared_ref`) ledger entry - the caller's own concern, not\nre-derived here (see `ops_update`'s module doc).",
+          "description": "`Dotagents` only: an already-resolved commit for a pinned\n(`declared_ref`) ledger entry - the caller's own concern, not\nre-derived here (see `ops_update`'s module doc). The update writes it\ninto that entry's `ref` before running `dotagents install`.",
           "type": [
             "string",
             "null"
@@ -143,6 +143,16 @@
             "minimum": 0,
             "maximum": 255
           }
+        },
+        "mode": {
+          "description": "The `0o777` permission bits the source file had, so a copied\n`scripts/run.sh` stays executable. `None` gives the process default;\nignored off Unix.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
         }
       },
       "required": [

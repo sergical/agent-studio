@@ -47,7 +47,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use skill_studio_core::dto::{
-    InstallFile, InstallMethod, InstallOutcome, InstallRequest, RemoveRequest, UpdateRequest,
+    InstallFile, InstallLinkMode, InstallMethod, InstallOutcome, InstallRequest, RemoveRequest,
+    UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::{AgentId, ProjectRef, RootKind, RootScope, SkillName};
@@ -300,14 +301,38 @@ const KNOWN_DIVERGENCES: &[Divergence] = &[
     // cwd to the project path for a project-scope SkillsSh install instead
     // of pushing a `--cwd` token the CLI ignores - trace 03 now asserts full
     // argv/cwd parity like every other trace, with no entry here.
+
     //
-    // follow-up: see issue for unsupported harness ids
+    // Trace 04's `InstallOutcome` divergence (an unknown `cursor` id reported
+    // as installed) was removed once `install` learned every harness it can
+    // write for and passed one `--agent` token per requested harness.
     Divergence {
-        trace: "04-add-two-harnesses",
-        field: "InstallOutcome",
-        cli_value: "cursor never received an --agent token, so nothing was ever done for it",
-        core_value: "InstallOutcome::Installed, as if every requested harness (including cursor) had succeeded",
-        reason: "cli_args_and_cwd only ever special-cases claude-code; Codex/OpenCode/pi legitimately need no --agent token at all (they read the shared universal root by design - harness.rs's reads_universal_root is Yes for all three), but cursor is a harness id the catalog does not recognize, and ops::install still reports the overall install as Installed with nothing done for it - the real gap is the silent over-reporting, not the missing token. follow-up: see issue for unsupported harness ids.",
+        trace: "06-update-newer-source",
+        field: "argv",
+        cli_value: "(no scope flag)",
+        core_value: "--project",
+        reason: "the trace was recorded without a scope flag, which skills 1.7.0 reads as scope \"both\" and so also updates the global copy; `ops::update` names `--project`",
+    },
+    Divergence {
+        trace: "07-update-already-current",
+        field: "argv",
+        cli_value: "(no scope flag)",
+        core_value: "--project",
+        reason: "same as 06: a project update must not touch the global copy of the same name",
+    },
+    Divergence {
+        trace: "06-update-newer-source",
+        field: "on-disk path",
+        cli_value: ".claude/skills/academy-guide -> ../../.agents/skills/academy-guide",
+        core_value: ".claude/skills",
+        reason: "`npx skills update` links the skill into Claude Code even when Claude Code had no copy; `ops::update` removes the links it added so an update never turns a harness on",
+    },
+    Divergence {
+        trace: "07-update-already-current",
+        field: "on-disk path",
+        cli_value: ".claude/skills/academy-guide -> ../../.agents/skills/academy-guide",
+        core_value: ".claude/skills",
+        reason: "same as 06: the update removes a harness link the CLI added for a harness that did not have the skill",
     },
 ];
 
@@ -521,6 +546,9 @@ impl TraceCtx {
                     .into_owned();
             }
         }
+        if let Some(d) = divergence(trace_name, "argv") {
+            expected_args.push(d.core_value.to_string());
+        }
         let recorded = self.spawner.recorded.lock().unwrap();
         assert_eq!(
             recorded.len(),
@@ -547,15 +575,21 @@ impl TraceCtx {
         let actual = walk_allowed(self.root(), &self.home, self.project.as_deref());
         let expected = load_tree(&self.dir.join("after"));
         assert_tree_matches(trace_name, &actual, &expected);
-        self.assert_symlinks_resolve(&expected);
+        self.assert_symlinks_resolve(trace_name, &expected);
     }
 
     /// For every symlink `after/tree.json` names, asserts it actually
     /// resolves on disk (`std::fs::metadata` follows the link) - the
     /// functional property that matters, independent of whatever exact
-    /// string form the target happens to be stored in.
-    fn assert_symlinks_resolve(&self, expected: &[TreeEntry]) {
-        for entry in expected.iter().filter(|e| e.kind == "symlink") {
+    /// string form the target happens to be stored in. Links under a path a
+    /// `KNOWN_DIVERGENCES` entry skips are not expected to exist.
+    fn assert_symlinks_resolve(&self, trace_name: &str, expected: &[TreeEntry]) {
+        let skip_prefix = divergence(trace_name, "on-disk path");
+        for entry in expected
+            .iter()
+            .filter(|e| e.kind == "symlink")
+            .filter(|e| skip_prefix.is_none_or(|d| !e.path.starts_with(d.core_value)))
+        {
             let dest = self.root().join(&entry.path);
             std::fs::metadata(&dest).unwrap_or_else(|e| {
                 panic!(
@@ -584,6 +618,8 @@ fn install_request(
         trust_identity: None,
         trust_confirmed: true,
         save_as_preference: false,
+        link_mode: InstallLinkMode::Link,
+        destination: skill_studio_core::identity::SkillDestination::Universal,
     }
 }
 
@@ -614,7 +650,10 @@ fn cli_add_github_global_claude_code_matches_the_recorded_trace_or_names_the_div
         "academy-guide",
         "anthropics/skills",
         RootScope::Global,
-        vec![AgentId::from(AgentId::CLAUDE_CODE)],
+        vec![
+            AgentId::from("universal"),
+            AgentId::from(AgentId::CLAUDE_CODE),
+        ],
     );
     let outcome = ops::install(&tc.rt, &ctx(), &req).unwrap();
     assert!(matches!(outcome, InstallOutcome::Installed { .. }));
@@ -673,29 +712,34 @@ fn cli_add_local_folder_project_matches_the_recorded_trace_or_names_the_divergin
 }
 
 // ---------------------------------------------------------------------------
-// Trace 04: add requesting two harnesses, one of which (`cursor`) the
-// harness catalog does not recognize - the recorded CLI call never received
-// an `--agent cursor` token (correctly: `cli_args_and_cwd` only ever
-// special-cases Claude Code, and an unrecognized harness has nothing to
-// send), yet `ops::install` still reports the overall install as
-// `Installed`, as if `cursor` had been set up too. That silent
-// over-reporting is the known divergence - see `KNOWN_DIVERGENCES`.
+// Trace 04: add for Claude Code and Cursor. Cursor reads the shared folder,
+// so the CLI gets `--agent claude-code --agent cursor` and writes the shared
+// copy plus one Claude Code link.
 // ---------------------------------------------------------------------------
 #[test]
-fn cli_add_two_harnesses_reports_installed_even_for_an_unrecognized_harness_or_names_the_fix() {
+fn cli_add_claude_code_and_cursor_passes_one_agent_token_each_or_names_the_diverging_field() {
     let trace_name = "04-add-two-harnesses";
     let tc = load_trace(trace_name, &RootScope::Global);
     let req = install_request(
         "brand-guidelines",
         "anthropics/skills",
         RootScope::Global,
-        vec![AgentId::from(AgentId::CLAUDE_CODE), AgentId::from("cursor")],
+        vec![
+            AgentId::from(AgentId::CLAUDE_CODE),
+            AgentId::from(AgentId::CURSOR),
+        ],
     );
     let outcome = ops::install(&tc.rt, &ctx(), &req).unwrap();
-    assert!(
-        matches!(outcome, InstallOutcome::Installed { .. }),
-        "{} no longer reproduces - update KNOWN_DIVERGENCES",
-        divergence(trace_name, "InstallOutcome").unwrap()
+    let InstallOutcome::Installed {
+        linked_harnesses, ..
+    } = outcome
+    else {
+        panic!("expected Installed, got {outcome:?}");
+    };
+    assert_eq!(
+        linked_harnesses,
+        vec![AgentId::from(AgentId::CLAUDE_CODE)],
+        "only Claude Code has its own folder to link"
     );
     tc.assert_argv_matches(trace_name);
     tc.assert_tree_matches_after(trace_name);

@@ -58,6 +58,17 @@ function offSwitchReason(deployment: Deployment, hasGlobalUniversal: boolean): s
 /** The two readers with a per-skill off switch in their own config - see `skill_harness_disable.rs`. */
 const READERS_WITH_A_SWITCH: AgentId[] = ["codex", "open-code"];
 
+/** Why a synthesized reader row's switch is disabled: the harness has no per-skill switch, or its switch covers the Global Universal folder only. */
+function readerNoSwitchReason(agent: AgentId, isGlobal: boolean): string {
+  const label = readerLabel(agent);
+  if (READERS_WITH_A_SWITCH.includes(agent)) {
+    return `${label} can be turned off only for the Global Universal folder`;
+  }
+  return isGlobal
+    ? `${label} has no per-skill switch. Park the skill to turn it off for every harness.`
+    : `${label} has no per-skill switch`;
+}
+
 /** Every action a Locations row's ⋯ menu (or switch) can trigger - handled by `useLocationActions`. */
 export type LocationAction =
   | { kind: "relink"; deployment: Deployment }
@@ -74,6 +85,7 @@ export type LocationAction =
   | { kind: "uninstall-plugin"; deployment: Deployment }
   | { kind: "park" }
   | { kind: "unpark" }
+  | { kind: "split"; target: LifecycleTarget; projectPath: string | null; readers: AgentId[] }
   | { kind: "remove-scope"; scopeLabel: string; projectPath: string | null }
   | { kind: "remove-deployment"; scopeLabel: string; deployment: Deployment }
   | { kind: "update" }
@@ -177,10 +189,8 @@ export interface InvocationFile {
 
 /**
  * `buildInvocationFiles`'s per-file editable/disabledReason call: a file's
- * provenance is its own `plugin` field when set, otherwise the whole skill's
- * `source_kind` (there is no finer-grained per-deployment provenance -
- * see skill-list-filter.ts's "'plugin' reaches outside a skill's own
- * source_kind" note). The global Universal folder is always editable. A
+ * provenance is its own `plugin` field when set, otherwise its own
+ * `owner_kind` (`hasUpstreamOwner`). The global Universal folder is always editable. A
  * managed deployment forks before editing, as in the SKILL.md editor. Managed
  * Project Universal folders and managed copies are not editable because the
  * next sync or update would overwrite the changes.
@@ -188,7 +198,6 @@ export interface InvocationFile {
 function fileEditability(
   kind: "shared" | "copy" | "plugin",
   isGlobal: boolean,
-  skill: InstalledSkill,
   deployment: Deployment,
 ): Pick<InvocationFile, "editable" | "disabledReason"> {
   if (kind === "plugin") {
@@ -198,17 +207,27 @@ function fileEditability(
     };
   }
   if (kind === "shared" && isGlobal) return { editable: true };
-  const managedSource =
-    skill.source_kind === "dotagents"
-      ? "dotagents"
-      : skill.source_kind === "skills-sh"
-        ? "skills.sh"
-        : null;
-  if (!managedSource) return { editable: true };
+  if (!hasUpstreamOwner(deployment)) return { editable: true };
+  const managedSource = deployment.owner_kind === "skills-sh" ? "skills.sh" : "dotagents";
   return {
     editable: false,
     disabledReason: `Managed by ${managedSource}; changes would be overwritten on update`,
   };
+}
+
+/**
+ * True when an update would write over this deployment: its own `owner_kind`
+ * is skills.sh or dotagents. The skill's `source_kind` is not enough - a
+ * deployment no ledger row claims is `ambiguous`, and the skill still reads
+ * as dotagents; forking such a folder is refused, and it has no upstream to
+ * protect.
+ */
+export function hasUpstreamOwner(deployment: Deployment): boolean {
+  return (
+    deployment.owner_kind === "skills-sh" ||
+    deployment.owner_kind === "dotagents" ||
+    deployment.owner_kind === "wildcard-dotagents"
+  );
 }
 
 const harnessLabelFromAgent = (agent: string): string =>
@@ -295,6 +314,11 @@ function offCondition(deployment: Deployment): Condition {
         "Allows it again in opencode.json.",
         "Off for OpenCode — denied in opencode.json.",
       );
+    case "claude-skill-overrides":
+      return enable(
+        "Removes the override in ~/.claude/settings.json.",
+        "Off for Claude Code — switched off in ~/.claude/settings.json.",
+      );
     case "claude-link-removed":
       return enable(
         "Restores the link in ~/.claude/skills.",
@@ -338,6 +362,28 @@ function readerOffCondition(agent: AgentId, target: LifecycleTarget): Condition 
         menu: [{ label: "Enable for OpenCode", action }],
         hint: "Allows it again in opencode.json.",
       };
+}
+
+/**
+ * A global Universal skill Claude Code cannot see: `~/.claude/skills` is a
+ * real folder (or missing) with no entry for it. The switch links it.
+ */
+function claudeNotLinkedCondition(target: LifecycleTarget): Condition {
+  return {
+    level: "off",
+    status: "Not linked",
+    phrase: "not linked",
+    plural: "not linked",
+    what: "Off for Claude Code — not linked from ~/.claude/skills.",
+    fix: "Use the switch to link it.",
+    menu: [
+      {
+        label: "Link for Claude Code",
+        action: { kind: "set-reader-enabled", target, agent: "claude-code", enabled: true },
+      },
+    ],
+    hint: "Creates a link in ~/.claude/skills to the Universal folder.",
+  };
 }
 
 /** Off because the folder that carries this row is parked - the folder's own switch is the fix, not this row's. */
@@ -610,7 +656,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
       for (const agent of AGENTS_READING_SHARED_ROOT_ORDER) {
         if (covered.has(agent)) continue;
         const disabledForReader = disabledReaders.has(agent);
-        const hasSwitch = READERS_WITH_A_SWITCH.includes(agent);
+        const hasSwitch = isGlobal && READERS_WITH_A_SWITCH.includes(agent);
         const conditions: Condition[] = parkedScope
           ? [offBecauseParked(readerLabel(agent), live)]
           : disabledForReader && hasSwitch
@@ -628,6 +674,29 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
           lifecycleTarget: shared.lifecycleTarget,
           hasSwitch,
           switchOn: !disabledForReader && !parkedScope,
+          switchDisabledReason: hasSwitch ? undefined : readerNoSwitchReason(agent, isGlobal),
+          invocation: null,
+        });
+      }
+      if (
+        isGlobal &&
+        !parkedScope &&
+        !covered.has("claude-code") &&
+        disabledReaders.has("claude-code")
+      ) {
+        const conditions = [claudeNotLinkedCondition(shared.lifecycleTarget)];
+        rows.push({
+          kind: "reader",
+          harness: "claude-code",
+          harnessLabel: "Claude Code",
+          path: shared.path,
+          caption: "",
+          conditions,
+          level: topLevel(conditions),
+          deployment: null,
+          lifecycleTarget: shared.lifecycleTarget,
+          hasSwitch: true,
+          switchOn: false,
           invocation: null,
         });
       }
@@ -673,7 +742,7 @@ export function siblingRows(group: ScopeGroup): LocationRow[] {
   return group.rows.filter((row) => row.kind !== "reader");
 }
 
-/** `AGENTS_READING_SHARED_ROOT`, minus Grok Build - it has no row-level condition of its own worth synthesizing today. Kept in its documented order. */
+/** `AGENTS_READING_SHARED_ROOT`, in its documented order. */
 const AGENTS_READING_SHARED_ROOT_ORDER: AgentId[] = [
   "codex",
   "open-code",
@@ -799,11 +868,13 @@ export function promoteToGlobal(groups: ScopeGroup[]): PromoteSource | null {
   return { path: source.path, agents };
 }
 
+/** The Invocation files of one skill, exactly as the properties rail lists them - the rail and the list's bulk Invocation action both edit these. */
+export function invocationFilesForSkill(skill: InstalledSkill): InvocationFile[] {
+  return buildInvocationFiles(buildScopeGroups(skill));
+}
+
 /** Build Invocation rows for the Universal folder and each copy or plugin. Links share the Universal SKILL.md and do not get a row. */
-export function buildInvocationFiles(
-  groups: ScopeGroup[],
-  skill: InstalledSkill,
-): InvocationFile[] {
+export function buildInvocationFiles(groups: ScopeGroup[]): InvocationFile[] {
   const files: InvocationFile[] = [];
   for (const group of groups) {
     const shared = group.shared;
@@ -818,7 +889,7 @@ export function buildInvocationFiles(
         tip: rowTipLines(shared.conditions).join("\n"),
         chip: null,
         invocation: shared.invocation ?? "both",
-        ...fileEditability("shared", group.isGlobal, skill, shared.deployment),
+        ...fileEditability("shared", group.isGlobal, shared.deployment),
         caption: "",
         deployment: shared.deployment,
       });
@@ -841,7 +912,7 @@ export function buildInvocationFiles(
         tip: rowTipLines(row.conditions).join("\n"),
         chip: isPlugin ? "plugin" : null,
         invocation: row.invocation ?? "both",
-        ...fileEditability(row.kind, group.isGlobal, skill, row.deployment),
+        ...fileEditability(row.kind, group.isGlobal, row.deployment),
         caption: codexNote,
         deployment: row.deployment,
       });
@@ -876,6 +947,8 @@ export function rowMenu(
   row: LocationRow,
   scopeLabel: string,
   projectPath: string | null = null,
+  /** Harnesses that read the shared row's folder in this scope - the split dialog's defaults. */
+  sharedReaders: AgentId[] = [],
 ): RowMenuResult {
   const plain: MenuEntry[] = [];
   const danger: MenuEntry[] = [];
@@ -900,6 +973,20 @@ export function rowMenu(
     );
     if (!hasOff && projectPath === null) {
       push({ label: "Park (Disable everywhere)", action: { kind: "park" } }, false);
+    }
+    if (!hasOff && row.deployment?.backing.kind === "canonical") {
+      push(
+        {
+          label: "Split into harness folders…",
+          action: {
+            kind: "split",
+            target: row.lifecycleTarget,
+            projectPath,
+            readers: sharedReaders,
+          },
+        },
+        false,
+      );
     }
     push(
       {

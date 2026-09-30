@@ -114,6 +114,43 @@ pub fn confine(
     }
 }
 
+/// [`confine`] for a file about to be rewritten in place: when `path` is a
+/// link (a dotfiles repo linking `~/.claude/settings.json`), the link's
+/// resolved file is confined and returned instead, so the write goes
+/// through the link and the link survives. A dangling link is refused
+/// rather than replaced by a regular file.
+pub fn confine_write_through(
+    scope: &NormalizedScope,
+    fs: &dyn ScopeFs,
+    path: &Path,
+) -> Result<ScopedPath, CoreError> {
+    confine(scope, fs, &resolve_config_link(fs, path)?)
+}
+
+/// The file a config path really names: `path` itself, or the file its
+/// leaf link resolves to. An op that edits a config file reads, backs up,
+/// writes, and fingerprints this path, so its undo restores the real file
+/// rather than the link (whose backup would read back the edited bytes).
+/// A dangling link is an [`ErrorCode::InvalidRequest`] error.
+pub fn resolve_config_link(fs: &dyn ScopeFs, path: &Path) -> Result<PathBuf, CoreError> {
+    let is_link = fs
+        .symlink_metadata(path)
+        .is_ok_and(|facts| facts.kind == FileKind::Symlink);
+    if !is_link {
+        return Ok(path.to_path_buf());
+    }
+    fs.canonicalize(path).map_err(|_| {
+        CoreError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "{} is a link to a file that does not exist; fix or remove the link first",
+                path.display()
+            ),
+        )
+        .at(path)
+    })
+}
+
 /// Shared body for every [`ScopeFs::ancestor_holds`] implementation: walk
 /// `start` and its ancestors via `fs.symlink_metadata`, one directory at a
 /// time, stopping as soon as `dir.join(name)` resolves or the walk runs out
@@ -215,6 +252,16 @@ impl ScopeFs for ScopedReads<'_> {
     ) -> std::io::Result<()> {
         self.inner.symlink(guard, target, link)
     }
+    fn symlink_relative(
+        &self,
+        guard: &ExclusiveGuard,
+        target: &ScopedPath,
+        relative_target: &Path,
+        link: &ScopedPath,
+    ) -> std::io::Result<()> {
+        self.inner
+            .symlink_relative(guard, target, relative_target, link)
+    }
     fn fsops_device_inode(&self, path: &Path) -> std::io::Result<(u64, u64)> {
         self.inner.fsops_device_inode(path)
     }
@@ -229,6 +276,14 @@ impl ScopeFs for ScopedReads<'_> {
     }
     fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         self.inner.fsops_write_new_file(path, bytes)
+    }
+    fn fsops_write_new_file_with_mode(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        mode: u32,
+    ) -> std::io::Result<()> {
+        self.inner.fsops_write_new_file_with_mode(path, bytes, mode)
     }
     fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         self.inner.fsops_rename(from, to)
@@ -296,6 +351,22 @@ pub trait ScopeFs: Send + Sync {
         target: &ScopedPath,
         link: &ScopedPath,
     ) -> std::io::Result<()>;
+    /// Creates a symlink at `link` that stores `relative_target` (a path
+    /// relative to `link`'s parent that resolves to `target`), the way the
+    /// `skills` CLI writes its per-harness links. A relative link keeps
+    /// working when the scope folder is moved or mounted at another path.
+    /// The default stores `target` as is, for a fake filesystem that only
+    /// needs the link to resolve.
+    fn symlink_relative(
+        &self,
+        guard: &ExclusiveGuard,
+        target: &ScopedPath,
+        relative_target: &Path,
+        link: &ScopedPath,
+    ) -> std::io::Result<()> {
+        let _ = relative_target;
+        self.symlink(guard, target, link)
+    }
 
     /// Device and inode of the entry at `path`, without following a final
     /// symlink. [`crate::fsops::Root`] rereads this before and after every
@@ -315,6 +386,14 @@ pub trait ScopeFs: Send + Sync {
     /// [`crate::fsops::write_file`], which goes through a temp name and a
     /// rename instead.
     fn fsops_write_new_file(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
+    /// [`Self::fsops_write_new_file`] that leaves the file with exactly the
+    /// `mode` permission bits, whatever the process umask is.
+    fn fsops_write_new_file_with_mode(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        mode: u32,
+    ) -> std::io::Result<()>;
     /// Renames within one filesystem, confined by the caller's own
     /// [`crate::fsops::Root`] rather than a [`ScopedPath`].
     fn fsops_rename(&self, from: &Path, to: &Path) -> std::io::Result<()>;
@@ -553,17 +632,17 @@ pub trait HistoryStore: Send {
     /// [`Self::read_manifest`]. Never called for an absent entry.
     fn read_backup_bytes(&self, backup_dir: &str, relative: &str) -> Result<Vec<u8>, CoreError>;
     /// Lists every regular file under `relative` inside `backup_dir`
-    /// (recursively, paths relative to `relative` itself) with its bytes.
-    /// Used only when [`Self::read_manifest`] names a directory entry: a
-    /// restore of a directory reads the whole subtree this way and replays
-    /// it with [`crate::fsops::stage`]. A symlink inside the backed-up tree
-    /// is an [`crate::error::ErrorCode::Unsupported`] error; nothing writes
-    /// one into a skill folder today.
+    /// (recursively, paths relative to `relative` itself) with its bytes and
+    /// permission bits. Used only when [`Self::read_manifest`] names a
+    /// directory entry: a restore of a directory reads the whole subtree
+    /// this way and replays it with [`crate::fsops::stage_files`]. A symlink
+    /// inside the backed-up tree is an
+    /// [`crate::error::ErrorCode::Unsupported`] error.
     fn read_backup_files(
         &self,
         backup_dir: &str,
         relative: &str,
-    ) -> Result<Vec<(PathBuf, Vec<u8>)>, CoreError>;
+    ) -> Result<Vec<crate::fsops::StageFile>, CoreError>;
     /// Merges `patch`'s top-level keys into an already-recorded event's
     /// payload, leaving every other key as-is. For best-effort follow-up
     /// work a mutation performs after its own row already exists (e.g.
@@ -572,6 +651,17 @@ pub trait HistoryStore: Send {
     /// failure just to report it. The default no-op is fine for a host that
     /// never calls it.
     fn patch_payload(
+        &mut self,
+        _guard: &ExclusiveGuard,
+        _id: &EventId,
+        _patch: serde_json::Value,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+    /// [`Self::patch_payload`] for the event's inverse: an op records its
+    /// inverse before the first write (journal first) and fills in what only
+    /// the write can know, such as the fingerprint of each folder it wrote.
+    fn patch_inverse(
         &mut self,
         _guard: &ExclusiveGuard,
         _id: &EventId,

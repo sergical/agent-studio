@@ -15,7 +15,9 @@
  * skills root, for harnesses with no native switch.
  */
 export type DisabledBy =
-  | ("codex-config" | "opencode-permission" | "claude-link-removed" | "studio-moved")
+  | ("codex-config" | "opencode-permission" | "studio-moved")
+  | "claude-link-removed"
+  | "claude-skill-overrides"
   | "claude-plugin-disabled";
 /**
  * Which CLI a forked skill was originally managed by.
@@ -644,9 +646,10 @@ export interface AddMethodDefaults {
    */
   installed_harnesses: AgentId[];
   /**
-   * Whether `~/.claude/skills` is a symlink into the shared folder -
-   * true when Claude Code already reads `.agents/skills` on its own,
-   * false when it's a real directory (or doesn't exist yet).
+   * Whether the install scope's `.claude/skills` is a symlink that resolves
+   * to the same scope's `.agents/skills` - true when Claude Code already
+   * reads the shared folder on its own, false when it's a real directory,
+   * a link to any other folder, or doesn't exist yet.
    */
   claude_reads_shared_folder: boolean;
 }
@@ -736,6 +739,11 @@ export interface AddSkillRequest {
   disabled_harnesses: AgentId[];
   scope: InstallScope;
   project_path: string | null;
+  /**
+   * Link or copy into each chosen harness folder that is not the shared
+   * folder. Ignored when the choice writes one folder only.
+   */
+  link_mode: "link" | "copy";
 }
 /**
  * A parsed "Source" field from the add-skill sheet - see
@@ -771,6 +779,11 @@ export interface AddSkillsRequest {
   disabled_harnesses: AgentId[];
   scope: InstallScope;
   project_path: string | null;
+  /**
+   * Link or copy into each chosen harness folder that is not the shared
+   * folder. Ignored when the choice writes one folder only.
+   */
+  link_mode: "link" | "copy";
 }
 /**
  * One skill folder inside a repo: `path` is repo-relative and `""` for a
@@ -1296,6 +1309,57 @@ export interface UnparkOutcome {
   restored_path: string;
 }
 /**
+ * Result of `split`.
+ */
+export interface SplitOutcome {
+  /**
+   * The `split` event.
+   */
+  event_id: string;
+  /**
+   * The Universal deployment that was split.
+   */
+  deployment_id: string;
+  /**
+   * The skill's name.
+   */
+  skill: string;
+  /**
+   * One entry per chosen harness.
+   */
+  copies: SplitCopy[];
+  /**
+   * Links into the Universal folder that were removed.
+   */
+  removed_links: string[];
+  /**
+   * Where the Universal folder was moved (quarantine), kept for undo.
+   */
+  quarantine_path: string;
+  /**
+   * Plain-language note: `npx skills update` updates only a Universal
+   * copy, so these copies no longer get updates from it.
+   */
+  update_note: string;
+}
+/**
+ * One folder `split` wrote.
+ */
+export interface SplitCopy {
+  /**
+   * Kebab-case harness identifier, for example `claude-code` or `open-code`.
+   *
+   * Invariant: the string is the serde wire name used by the desktop app
+   * today. `open-code` is canonical; `opencode` is only a CLI binary name and
+   * is never stored in an `AgentId`.
+   */
+  harness: string;
+  /**
+   * The copy's folder.
+   */
+  path: string;
+}
+/**
  * Result of `remove`.
  */
 export interface RemoveOutcome {
@@ -1427,4 +1491,21 @@ export interface DoctorViolation {
    * Message for a person.
    */
   detail: string;
+}
+/**
+ * One target's outcome inside a batch command. Results come back in the
+ * order the targets were sent, so the caller pairs them by index.
+ */
+export interface BulkTargetResult {
+  /**
+   * `None` when the target was written; otherwise why it was not.
+   */
+  error: string | null;
+}
+/**
+ * One SKILL.md a batch invocation change should write.
+ */
+export interface InvocationTarget {
+  name: string;
+  path: string;
 }

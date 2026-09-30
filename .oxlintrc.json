@@ -85,6 +85,8 @@
         "apps/desktop/src/components/SkillDetail/SkillRepairCard.tsx",
         "apps/desktop/src/components/SkillDetail/UninstallPluginDialog.tsx",
         "apps/desktop/src/components/SkillDetail/useSkillFrontmatterRepair.ts",
+        "apps/desktop/src/components/SkillList/skill-bulk-run.ts",
+        "apps/desktop/src/components/SkillList/useSkillBulkActions.ts",
         "apps/desktop/src/components/SkillList/useSkillListAct.ts",
         "apps/desktop/src/components/SkillStore/InstalledSkillLifecycleActions.tsx",
         "apps/desktop/src/components/SkillStore/SkillDetailPanel.tsx",

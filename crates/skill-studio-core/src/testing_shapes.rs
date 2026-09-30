@@ -183,6 +183,39 @@ pub fn with_plugin_cache_nesting(builder: FixtureBuilder) -> FixtureBuilder {
     with_one_cached_plugin(b, &codex_root, ".codex-plugin", "1.0.0")
 }
 
+/// Claude Code's `~/.claude/plugins/installed_plugins.json` (version 2) for
+/// the Claude Code plugin of [`with_plugin_cache_nesting`], naming the
+/// cached `version` folder as the one Claude Code loads. `installPath` is
+/// absolute, so the shape needs the `home` the fixture is rooted at.
+pub fn with_claude_installed_plugin(
+    builder: FixtureBuilder,
+    home: &str,
+    version: &str,
+) -> FixtureBuilder {
+    let install_path = format!("{home}/.claude/plugins/cache/vendor-1/plugin-1/{version}");
+    builder.file(
+        ".claude/plugins/installed_plugins.json",
+        format!(
+            r#"{{
+  "version": 2,
+  "plugins": {{
+    "plugin-1@vendor-1": [
+      {{
+        "scope": "user",
+        "installPath": "{install_path}",
+        "version": "{version}",
+        "installedAt": "2026-09-01T00:00:00.000Z",
+        "lastUpdated": "2026-09-01T00:00:00.000Z",
+        "gitCommitSha": "0000000000000000000000000000000000000000"
+      }}
+    ]
+  }}
+}}"#
+        )
+        .as_bytes(),
+    )
+}
+
 /// One cached plugin: the manifest the agent-plugins.org convention puts in
 /// `manifest_dir`, the sidecar files a real plugin ships next to it, its
 /// `skills/` folder, and a dependency tree carrying a `SKILL.md` that

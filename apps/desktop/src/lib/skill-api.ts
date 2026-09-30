@@ -15,6 +15,7 @@ import type {
   AddSkillsRequest,
   AgentId,
   AppVersion,
+  BulkTargetResult,
   DiscoverySourceSetting,
   ImportResult,
   InstallPreferences,
@@ -30,6 +31,7 @@ import type {
   HarnessVisibilityTarget,
   LifecycleTarget,
   InvocationPolicy,
+  InvocationTarget,
   PackImportPreflightResult,
   PackImportRequest,
   PaginatedSkillsResponse,
@@ -39,8 +41,11 @@ import type {
   SkillDetails,
   SkillEvent,
   SkillSnapshot,
+  SplitCopy,
+  SplitOutcome,
   TrackedProjects,
   UpdateAllOutcome,
+  UpdateAllProgress,
   UpdateOutcome,
   UpdateStatus,
 } from "@skill-studio/lib";
@@ -317,8 +322,29 @@ export async function updateSkill(
  * for every non-fork owner target; forks still pull upstream one at a time
  * through `pullForkUpstream`, since that CLI call has no batched form.
  */
-export async function updateAllSkills(targets: LifecycleTarget[]): Promise<UpdateAllOutcome> {
+async function updateAllSkills(targets: LifecycleTarget[]): Promise<UpdateAllOutcome> {
   return callCommand("update_all_skills", { targets });
+}
+
+/** Event name each finished "Update all" target is reported on. */
+const UPDATE_ALL_PROGRESS_EVENT = "skills://update-all-progress";
+
+/**
+ * `updateAllSkills` that reports each finished target (updated or refused)
+ * to `onProgress` while the batch runs.
+ */
+export async function updateAllSkillsWithProgress(
+  targets: LifecycleTarget[],
+  onProgress: (progress: UpdateAllProgress) => void,
+): Promise<UpdateAllOutcome> {
+  const unlisten = await listen<UpdateAllProgress>(UPDATE_ALL_PROGRESS_EVENT, (event) => {
+    onProgress(event.payload);
+  });
+  try {
+    return await updateAllSkills(targets);
+  } finally {
+    unlisten();
+  }
 }
 
 /**
@@ -528,11 +554,14 @@ export async function listGithubSkills(
 
 /**
  * Whether dotagents can run, whether skills.sh has been used before, and
- * which first-class agents are installed - fetched once when the Add Skill
- * sheet opens to pick its Method and Harnesses defaults.
+ * which first-class agents are installed - fetched when an install form opens
+ * and again when its scope changes. `projectPath` picks the scope whose
+ * `.claude/skills` link `claude_reads_shared_folder` describes; `null` is global.
  */
-export async function getAddMethodDefaults(): Promise<AddMethodDefaults> {
-  return callCommand("get_add_method_defaults");
+export async function getAddMethodDefaults(
+  projectPath: string | null = null,
+): Promise<AddMethodDefaults> {
+  return callCommand("get_add_method_defaults", { projectPath });
 }
 
 /**
@@ -567,6 +596,44 @@ export async function parkSkill(target: LifecycleTarget): Promise<void> {
  */
 export async function unparkSkill(target: LifecycleTarget): Promise<void> {
   return callCommand("unpark_skill", { target });
+}
+
+/**
+ * `parkSkill` for many targets in one call. One result per target, in order:
+ * `error` is `null` when it parked, so one refused folder never hides the rest.
+ */
+export async function parkSkills(targets: LifecycleTarget[]): Promise<BulkTargetResult[]> {
+  return callCommand("park_skills", { targets });
+}
+
+/** `unparkSkill` for many targets in one call; results as in `parkSkills`. */
+export async function unparkSkills(targets: LifecycleTarget[]): Promise<BulkTargetResult[]> {
+  return callCommand("unpark_skills", { targets });
+}
+
+/**
+ * Split one Universal deployment into a real copy per chosen harness, then
+ * remove the Universal folder and every per-skill link into it. Harnesses not
+ * in `harnesses` lose the skill. Refused for a whole-folder link or a name
+ * clash before anything is written; Activity holds the undo.
+ */
+export async function splitSkill(
+  target: LifecycleTarget,
+  harnesses: AgentId[],
+): Promise<SplitOutcome> {
+  return callCommand("split_skill", { target, harnesses });
+}
+
+/**
+ * The folders `splitSkill` would write for `harnesses` in one scope, with
+ * `CODEX_HOME` and the OpenCode config root already applied. Reads no files.
+ */
+export async function splitSkillTargets(
+  skillName: string,
+  projectPath: string | null,
+  harnesses: AgentId[],
+): Promise<SplitCopy[]> {
+  return callCommand("split_skill_targets", { skillName, projectPath, harnesses });
 }
 
 /**
@@ -613,6 +680,18 @@ export async function setSkillInvocation(
   policy: InvocationPolicy,
 ): Promise<void> {
   return callCommand("set_skill_invocation", { name, path, policy });
+}
+
+/**
+ * `setSkillInvocation` for many SKILL.md files in one call, with one snapshot
+ * reconcile at the end. One result per target, in order; a failing target
+ * does not stop the others.
+ */
+export async function setSkillsInvocation(
+  targets: InvocationTarget[],
+  policy: InvocationPolicy,
+): Promise<BulkTargetResult[]> {
+  return callCommand("set_skills_invocation", { targets, policy });
 }
 
 /**

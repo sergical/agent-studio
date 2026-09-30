@@ -95,6 +95,21 @@ export interface UpdateAllTally {
   attempted: number;
   succeeded: number;
   failures: number;
+  /** The first failed target's message, so the toast can say why. */
+  firstError: string | null;
+}
+
+const MAX_ERROR_LENGTH = 140;
+
+/** "3 failed: <first error>" for the toast, or `undefined` when nothing failed. */
+export function updateAllFailureMessage(tally: UpdateAllTally): string | undefined {
+  if (tally.failures === 0) return undefined;
+  if (!tally.firstError) return `${tally.failures} failed`;
+  const reason =
+    tally.firstError.length > MAX_ERROR_LENGTH
+      ? `${tally.firstError.slice(0, MAX_ERROR_LENGTH - 1)}…`
+      : tally.firstError;
+  return `${tally.failures} failed: ${reason}`;
 }
 
 /**
@@ -102,6 +117,8 @@ export interface UpdateAllTally {
  * form for that path), while every other outdated owner flattens into one
  * `updateAllOwners` call - one IPC round trip and one rescan for the whole
  * batch, instead of one `updateSkill` round trip and rescan per skill.
+ * `onProgress(done, total)` counts forks and owner targets in one sequence;
+ * `updateAllOwners` reports how many of its own targets finished.
  */
 export async function updateAllOutdatedSkills(
   skills: Pick<
@@ -109,44 +126,56 @@ export async function updateAllOutdatedSkills(
     "name" | "deployments" | "source_kind" | "update_owner_ids" | "update_owners"
   >[],
   pullFork: (target: LifecycleTarget) => Promise<PullResult>,
-  updateAllOwners: (targets: LifecycleTarget[]) => Promise<UpdateAllOutcome>,
+  updateAllOwners: (
+    targets: LifecycleTarget[],
+    onOwnerDone: (done: number) => void,
+  ) => Promise<UpdateAllOutcome>,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<UpdateAllTally> {
-  let attempted = 0;
-  let succeeded = 0;
-  let failures = 0;
-
-  for (const skill of skills.filter((skill) => skill.source_kind === "fork")) {
-    try {
-      // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
-      await pullFork(lifecycleTargetForPark(skill));
-      attempted += 1;
-      succeeded += 1;
-    } catch {
-      attempted += 1;
-      failures += 1;
-    }
-  }
-
+  const forks = skills.filter((skill) => skill.source_kind === "fork");
   const ownerTargets = skills.flatMap((skill) =>
     skill.source_kind === "fork" ? [] : skillUpdateOwnerTargets(skill),
   );
-  if (ownerTargets.length > 0) {
-    attempted += ownerTargets.length;
+  const total = forks.length + ownerTargets.length;
+  const tally: UpdateAllTally = { attempted: total, succeeded: 0, failures: 0, firstError: null };
+  const fail = (count: number, message: string) => {
+    tally.failures += count;
+    tally.firstError ??= message;
+  };
+  onProgress?.(0, total);
+
+  for (const [index, skill] of forks.entries()) {
     try {
-      const outcome = await updateAllOwners(ownerTargets);
+      // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
+      await pullFork(lifecycleTargetForPark(skill));
+      tally.succeeded += 1;
+    } catch (error) {
+      fail(1, error instanceof Error ? error.message : String(error));
+    }
+    onProgress?.(index + 1, total);
+  }
+
+  if (ownerTargets.length > 0) {
+    try {
+      const outcome = await updateAllOwners(ownerTargets, (done) =>
+        onProgress?.(forks.length + done, total),
+      );
       // `errors` is keyed by skill name, so two failing owners of one
       // twice-installed skill collapse to one entry there; `items` carries
       // one entry per owner regardless, so count failures from `items`
       // instead (N1, review round 3).
-      const failedCount = outcome.items.filter((item) => item.outcome === null).length;
-      succeeded += outcome.items.length - failedCount;
-      failures += failedCount;
-    } catch {
-      failures += ownerTargets.length;
+      const failedItems = outcome.items.filter((item) => item.outcome === null);
+      tally.succeeded += outcome.items.length - failedItems.length;
+      if (failedItems.length > 0) {
+        const first = failedItems[0];
+        fail(failedItems.length, outcome.errors[first.skill] ?? `${first.skill} failed`);
+      }
+    } catch (error) {
+      fail(ownerTargets.length, error instanceof Error ? error.message : String(error));
     }
   }
 
-  return { attempted, succeeded, failures };
+  return tally;
 }
 
 export interface HomeGroups {

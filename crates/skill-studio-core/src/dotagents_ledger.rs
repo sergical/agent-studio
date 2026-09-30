@@ -11,7 +11,7 @@
 //! pass the already-normalized `agents_dir`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -74,10 +74,27 @@ struct ManifestSkill {
     r#ref: Option<String>,
 }
 
+/// True for a `path:` source, the one `dotagents sync` gives an undeclared
+/// folder it adopts (`source = "path:skills/<name>"`): the folder is the
+/// only copy, so there is no upstream to update from.
+pub fn is_local_path_source(source: &str) -> bool {
+    source.starts_with("path:")
+}
+
+impl DotagentsSkill {
+    /// See [`is_local_path_source`].
+    pub fn is_local_path(&self) -> bool {
+        is_local_path_source(&self.source)
+    }
+}
+
 /// "owner/repo" -> `Some("owner/repo")`; `"git:https://github.com/o/r.git"` ->
 /// `Some("o/r")`; any other host (or a source shape that isn't a plain repo
-/// slug) -> `None`.
+/// slug, such as a `path:` source) -> `None`.
 pub fn github_repo_from_source(source: &str) -> Option<String> {
+    if is_local_path_source(source) {
+        return None;
+    }
     if let Some(url) = source.strip_prefix("git:") {
         let url = url.trim_end_matches(".git");
         let after_host = url.split("github.com/").nth(1)?;
@@ -97,6 +114,18 @@ pub fn github_repo_from_source(source: &str) -> Option<String> {
         Some(source.to_string())
     } else {
         None
+    }
+}
+
+/// The directory holding a scope's `agents.toml` and `agents.lock`, where
+/// `dotagents [--project]` itself puts them (`dotagents/dist/scope.js`'s
+/// `resolveScope`): `<home>/.agents` globally, and for a project the project
+/// root itself - `<project>/agents.toml`, not inside `<project>/.agents`.
+/// The skills.sh lock files do not follow this rule.
+pub fn dotagents_dir(home: &Path, project: Option<&Path>) -> PathBuf {
+    match project {
+        Some(project) => project.to_path_buf(),
+        None => home.join(".agents"),
     }
 }
 

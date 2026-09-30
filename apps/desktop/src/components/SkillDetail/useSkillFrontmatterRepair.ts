@@ -1,43 +1,59 @@
 // ============================================================================
-// useSkillFrontmatterRepair - Previews a malformed-YAML repair for the page's
-// current deployment as soon as it's detected, and keeps that preview
-// selected only while it still matches the deployment on screen.
+// useSkillFrontmatterRepair - Previews a malformed-YAML repair once per file
+// state (deployment id + content hash) as soon as it's detected, and keeps
+// that preview only while it still matches the file on screen. Reports when
+// the preview has settled so the page never swaps one repair button for another.
 // ============================================================================
 
 import { useEffect, useState } from "react";
-import type { Dispatch, SetStateAction } from "react";
 import { previewSkillFrontmatterRepair } from "../../lib/skill-api";
 import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import type { Deployment, FrontmatterRepairPreview } from "@skill-studio/lib";
-import { hasMalformedYamlWarning } from "./skill-frontmatter-repair-policy";
+import { frontmatterPreviewKey, hasMalformedYamlWarning } from "./skill-frontmatter-repair-policy";
 
 export interface UseSkillFrontmatterRepair {
   selectedFrontmatterRepair: FrontmatterRepairPreview | null;
-  setFrontmatterRepair: Dispatch<SetStateAction<FrontmatterRepairPreview | null>>;
+  /** True when no backend preview is pending for the file on screen: it answered, failed, or does not apply. */
+  isFrontmatterPreviewSettled: boolean;
+  clearFrontmatterRepair: () => void;
+}
+
+interface PreviewAnswer {
+  key: string;
+  preview: FrontmatterRepairPreview | null;
 }
 
 export function useSkillFrontmatterRepair(
   deployment: Deployment | undefined,
 ): UseSkillFrontmatterRepair {
-  const [frontmatterRepair, setFrontmatterRepair] = useState<FrontmatterRepairPreview | null>(null);
+  const [answer, setAnswer] = useState<PreviewAnswer | null>(null);
+
+  const key = frontmatterPreviewKey(deployment);
+  const isMalformed = hasMalformedYamlWarning(deployment);
 
   useEffect(() => {
-    if (!deployment || !hasMalformedYamlWarning(deployment)) return;
+    if (!deployment || key === null || !isMalformed) return;
     let ignore = false;
     previewSkillFrontmatterRepair(lifecycleTargetForDeployment(deployment))
       .then((preview) => {
-        if (!ignore && preview.deployment_id === deployment.id) setFrontmatterRepair(preview);
+        if (ignore) return;
+        setAnswer({ key, preview: preview.deployment_id === deployment.id ? preview : null });
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!ignore) setAnswer({ key, preview: null });
+      });
     return () => {
       ignore = true;
     };
-  }, [deployment]);
+    // Keyed on the file state, not the deployment object, which changes on every snapshot.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, isMalformed]);
 
-  const frontmatterRepairDeploymentId = frontmatterRepair?.deployment_id;
-  const currentDeploymentId = deployment?.id;
-  const selectedFrontmatterRepair =
-    frontmatterRepairDeploymentId === currentDeploymentId ? frontmatterRepair : null;
+  const current = answer !== null && answer.key === key ? answer : null;
 
-  return { selectedFrontmatterRepair, setFrontmatterRepair };
+  return {
+    selectedFrontmatterRepair: current?.preview ?? null,
+    isFrontmatterPreviewSettled: !isMalformed || current !== null,
+    clearFrontmatterRepair: () => key !== null && setAnswer({ key, preview: null }),
+  };
 }

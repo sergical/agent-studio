@@ -7,6 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
+use skill_studio_core::dotagents_ledger::DotagentsSkill;
+
 use super::skill_deployment::{
     parse_deployment_id, BackingRelationship, DeploymentMutability, SkillDestination,
 };
@@ -210,6 +212,70 @@ pub fn require_direct_deployment_mutable(
         deployment.path,
         deployment.owner_kind.as_str()
     ))
+}
+
+/// The dotagents ledger entry an update of `deployment` would run against,
+/// or the reason there is none to update from: no matching ledger, no entry,
+/// a wildcard entry (no manifest row), or a local `path:` folder.
+pub fn dotagents_update_entry<'a>(
+    ledgers: &'a [OwnershipLedgers],
+    deployment: &Deployment,
+    skill_name: &str,
+) -> Result<&'a DotagentsSkill, String> {
+    let ledger = ledger_matching_deployment(ledgers, deployment)
+        .ok_or("Update is not available: the matching ownership ledger is missing")?;
+    let entry = ledger
+        .dotagents
+        .iter()
+        .find(|entry| entry.name == skill_name)
+        .ok_or_else(|| {
+            format!("Update is not available: {skill_name} is not in the matching agents.lock")
+        })?;
+    if !entry.has_manifest_row {
+        return Err(format!(
+            "Update is not available: {skill_name} is a wildcard dotagents entry"
+        ));
+    }
+    if entry.is_local_path() {
+        return Err(
+            "Update is not available: dotagents tracks this as a local folder; there is nothing upstream to update from"
+                .to_string(),
+        );
+    }
+    Ok(entry)
+}
+
+/// The deployment an owner-wide action runs its adapter against: the
+/// canonical one when the owner has it, else the first.
+pub fn owner_adapter_deployment<'a>(
+    deployments: impl Iterator<Item = &'a Deployment>,
+) -> Option<&'a Deployment> {
+    let mut first = None;
+    for deployment in deployments {
+        if matches!(deployment.backing, BackingRelationship::Canonical) {
+            return Some(deployment);
+        }
+        first.get_or_insert(deployment);
+    }
+    first
+}
+
+/// Why the update path refuses `deployment`, or `None` when it can run.
+/// The one rule behind both `build_update_request` and the overlay that
+/// decides which owners a skill lists as outdated, so the app never offers
+/// an update it cannot run.
+pub fn update_refusal(
+    deployment: &Deployment,
+    skill_name: &str,
+    ledgers: &[OwnershipLedgers],
+) -> Option<String> {
+    if let Err(reason) = require_direct_deployment_mutable(deployment, "Update") {
+        return Some(reason);
+    }
+    if deployment.owner_kind == LifecycleOwnerKind::Dotagents {
+        return dotagents_update_entry(ledgers, deployment, skill_name).err();
+    }
+    None
 }
 
 /// Require the deployment selected to represent an owner group to be mutable.

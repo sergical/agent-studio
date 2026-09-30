@@ -29,8 +29,12 @@ use super::SourceKind;
 pub enum DisabledBy {
     CodexConfig,
     OpencodePermission,
+    /// An older build's Claude Code off switch: it removed the per-skill link.
+    /// The switch now writes `skillOverrides` instead.
     ClaudeLinkRemoved,
     StudioMoved,
+    /// Claude Code `settings.json` `skillOverrides["<name>"]` set to `"off"`.
+    ClaudeSkillOverrides,
     /// Claude Code `settings.json` `enabledPlugins["<plugin>@<marketplace>"]`
     /// set to `false`.
     ClaudePluginDisabled,
@@ -431,6 +435,10 @@ pub struct AddSkillRequest {
     pub disabled_harnesses: Vec<super::agents::AgentId>,
     pub scope: InstallScope,
     pub project_path: Option<String>,
+    /// Link or copy into each chosen harness folder that is not the shared
+    /// folder. Ignored when the choice writes one folder only.
+    #[serde(default)]
+    pub link_mode: skill_studio_core::dto::InstallLinkMode,
 }
 
 /// `add_skills`' request: one source, and the skill folders picked out of it
@@ -450,6 +458,10 @@ pub struct AddSkillsRequest {
     pub disabled_harnesses: Vec<super::agents::AgentId>,
     pub scope: InstallScope,
     pub project_path: Option<String>,
+    /// Link or copy into each chosen harness folder that is not the shared
+    /// folder. Ignored when the choice writes one folder only.
+    #[serde(default)]
+    pub link_mode: skill_studio_core::dto::InstallLinkMode,
 }
 
 /// One skill's outcome in an `add_skills` batch. A failure never stops the
@@ -496,6 +508,27 @@ pub struct LifecycleTarget {
     pub deployment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_id: Option<String>,
+}
+
+/// One target's outcome inside a batch command. Results come back in the
+/// order the targets were sent, so the caller pairs them by index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BulkTargetResult {
+    /// `None` when the target was written; otherwise why it was not.
+    pub error: Option<String>,
+}
+
+impl BulkTargetResult {
+    /// Runs `apply` on every target in order. A failure is recorded on its own
+    /// target and never stops the rest.
+    pub fn collect<T>(targets: &[T], mut apply: impl FnMut(&T) -> Result<(), String>) -> Vec<Self> {
+        targets
+            .iter()
+            .map(|target| Self {
+                error: apply(target).err(),
+            })
+            .collect()
+    }
 }
 
 /// Exact deployment plus the harness whose visibility will change. Universal

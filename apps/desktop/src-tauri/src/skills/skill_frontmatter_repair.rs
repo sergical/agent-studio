@@ -196,6 +196,26 @@ fn exact_target<'a>(
     Ok(deployment)
 }
 
+/// Previews from the published snapshot, never a rescan: the apply step
+/// re-checks the file's fingerprint, so a stale snapshot cannot write a wrong
+/// file, and a full rebuild per call took minutes when the page re-asked.
+fn preview_from_cached_snapshot(
+    refresh_state: &SkillRefreshState,
+    target: &LifecycleTarget,
+) -> Result<FrontmatterRepairPreview, String> {
+    let deployment = {
+        let guard = refresh_state
+            .snapshot
+            .read()
+            .map_err(|_| "Skill snapshot is unavailable".to_string())?;
+        let snapshot = guard
+            .as_ref()
+            .ok_or("Skills are still loading; no snapshot to preview from")?;
+        exact_target(snapshot, target)?.clone()
+    };
+    preview_from_deployment(&deployment)
+}
+
 #[tauri::command]
 pub async fn preview_skill_frontmatter_repair(
     target: LifecycleTarget,
@@ -205,12 +225,7 @@ pub async fn preview_skill_frontmatter_repair(
     crate::timing_log::time_command_blocking(
         &timing_app,
         "preview_skill_frontmatter_repair",
-        move || {
-            let refresh_state = app.state::<SkillRefreshState>();
-            let snapshot =
-                super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
-            preview_from_deployment(exact_target(&snapshot, &target)?)
-        },
+        move || preview_from_cached_snapshot(&app.state::<SkillRefreshState>(), &target),
     )
     .await
 }
@@ -528,6 +543,119 @@ mod tests {
             mutability: DeploymentMutability::Mutable,
             ..Deployment::default()
         }
+    }
+
+    fn snapshot_with(deployment: Deployment) -> skill_refresh::SkillSnapshot {
+        use super::super::frontmatter::InvocationPolicy;
+        use super::super::skill_dto::InstalledSkill;
+        use super::super::SourceKind;
+        skill_refresh::SkillSnapshot {
+            revision: 1,
+            skills: vec![InstalledSkill {
+                name: "sample".to_string(),
+                source: "manual".to_string(),
+                source_type: "manual".to_string(),
+                source_url: None,
+                skill_path: None,
+                installed_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: None,
+                has_update: false,
+                update_owner_ids: Vec::new(),
+                update_owners: Vec::new(),
+                update_commit: None,
+                update_commit_at: None,
+                source_kind: SourceKind::Manual,
+                deployments: vec![deployment],
+                has_spec: false,
+                description: None,
+                spec_violations: Vec::new(),
+                skill_md_tokens: 0,
+                description_tokens: 0,
+                folder_bytes: 0,
+                file_count: 0,
+                content_hash: String::new(),
+                content_hashes: Vec::new(),
+                modified_at: None,
+                frontmatter_fields: Default::default(),
+                folder_truncated: false,
+                fork: None,
+                parked: false,
+                parked_at: None,
+                invocation: InvocationPolicy::Both,
+            }],
+            projects: Vec::new(),
+            invocations: Vec::new(),
+            heatmap: skill_studio_core::skill_uses::InvocationHeatmap::default(),
+            scanned_at: "2024-01-01T00:00:00Z".to_string(),
+            last_test_by_skill: Default::default(),
+            update_check: Default::default(),
+            opencode_config_kind: None,
+            scan_partial: false,
+            scan_observations: Vec::new(),
+            unread_roots: Vec::new(),
+        }
+    }
+
+    fn target_for(deployment: &Deployment) -> LifecycleTarget {
+        LifecycleTarget {
+            deployment_id: Some(deployment.id.clone()),
+            owner_id: None,
+        }
+    }
+
+    /// Flow: the page asks for a preview while the refresh state holds a snapshot
+    /// whose content hash is stale. Expect: the preview is built from the bytes
+    /// now on disk, with no app handle and no rebuild. Failure: the preview
+    /// needs a full rescan again (minutes per call) or shows stale content.
+    #[test]
+    fn preview_reads_disk_bytes_through_the_cached_snapshot_without_a_rescan() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("sample");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), malformed()).unwrap();
+        let dep = deployment(&dir, LifecycleOwnerKind::Manual);
+        let state = SkillRefreshState::fixture(snapshot_with(dep.clone()));
+
+        let preview = preview_from_cached_snapshot(&state, &target_for(&dep)).unwrap();
+
+        assert_eq!(preview.original_content, malformed());
+        assert_eq!(
+            preview.expected_content_fingerprint,
+            content_fingerprint(malformed().as_bytes())
+        );
+        assert_eq!(
+            preview.allowed_apply_modes,
+            vec![FrontmatterRepairApplyMode::ApplyFix]
+        );
+    }
+
+    /// Flow: the snapshot is not published yet (app just started). Expect: an
+    /// error the page treats as "no repair". Failure: the call blocks on a
+    /// rebuild or panics on the empty slot.
+    #[test]
+    fn preview_errors_when_no_snapshot_is_published() {
+        let temp = tempfile::tempdir().unwrap();
+        let dep = deployment(temp.path(), LifecycleOwnerKind::Manual);
+        let state = SkillRefreshState::fixture(snapshot_with(dep.clone()));
+        *state.snapshot.write().unwrap() = None;
+
+        let error = preview_from_cached_snapshot(&state, &target_for(&dep)).unwrap_err();
+
+        assert!(error.contains("no snapshot"), "{error}");
+    }
+
+    /// Flow: the target id is not in the cached snapshot. Expect: an error, not
+    /// a fallback rescan. Failure: an unknown deployment triggers a rebuild.
+    #[test]
+    fn preview_errors_for_a_deployment_missing_from_the_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let dep = deployment(temp.path(), LifecycleOwnerKind::Manual);
+        let other = deployment(&temp.path().join("other"), LifecycleOwnerKind::Manual);
+        let state = SkillRefreshState::fixture(snapshot_with(dep));
+
+        let error = preview_from_cached_snapshot(&state, &target_for(&other)).unwrap_err();
+
+        assert!(error.contains("not in the current snapshot"), "{error}");
     }
 
     fn record_repair_intent(

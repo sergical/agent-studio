@@ -133,7 +133,7 @@ impl ScopeFs for RealFs {
             .to_string_lossy();
         let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp_path = dir.join(format!(".{file_name}.tmp-{}-{counter}", std::process::id()));
-        let existing_mode = fs::symlink_metadata(path).ok().map(|m| m.mode());
+        let existing_mode = fs::metadata(path).ok().map(|m| m.mode());
         fs::write(&tmp_path, bytes)?;
         if let Some(mode) = existing_mode {
             fs::set_permissions(&tmp_path, fs::Permissions::from_mode(mode))?;
@@ -169,6 +169,18 @@ impl ScopeFs for RealFs {
         std::os::unix::fs::symlink(target.as_path(), link.as_path())
     }
 
+    fn symlink_relative(
+        &self,
+        _guard: &ExclusiveGuard,
+        _target: &ScopedPath,
+        relative_target: &Path,
+        link: &ScopedPath,
+    ) -> io::Result<()> {
+        // `relative_target` resolves from `link`'s parent to `_target`,
+        // which `confine` already proved lies inside the scope.
+        std::os::unix::fs::symlink(relative_target, link.as_path())
+    }
+
     fn fsops_device_inode(&self, path: &Path) -> io::Result<(u64, u64)> {
         let meta = fs::symlink_metadata(path)?;
         Ok((meta.dev(), meta.ino()))
@@ -197,6 +209,24 @@ impl ScopeFs for RealFs {
             .open(path)?;
         use std::io::Write;
         file.write_all(bytes)
+    }
+
+    fn fsops_write_new_file_with_mode(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        mode: u32,
+    ) -> io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(path)?;
+        file.write_all(bytes)?;
+        // The umask already masked the create mode above.
+        file.set_permissions(fs::Permissions::from_mode(mode))
     }
 
     fn fsops_rename(&self, from: &Path, to: &Path) -> io::Result<()> {

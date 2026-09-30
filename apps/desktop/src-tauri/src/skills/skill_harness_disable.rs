@@ -8,8 +8,10 @@
 //   - OpenCode: `~/.config/opencode/opencode.json` (or its `XDG_CONFIG_HOME`/
 //     `OPENCODE_CONFIG_DIR` override) `permission.skill.<name> = "deny"`,
 //     via `skill_studio_core::opencode_config`.
-//   - Claude Code: no native per-skill switch, so this removes/recreates the
-//     per-skill symlink under `~/.claude/skills/<name>`.
+//   - Claude Code: `~/.claude/settings.json` `skillOverrides.<name> = "off"`,
+//     written by the core. The older off switch removed the per-skill
+//     symlink under `~/.claude/skills/<name>`; switching such a skill on
+//     recreates the link.
 // A deployment with none of these switches (plain directory copies,
 // project-scope symlinks, pi/Cursor/Grok Build) has no per-harness off
 // switch at all - the frontend renders that row's switch disabled. `park`
@@ -20,11 +22,10 @@
 //
 // `set_harness_enabled` (the native per-skill switch above) is a thin
 // adapter over `skill_studio_core::ops::set_harness_enabled` (unit 3.8):
-// the write path - journal-before-first-write, `SymlinkInverse` undo for
-// Claude Code, "N of M" Codex partial-toggle reporting - lives in the core
-// now. `set_new_universal_reader_enabled` (the post-install switch, called
-// from `skill_add.rs`) still holds its own write logic pending a future
-// unit; see issue #166's follow-ups.
+// the write path - journal-before-first-write, a `settings.json` backup as
+// the undo for Claude Code, "N of M" Codex partial-toggle reporting - lives
+// in the core now. `set_new_universal_reader_enabled` still holds the older
+// link-removal logic, but only tests call it; see issue #166's follow-ups.
 // ============================================================================
 
 use std::fs;
@@ -490,7 +491,8 @@ pub fn set_harness_enabled_with(
         }
         "claude-code" => Err("Claude Code visibility needs an exact deployment target".to_string()),
         "pi" | "cursor" | "grok-build" => Err(format!(
-            "{agent} has no per-skill disable - it reads the Universal folder directly"
+            "{agent} has no per-skill disable - it reads the Universal folder directly; \
+             Park the skill to turn it off for every harness"
         )),
         other => Err(format!("Unknown harness: {other}")),
     }

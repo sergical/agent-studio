@@ -23,9 +23,10 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use skill_studio_core::dto::{
-    CapabilitiesRequest, HarnessesRequest, InstallFile, InstallMethod, InstallPreferencesRequest,
-    InstallRequest, Inventory, ListEventsRequest, ParkRequest, RepairApplyMode, RepairApplyRequest,
-    RepairPreviewRequest, RestoreRequest, ScanRequest, UnparkRequest, UpdateRequest,
+    CapabilitiesRequest, HarnessesRequest, InstallFile, InstallLinkMode, InstallMethod,
+    InstallPreferencesRequest, InstallRequest, Inventory, ListEventsRequest, ParkRequest,
+    RepairApplyMode, RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
+    UnparkRequest, UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::health::{self, Outcome, TimingRow};
@@ -197,7 +198,8 @@ enum Command {
         json: bool,
     },
     /// Turn a skill's native per-harness switch on or off (Claude Code,
-    /// Codex, `OpenCode`, pi).
+    /// Codex, `OpenCode`). pi, Cursor, and Grok Build have none: `park`
+    /// turns a skill off for every harness.
     SetHarnessEnabled {
         #[command(flatten)]
         scope: ScopeArgs,
@@ -238,11 +240,16 @@ enum Command {
         /// Which method writes the bytes.
         #[arg(long, value_enum, default_value_t = AddMethod::SkillsSh)]
         method: AddMethod,
-        /// Harnesses to link the new skill into right after install
-        /// (repeatable). Only Claude Code gets a per-skill link this build
-        /// writes.
+        /// Harnesses to install for (repeatable), the same set as the
+        /// `skills` CLI's `--agent`: `universal`, `claude-code`, `codex`,
+        /// `open-code`, `cursor`, `pi`, `grok-build`. None means
+        /// `universal` alone.
         #[arg(long = "harness")]
         harnesses: Vec<String>,
+        /// Write a real folder for each harness instead of linking it to
+        /// the shared copy. One chosen folder always gets a copy.
+        #[arg(long)]
+        copy: bool,
         /// Install under the scope home. Default when neither this nor
         /// `--project-path` is given.
         #[arg(long, conflicts_with = "project_path")]
@@ -317,6 +324,20 @@ enum Command {
         /// Universal deployment to park, as printed by `scan`.
         #[arg(long)]
         deployment_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace a Universal skill folder with one real copy per chosen
+    /// harness. Harnesses not named lose the skill.
+    Split {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Universal deployment to split, as printed by `scan`.
+        #[arg(long)]
+        deployment_id: String,
+        /// A harness that keeps the skill. Repeat for more than one.
+        #[arg(long = "harness", required = true)]
+        harnesses: Vec<String>,
         #[arg(long)]
         json: bool,
     },
@@ -492,6 +513,7 @@ fn main() -> ExitCode {
             source,
             method,
             harnesses,
+            copy,
             global,
             project_path,
             name,
@@ -509,6 +531,7 @@ fn main() -> ExitCode {
                     source,
                     method,
                     harnesses,
+                    copy,
                     project: project_path,
                     name,
                     trust,
@@ -535,6 +558,12 @@ fn main() -> ExitCode {
             deployment_id,
             json,
         } => run_park(&scope, &deployment_id, json, time),
+        Command::Split {
+            scope,
+            deployment_id,
+            harnesses,
+            json,
+        } => run_split(&scope, &deployment_id, &harnesses, json, time),
         Command::Unpark {
             scope,
             deployment_id,
@@ -939,9 +968,26 @@ struct AddArgs {
     source: String,
     method: AddMethod,
     harnesses: Vec<String>,
+    copy: bool,
     project: Option<PathBuf>,
     name: Option<String>,
     trust: bool,
+}
+
+/// The permission bits of a file read from disk, for `InstallFile::mode`;
+/// `None` off Unix.
+#[allow(clippy::unnecessary_wraps)] // `None` off Unix
+fn unix_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Some(metadata.permissions().mode() & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
 }
 
 /// Reads `dir` into the `InstallFile` list `InstallMethod::Copy` stages,
@@ -970,6 +1016,7 @@ fn read_skill_files(dir: &std::path::Path) -> std::io::Result<Vec<InstallFile>> 
                 out.push(InstallFile {
                     relative_path,
                     contents,
+                    mode: unix_mode(&metadata),
                 });
             }
         }
@@ -978,32 +1025,6 @@ fn read_skill_files(dir: &std::path::Path) -> std::io::Result<Vec<InstallFile>> 
     let mut out = Vec::new();
     walk(dir, dir, &mut out)?;
     Ok(out)
-}
-
-/// Parses one `--harness` value, rejecting anything `catalog` does not
-/// recognize. `AgentId::parse` alone only checks the kebab-case shape, so a
-/// well-formed but unknown id (a typo, or a harness this build never
-/// shipped) would otherwise reach `ops::install` and fail there with a less
-/// specific error.
-fn parse_known_harness(
-    raw: &str,
-    catalog: &HarnessCatalog,
-) -> Result<AgentId, skill_studio_core::CoreError> {
-    let id = AgentId::parse(raw)?;
-    if catalog.get(&id).is_some() {
-        Ok(id)
-    } else {
-        let accepted = catalog
-            .facts
-            .iter()
-            .map(|f| f.id.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        Err(skill_studio_core::CoreError::new(
-            skill_studio_core::ErrorCode::InvalidRequest,
-            format!("`{raw}` is not a known harness; accepted values: {accepted}"),
-        ))
-    }
 }
 
 /// Installs one skill via `ops::install`, by `Copy`, `Dotagents`, or
@@ -1049,7 +1070,7 @@ fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode
     let harnesses = match args
         .harnesses
         .iter()
-        .map(|h| parse_known_harness(h, &rt.ports.catalog))
+        .map(|h| AgentId::parse(h))
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(harnesses) => harnesses,
@@ -1098,6 +1119,12 @@ fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode
         trust_identity: None,
         trust_confirmed: args.trust,
         save_as_preference: true,
+        link_mode: if args.copy {
+            InstallLinkMode::Copy
+        } else {
+            InstallLinkMode::Link
+        },
+        destination: skill_studio_core::identity::SkillDestination::Universal,
     };
     let result = ops::install(&rt, &ctx, &req);
     let envelope = ResultEnvelope::from_result(Operation::Install, &rt.scope, &ctx, result);
@@ -1219,6 +1246,7 @@ fn read_install_files(
                 out.push(InstallFile {
                     relative_path,
                     contents,
+                    mode: unix_mode(&meta),
                 });
             }
         }
@@ -1582,6 +1610,38 @@ fn run_park(scope: &ScopeArgs, deployment_id: &str, json: bool, time: bool) -> E
     let result = ops::park(&rt, &ctx, &req);
     let envelope = ResultEnvelope::from_result(Operation::Park, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_park_outcome_table)
+}
+
+/// Splits a Universal deployment into per-harness copies, via `ops::split`.
+fn run_split(
+    scope: &ScopeArgs,
+    deployment_id: &str,
+    harnesses: &[String],
+    json: bool,
+    time: bool,
+) -> ExitCode {
+    let rt = match build_runtime_write::<skill_studio_core::dto::SplitOutcome>(
+        scope,
+        Operation::Split,
+        json,
+    ) {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+    let parsed = DeploymentId::parse(deployment_id).and_then(|deployment_id| {
+        let harnesses = harnesses
+            .iter()
+            .map(|raw| AgentId::parse_harness(raw))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(skill_studio_core::dto::SplitRequest {
+            deployment_id,
+            harnesses,
+        })
+    });
+    let result = parsed.and_then(|req| ops::split(&rt, &ctx, &req));
+    let envelope = ResultEnvelope::from_result(Operation::Split, &rt.scope, &ctx, result);
+    finish(&envelope, json, time, output::print_split_outcome_table)
 }
 
 /// Moves a parked deployment back to the universal root, via `ops::unpark`.

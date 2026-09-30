@@ -592,11 +592,14 @@ mod tests {
             files: vec![skill_studio_core::dto::InstallFile {
                 relative_path: PathBuf::from("SKILL.md"),
                 contents: b"---\nname: find-bugs\ndescription: finds bugs\n---\nBody.\n".to_vec(),
+                mode: None,
             }],
             source: None,
             trust_identity: None,
             trust_confirmed: false,
             save_as_preference: false,
+            link_mode: skill_studio_core::dto::InstallLinkMode::Link,
+            destination: skill_studio_core::identity::SkillDestination::Universal,
         };
         skill_studio_core::ops::install(&rt, &skill_studio_core::testing::golden::ctx(), &req)
             .unwrap();

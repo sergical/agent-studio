@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SplitRequest",
+  "description": "Request to split one Universal deployment into per-harness copies.\n\nEvery harness in `harnesses` gets a real folder copy; every other\nharness that read the Universal folder loses the skill.",
+  "type": "object",
+  "properties": {
+    "deployment_id": {
+      "description": "The Universal deployment to split.",
+      "$ref": "#/$defs/DeploymentId"
+    },
+    "harnesses": {
+      "description": "The harnesses that keep the skill. Must not be empty.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AgentIdentity"
+      }
+    }
+  },
+  "required": [
+    "deployment_id",
+    "harnesses"
+  ],
+  "$defs": {
+    "DeploymentId": {
+      "description": "Opaque deployment id.\n\nInvariant: the string starts with `dep:v1/`. Its internal layout is a core\ndetail; adapters and the UI compare it as a string and never split it.",
+      "type": "string"
+    },
+    "AgentIdentity": {
+      "description": "Kebab-case harness identifier, for example `claude-code` or `open-code`.\n\nInvariant: the string is the serde wire name used by the desktop app\ntoday. `open-code` is canonical; `opencode` is only a CLI binary name and\nis never stored in an `AgentId`.",
+      "type": "string"
+    }
+  }
+}

@@ -127,9 +127,11 @@ pub struct OutdatedTarget {
     /// [`SourceKind::Plugin`]; `None` there too when the plugin cache path
     /// carried no version directory.
     pub plugin: Option<(String, String, Option<String>)>,
-    /// The project root, when `source_kind` is [`SourceKind::SkillsSh`] and
-    /// the deployment deciding currency is project-scoped. `None` for a
-    /// global-scope skills.sh skill, or any other `source_kind`. Lets
+    /// The project root, when `source_kind` is [`SourceKind::SkillsSh`] or
+    /// [`SourceKind::Dotagents`] and the deployment deciding currency is
+    /// project-scoped. `None` for a global-scope skill, or any other
+    /// `source_kind`. A dotagents target resolves against
+    /// `<project>/agents.lock` instead of the home ledger. For skills.sh, lets
     /// `skills_sh_currency` tell "not tracked by skills.sh at all" apart
     /// from "a project-scope skills.sh install with no row in the *global*
     /// lock" - the CLI writes the latter's provenance to
@@ -169,8 +171,8 @@ pub trait PluginManifestLookup: Send + Sync {
 }
 
 /// Currency for every target in `targets`, keyed by name. Reads the shared
-/// skills.sh lock file and dotagents ledger under `home/.agents` through
-/// `fs`; a malformed or oversized lock file (see [`lock_file::read_lock_file`])
+/// skills.sh lock file under `home/.agents` and each target's own scope's
+/// dotagents ledger through `fs`; a malformed or oversized lock file (see [`lock_file::read_lock_file`])
 /// resolves every skills.sh target to [`Currency::Unknown`] rather than
 /// failing the whole check or reporting a false "update available".
 pub fn outdated(
@@ -181,9 +183,9 @@ pub fn outdated(
     commit_lookup: &dyn CommitLookup,
     plugin_lookup: &dyn PluginManifestLookup,
 ) -> BTreeMap<String, OutdatedRecord> {
-    let agents_dir = home.join(".agents");
     let lock = lock_file::read_lock_file(fs, &lock_file::lock_file_path(home));
-    let dotagents = dotagents_ledger::read_dotagents_ledger(fs, &agents_dir).unwrap_or_default();
+    // One ledger read per scope, however many dotagents targets share it.
+    let mut dotagents_ledgers: HashMap<Option<PathBuf>, Vec<DotagentsSkill>> = HashMap::new();
     let home_registry = crate::ownership::read_home_registry_result(fs, home);
 
     // One `tree_shas_at_head` call per distinct repo, however many
@@ -203,7 +205,16 @@ pub fn outdated(
                 tree_lookup,
                 &mut tree_cache,
             ),
-            SourceKind::Dotagents => dotagents_currency(&target.name, &dotagents, commit_lookup),
+            SourceKind::Dotagents => {
+                let ledger = dotagents_ledgers
+                    .entry(target.project_path.clone())
+                    .or_insert_with(|| {
+                        let dir =
+                            dotagents_ledger::dotagents_dir(home, target.project_path.as_deref());
+                        dotagents_ledger::read_dotagents_ledger(fs, &dir).unwrap_or_default()
+                    });
+                dotagents_currency(&target.name, ledger, commit_lookup)
+            }
             SourceKind::Plugin => plugin_currency(target, plugin_lookup),
             SourceKind::Fork => fork_currency(&target.name, &home_registry, commit_lookup),
             SourceKind::InRepo | SourceKind::Manual => OutdatedRecord::bare(Currency::NotTracked),
@@ -310,6 +321,9 @@ fn dotagents_currency(
     let Some(entry) = ledger.iter().find(|skill| skill.name == name) else {
         return OutdatedRecord::bare(Currency::Unknown);
     };
+    if entry.is_local_path() {
+        return OutdatedRecord::bare(Currency::NotTracked);
+    }
     let (Some(repo), Some(installed)) = (&entry.github_repo, &entry.installed_commit) else {
         return OutdatedRecord::bare(Currency::Unknown);
     };

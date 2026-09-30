@@ -877,9 +877,9 @@ fn cli_runtime_for(home: &Path) -> skill_studio_core::ports::Runtime {
 
 /// `undo` pages past a default-sized page of unrestorable history to find
 /// the one restorable row underneath it: `DEFAULT_EVENT_LIMIT + 1` no-op
-/// Claude Code toggles (each recording no inverse, since the link is
-/// already in the state asked for) sit on top of the one real toggle that
-/// actually moved the link. A single-page read of `list_events` never sees
+/// Claude Code toggles (each recording no inverse, since `skillOverrides`
+/// already says `"off"`) sit on top of the one real toggle that actually
+/// wrote `~/.claude/settings.json`. A single-page read of `list_events` never sees
 /// that real toggle, so `undo` must keep paging with `after` until it does.
 #[test]
 fn undo_finds_the_last_restorable_event_past_the_default_page_or_names_the_event_it_missed() {
@@ -911,15 +911,26 @@ fn undo_finds_the_last_restorable_event_past_the_default_page_or_names_the_event
         project_path: None,
     };
 
-    // The one restorable row: this toggle actually removes the link.
+    let settings_path = home.join(".claude/settings.json");
+    let alpha_override = || {
+        std::fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .map_or(serde_json::Value::Null, |v| {
+                v["skillOverrides"]["alpha"].clone()
+            })
+    };
+
+    // The one restorable row: this toggle actually writes settings.json.
     ops::set_harness_enabled(&rt, &ctx(), &req).unwrap();
-    assert!(
-        link_path.symlink_metadata().is_err(),
-        "fixture setup: the first disable should have removed the link"
+    assert_eq!(
+        alpha_override(),
+        "off",
+        "fixture setup: the first disable should have written skillOverrides.alpha = off"
     );
 
-    // Bury it under `DEFAULT_EVENT_LIMIT + 1` no-op repeats: the link is
-    // already gone, so each of these records no inverse.
+    // Bury it under `DEFAULT_EVENT_LIMIT + 1` no-op repeats: the override is
+    // already "off", so each of these records no inverse.
     for _ in 0..=ops::DEFAULT_EVENT_LIMIT {
         ops::set_harness_enabled(&rt, &ctx(), &req).unwrap();
     }
@@ -927,10 +938,15 @@ fn undo_finds_the_last_restorable_event_past_the_default_page_or_names_the_event
 
     let undo = run(&["undo", "--home", home.to_str().unwrap(), "--json"]);
     assert_eq!(undo.json["status"], "ok", "{:?}", undo.json);
+    assert_eq!(
+        alpha_override(),
+        serde_json::Value::Null,
+        "undo should have paged past the no-op rows and restored settings.json from the buried toggle, got {:?}",
+        undo.json
+    );
     assert!(
         link_path.symlink_metadata().is_ok(),
-        "undo should have paged past the no-op rows and restored the buried link toggle, got {:?}",
-        undo.json
+        "the Claude Code off must leave the link in place"
     );
 
     std::fs::remove_dir_all(&home).ok();
@@ -1193,4 +1209,43 @@ fn add_copy_with_a_symlinked_file_copies_it_as_a_file_or_names_the_missing_path(
 
     std::fs::remove_dir_all(&home).ok();
     std::fs::remove_dir_all(&source).ok();
+}
+
+/// Flow: `split` the universal `gamma` deployment through the CLI, keeping
+/// only Codex.
+/// Expectation: an `ok` envelope with one Codex copy, the update note, a
+/// real folder at `.codex/skills/gamma`, and no Universal folder or Claude
+/// Code link left.
+/// A failure here means `split` has no working CLI surface, or the CLI
+/// parses `--harness` differently from the core.
+#[test]
+fn split_writes_the_chosen_copy_and_drops_the_rest_or_names_the_envelope() {
+    let (_home_dir, home) = parkable_live_home();
+    let split = run(&[
+        "split",
+        "--home",
+        home.to_str().unwrap(),
+        "--deployment-id",
+        &deployment_id_in_root(&home, "gamma", "universal"),
+        "--harness",
+        "codex",
+        "--json",
+    ]);
+
+    assert_eq!(split.status, 0, "{:?}", split.json);
+    assert_eq!(split.json["operation"], "split", "{:?}", split.json);
+    assert_eq!(
+        split.json["data"]["copies"][0]["harness"], "codex",
+        "{:?}",
+        split.json
+    );
+    assert!(split.json["data"]["update_note"]
+        .as_str()
+        .is_some_and(|note| note.contains("npx skills update")));
+    assert!(home.join(".codex/skills/gamma/SKILL.md").is_file());
+    assert!(!home.join(".agents/skills/gamma").exists());
+    assert!(home
+        .join(".claude/skills/gamma")
+        .symlink_metadata()
+        .is_err());
 }
