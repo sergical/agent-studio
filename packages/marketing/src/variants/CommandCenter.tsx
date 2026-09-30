@@ -25,7 +25,7 @@ const marqueeMove = stylex.keyframes({
   to: { transform: "translateX(-50%)" },
 });
 
-const GITHUB_REPOSITORY_URL = "https://github.com/sergical/agent-studio";
+const GITHUB_REPOSITORY_URL = "https://github.com/sergical/skill-studio";
 
 // Tauri's default deployment target applies because tauri.conf.json sets no minimumSystemVersion.
 const REQUIREMENTS = "macOS 10.13 or later · Apple Silicon and Intel";
