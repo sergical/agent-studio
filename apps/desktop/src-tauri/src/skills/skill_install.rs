@@ -16,12 +16,12 @@
 // except the one unrelated Un-fork argv builder now living in
 // `skill_fork.rs`).
 //
-// `SkillDestination::PerHarness` stays on the wire, but this adapter treats
-// it identically to `Universal`. The sheet's harness list is the `skills`
-// CLI's interactive pick, where the shared `.agents/skills` folder is always
-// included: every request installs for `universal` plus `request.agents`,
-// and `request.link_mode` says whether Claude Code, pi, and Grok Build get
-// a link to that copy or a real folder of their own.
+// `Universal` is the `skills` CLI's interactive pick, where the shared
+// `.agents/skills` folder is always included: the request installs for
+// `universal` plus `request.agents`, and `request.link_mode` says whether
+// Claude Code, pi, and Grok Build get a link to that copy or a real folder
+// of their own. `PerHarness` (Copy only) installs for `request.agents`
+// alone, each with a real folder in its own skills folder.
 // ============================================================================
 
 use std::path::{Path, PathBuf};
@@ -37,7 +37,6 @@ use skill_studio_core::ports::{OpContext, Runtime};
 
 use super::agents::AgentId;
 use super::github_skill_listing::GithubSkillEntry;
-#[cfg(test)]
 use super::skill_deployment::SkillDestination;
 use super::skill_dto::{
     AddSkillRequest, AddSkillResult, AddSkillsRequest, InstallScope, ParsedSkillSource,
@@ -356,9 +355,8 @@ fn request_scope_root(request: &AddSkillRequest, rt: &Runtime) -> Result<PathBuf
 }
 
 /// Builds the op's own request from the desktop's wire request plus the
-/// files a `Copy` install already gathered. `destination` is read but not
-/// otherwise threaded through: see the module doc on `PerHarness`.
-/// `harnesses` is `universal` followed by `request.agents`.
+/// files a `Copy` install already gathered. `harnesses` is `universal`
+/// followed by `request.agents`, or `request.agents` alone for `PerHarness`.
 ///
 /// `pub(crate)`: shared with `skill_add_operation.rs`'s batch worker.
 pub(crate) fn build_install_request(
@@ -366,11 +364,16 @@ pub(crate) fn build_install_request(
     files: Vec<InstallFile>,
 ) -> Result<InstallRequest, String> {
     let name = derive_and_validate_name(request)?;
-    let harnesses = std::iter::once(Ok(skill_studio_core::identity::AgentId::from(
-        skill_studio_core::install_targets::UNIVERSAL_TARGET,
-    )))
-    .chain(request.agents.iter().copied().map(core_harness))
-    .collect::<Result<Vec<_>, _>>()?;
+    let per_harness = request.destination == SkillDestination::PerHarness;
+    let harnesses = (!per_harness)
+        .then(|| {
+            Ok(skill_studio_core::identity::AgentId::from(
+                skill_studio_core::install_targets::UNIVERSAL_TARGET,
+            ))
+        })
+        .into_iter()
+        .chain(request.agents.iter().copied().map(core_harness))
+        .collect::<Result<Vec<_>, _>>()?;
     let scope = match request.scope {
         InstallScope::Global => RootScope::Global,
         InstallScope::Project => RootScope::Project(ProjectRef(PathBuf::from(
@@ -403,6 +406,11 @@ pub(crate) fn build_install_request(
         trust_confirmed: false,
         save_as_preference: true,
         link_mode: request.link_mode,
+        destination: if per_harness {
+            skill_studio_core::identity::SkillDestination::PerHarness
+        } else {
+            skill_studio_core::identity::SkillDestination::Universal
+        },
     })
 }
 
@@ -1400,6 +1408,48 @@ mod tests {
         assert_eq!(
             std::fs::read_dir(source.parent().unwrap()).unwrap().count(),
             1
+        );
+    }
+
+    /// `per_harness_request_names_only_the_ticked_harnesses_and_no_shared_folder_or_writes_a_copy_the_user_left_out`:
+    /// a per-harness request for Codex must reach the core as `PerHarness`
+    /// with Codex alone; the `universal` id a Universal request always adds
+    /// would write the shared folder. Fails when the shared id stays in, or
+    /// the destination is lost on the way to the core.
+    #[test]
+    fn per_harness_request_names_only_the_ticked_harnesses_and_no_shared_folder_or_writes_a_copy_the_user_left_out(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut per_harness = copy_request(tmp.path(), "find-bugs");
+        per_harness.destination = SkillDestination::PerHarness;
+        per_harness.agents = vec![AgentId::Codex];
+        let universal = AddSkillRequest {
+            destination: SkillDestination::Universal,
+            ..copy_request(tmp.path(), "find-bugs")
+        };
+
+        let per_harness_req = build_install_request(&per_harness, Vec::new()).unwrap();
+        let universal_req = build_install_request(&universal, Vec::new()).unwrap();
+
+        assert_eq!(
+            per_harness_req.destination,
+            skill_studio_core::identity::SkillDestination::PerHarness
+        );
+        assert_eq!(
+            per_harness_req
+                .harnesses
+                .iter()
+                .map(skill_studio_core::identity::AgentId::as_str)
+                .collect::<Vec<_>>(),
+            vec!["codex"]
+        );
+        assert_eq!(
+            universal_req
+                .harnesses
+                .iter()
+                .map(skill_studio_core::identity::AgentId::as_str)
+                .collect::<Vec<_>>(),
+            vec!["universal"]
         );
     }
 }

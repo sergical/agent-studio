@@ -602,6 +602,7 @@ fn install_request(
         trust_confirmed: true,
         save_as_preference: false,
         link_mode: InstallLinkMode::Link,
+        destination: skill_studio_core::identity::SkillDestination::Universal,
     }
 }
 

@@ -223,6 +223,7 @@ fn copy_request(skill: &str) -> InstallRequest {
         trust_confirmed: false,
         save_as_preference: false,
         link_mode: skill_studio_core::dto::InstallLinkMode::Link,
+        destination: skill_studio_core::identity::SkillDestination::Universal,
     }
 }
 

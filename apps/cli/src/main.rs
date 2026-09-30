@@ -1124,6 +1124,7 @@ fn run_add(scope: &ScopeArgs, args: AddArgs, json: bool, time: bool) -> ExitCode
         } else {
             InstallLinkMode::Link
         },
+        destination: skill_studio_core::identity::SkillDestination::Universal,
     };
     let result = ops::install(&rt, &ctx, &req);
     let envelope = ResultEnvelope::from_result(Operation::Install, &rt.scope, &ctx, result);

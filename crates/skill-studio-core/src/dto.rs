@@ -817,6 +817,12 @@ pub struct InstallRequest {
     /// [`InstallLinkMode`].
     #[serde(default)]
     pub link_mode: InstallLinkMode,
+    /// `Universal` is the `skills` CLI's pick above. `PerHarness` (`Copy`
+    /// only) gives every chosen harness a real folder in its own skills
+    /// folder, Codex, `OpenCode`, and Cursor included, and writes no shared
+    /// copy; `link_mode` is ignored.
+    #[serde(default)]
+    pub destination: SkillDestination,
     /// `Copy` only: the folder's files, staged then swapped into place.
     #[serde(default)]
     pub files: Vec<InstallFile>,

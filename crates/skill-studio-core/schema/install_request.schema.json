@@ -29,6 +29,11 @@
       "$ref": "#/$defs/InstallLinkMode",
       "default": "link"
     },
+    "destination": {
+      "description": "`Universal` is the `skills` CLI's pick above. `PerHarness` (`Copy`\nonly) gives every chosen harness a real folder in its own skills\nfolder, Codex, `OpenCode`, and Cursor included, and writes no shared\ncopy; `link_mode` is ignored.",
+      "$ref": "#/$defs/SkillDestination",
+      "default": "universal"
+    },
     "files": {
       "description": "`Copy` only: the folder's files, staged then swapped into place.",
       "type": "array",
@@ -149,6 +154,21 @@
           "description": "One real folder in each chosen harness folder. The shared folder\ngets one only when a harness that reads it is chosen.",
           "type": "string",
           "const": "copy"
+        }
+      ]
+    },
+    "SkillDestination": {
+      "description": "Universal (`.agents/skills`) or per-harness destination.",
+      "oneOf": [
+        {
+          "description": "The shared root.",
+          "type": "string",
+          "const": "universal"
+        },
+        {
+          "description": "A harness's own root.",
+          "type": "string",
+          "const": "per_harness"
         }
       ]
     },

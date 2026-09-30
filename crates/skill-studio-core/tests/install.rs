@@ -203,6 +203,7 @@ fn copy_request(skill: &str) -> InstallRequest {
         trust_confirmed: false,
         save_as_preference: true,
         link_mode: InstallLinkMode::Link,
+        destination: skill_studio_core::identity::SkillDestination::Universal,
     }
 }
 
@@ -223,6 +224,7 @@ fn cli_request(skill: &str, method: InstallMethod) -> InstallRequest {
         trust_confirmed: method == InstallMethod::Dotagents,
         save_as_preference: true,
         link_mode: InstallLinkMode::Link,
+        destination: skill_studio_core::identity::SkillDestination::Universal,
     }
 }
 
@@ -1876,4 +1878,169 @@ fn read_registry(path: &std::path::Path) -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     doc.as_object_mut().unwrap().remove("write_version");
     doc
+}
+
+// ---------------------------------------------------------------------------
+// `destination: PerHarness`: a real folder in each chosen harness's own
+// skills folder, and nothing in the shared folder.
+// ---------------------------------------------------------------------------
+
+const PER_HARNESS_ALL: [&str; 6] = [
+    AgentId::CLAUDE_CODE,
+    AgentId::CODEX,
+    AgentId::OPEN_CODE,
+    AgentId::PI,
+    AgentId::CURSOR,
+    AgentId::GROK_BUILD,
+];
+
+fn per_harness_request(skill: &str, harnesses: &[&'static str]) -> InstallRequest {
+    let mut req = harness_set_request(skill, harnesses, InstallLinkMode::Copy);
+    req.destination = skill_studio_core::identity::SkillDestination::PerHarness;
+    req
+}
+
+/// `per_harness_install_at_global_scope_copies_into_each_own_folder_and_not_the_shared_folder_or_names_the_missing_one`:
+/// a global per-harness install for all six harnesses writes a real folder in
+/// each harness's own skills folder, the same six the Destination rows show,
+/// and none in `~/.agents/skills`. Fails when a harness's folder is missing
+/// (the row promises it) or the shared folder gets a copy (Universal is off).
+#[test]
+fn per_harness_install_at_global_scope_copies_into_each_own_folder_and_not_the_shared_folder_or_names_the_missing_one(
+) {
+    let home = unique_temp_dir("install_per_harness_global");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let req = per_harness_request("tau", &PER_HARNESS_ALL);
+
+    let (_, results) = harness_results(ops::install(&rt, &ctx(), &req).unwrap());
+
+    let folders = [
+        ".claude/skills",
+        ".codex/skills",
+        ".config/opencode/skills",
+        ".pi/agent/skills",
+        ".cursor/skills",
+        ".grok/skills",
+    ];
+    for folder in folders {
+        assert!(
+            is_real_folder(&home.join(folder).join("tau")),
+            "a real copy in {folder}"
+        );
+    }
+    assert!(
+        std::fs::symlink_metadata(home.join(UNIVERSAL_ROOT_RELATIVE).join("tau")).is_err(),
+        "the shared folder gets no copy"
+    );
+    assert!(results
+        .iter()
+        .all(|r| matches!(r, InstallHarnessResult::Copied { .. })));
+    assert_eq!(results.len(), PER_HARNESS_ALL.len());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `per_harness_install_at_project_scope_creates_pi_and_grok_folders_and_uses_each_project_folder_or_names_the_skip`:
+/// in a project with no `.pi` or `.grok` folder, a per-harness install still
+/// copies for pi and Grok Build (the Universal-mode install skips them), and
+/// Codex, `OpenCode`, and Cursor get `.codex/skills`, `.opencode/skills`, and
+/// `.cursor/skills`. Fails when a harness is skipped, so the row promised a
+/// folder the backend did not write.
+#[test]
+fn per_harness_install_at_project_scope_creates_pi_and_grok_folders_and_uses_each_project_folder_or_names_the_skip(
+) {
+    let home = unique_temp_dir("install_per_harness_project");
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut scope = RuntimeScope::fixture(&home);
+    scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
+        paths: vec![project.clone()],
+    };
+    let rt = runtime_in(&scope, &home, Arc::new(RealFs::new()), None);
+    let mut req = per_harness_request("tau", &PER_HARNESS_ALL);
+    req.scope = RootScope::Project(skill_studio_core::identity::ProjectRef(project.clone()));
+
+    let (_, results) = harness_results(ops::install(&rt, &ctx(), &req).unwrap());
+
+    for folder in [
+        ".claude/skills",
+        ".codex/skills",
+        ".opencode/skills",
+        ".pi/skills",
+        ".cursor/skills",
+        ".grok/skills",
+    ] {
+        assert!(
+            is_real_folder(&project.join(folder).join("tau")),
+            "a real copy in {folder}"
+        );
+    }
+    assert!(
+        std::fs::symlink_metadata(project.join(UNIVERSAL_ROOT_RELATIVE).join("tau")).is_err(),
+        "the shared folder gets no copy"
+    );
+    assert!(results
+        .iter()
+        .all(|r| matches!(r, InstallHarnessResult::Copied { .. })));
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `per_harness_install_with_a_cli_method_is_refused_or_writes_the_shared_folder_anyway`:
+/// skills.sh and dotagents always write `.agents/skills`, so a per-harness
+/// request for either is an invalid request and writes nothing. Fails when it
+/// installs, since the user asked for no shared copy.
+#[test]
+fn per_harness_install_with_a_cli_method_is_refused_or_writes_the_shared_folder_anyway() {
+    let home = unique_temp_dir("install_per_harness_cli_method");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let mut req = per_harness_request("tau", &[AgentId::CODEX]);
+    req.method = InstallMethod::SkillsSh;
+    req.source = Some("owner/repo".to_string());
+
+    let err = ops::install(&rt, &ctx(), &req).unwrap_err();
+
+    assert_eq!(
+        err.code,
+        skill_studio_core::error::ErrorCode::InvalidRequest
+    );
+    assert!(std::fs::read_dir(home.join(UNIVERSAL_ROOT_RELATIVE)).is_err());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `per_harness_install_undo_removes_each_copy_or_names_the_orphan`: undoing a
+/// per-harness install removes the Codex and Cursor copies. Fails when undo
+/// leaves one behind.
+#[test]
+fn per_harness_install_undo_removes_each_copy_or_names_the_orphan() {
+    let home = unique_temp_dir("install_per_harness_undo");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let req = per_harness_request("tau", &[AgentId::CODEX, AgentId::CURSOR]);
+    let InstallOutcome::Installed { event_id, .. } = ops::install(&rt, &ctx(), &req).unwrap()
+    else {
+        panic!("expected Installed");
+    };
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    for folder in [".codex/skills", ".cursor/skills"] {
+        assert!(
+            std::fs::symlink_metadata(home.join(folder).join("tau")).is_err(),
+            "undo must remove the copy in {folder}"
+        );
+    }
+
+    std::fs::remove_dir_all(&home).ok();
 }

@@ -31,7 +31,9 @@ import type { SkillInstallCompletion } from "./InstallControls";
 import {
   addSkillFinishAction,
   chosenInstallHarnesses,
-  installDisabledHarnesses,
+  harnessesKeptWithoutUniversal,
+  installDestinationError,
+  installDestinationFields,
   offeredInstallHarnesses,
   shouldConsumeAddSkillOperation,
   toWireParsedSkillSource,
@@ -39,7 +41,6 @@ import {
 import type {
   AddSkillOperationEvent,
   AgentId,
-  InstallLinkMode,
   InstallScope,
   SkillWithStatus,
 } from "@skill-studio/lib";
@@ -64,7 +65,7 @@ export function SkillStoreInstallFlow({
   const [claudeReadsUniversal, setClaudeReadsUniversal] = useState(true);
   // `null` until the user changes one, so the default follows `detected`.
   const [pickedHarnesses, setPickedHarnesses] = useState<AgentId[] | null>(null);
-  const [linkMode, setLinkMode] = useState<InstallLinkMode>("link");
+  const [universal, setUniversal] = useState(true);
   const keptHarnesses = useKeptHarnesses();
   const [installScope, setInstallScope] = useState<InstallScope>("global");
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
@@ -151,7 +152,14 @@ export function SkillStoreInstallFlow({
     pickedHarnesses,
     claudeReadsUniversal,
     installScope,
+    universal,
   );
+  const destinationError = installDestinationError(universal, chosenHarnesses);
+
+  const handleUniversalChange = (next: boolean) => {
+    setPickedHarnesses(next ? pickedHarnesses : harnessesKeptWithoutUniversal(chosenHarnesses));
+    setUniversal(next);
+  };
 
   const handleInstallScopeChange = (scope: InstallScope) => {
     setInstallScope(scope);
@@ -216,12 +224,14 @@ export function SkillStoreInstallFlow({
             path: skill.name,
             skillName: skill.name,
           }),
-          method: "skills-sh",
+          ...installDestinationFields({
+            offered: offeredHarnesses,
+            chosen: chosenHarnesses,
+            scope: installScope,
+            method: "skills-sh",
+            universal,
+          }),
           scope: installScope,
-          destination: "universal",
-          agents: chosenHarnesses,
-          disabled_harnesses: installDisabledHarnesses(detected, chosenHarnesses, installScope),
-          link_mode: linkMode,
           project_path: installScope === "project" ? (selectedProject ?? null) : null,
         },
         { start: startAddSkillOperation, getOperation: getAddSkillOperation },
@@ -283,11 +293,12 @@ export function SkillStoreInstallFlow({
           offered={offeredHarnesses}
           chosen={chosenHarnesses}
           onChosenChange={setPickedHarnesses}
-          linkMode={linkMode}
-          onLinkModeChange={setLinkMode}
+          universal={universal}
+          onUniversalChange={handleUniversalChange}
           claudeReadsShared={claudeReadsUniversal}
           scope={installScope}
           disabled={isInstalling}
+          error={destinationError}
         />
       </div>
 
@@ -295,7 +306,11 @@ export function SkillStoreInstallFlow({
         operation={operation}
         trustBusy={trustBusy}
         isInstalling={isInstalling}
-        installDisabled={isInstalling || (installScope === "project" && !selectedProject)}
+        installDisabled={
+          isInstalling ||
+          destinationError !== null ||
+          (installScope === "project" && !selectedProject)
+        }
         onDeclineTrust={() => void handleDeclineTrust()}
         onTrustAndRetry={() => void handleTrustAndRetry()}
         onInstall={() => void handleInstall()}

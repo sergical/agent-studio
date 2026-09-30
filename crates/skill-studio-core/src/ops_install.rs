@@ -422,10 +422,28 @@ fn install_body(
         }
     }
 
+    let per_harness = req.destination == SkillDestination::PerHarness;
+    if per_harness && req.method != InstallMethod::Copy {
+        return Err(CoreError::new(
+            ErrorCode::InvalidRequest,
+            "a per-harness destination needs the Copy method: the CLIs write the shared folder",
+        ));
+    }
     let harnesses = install_targets::requested_harnesses(&req.harnesses);
-    let mode =
-        install_targets::effective_link_mode(req.method, &harnesses, &req.scope, req.link_mode)?;
-    let plan = install_targets::plan_install(fs, &root, &req.scope, &req.skill, &harnesses, mode)?;
+    let mode = if per_harness {
+        crate::dto::InstallLinkMode::Copy
+    } else {
+        install_targets::effective_link_mode(req.method, &harnesses, &req.scope, req.link_mode)?
+    };
+    let plan = install_targets::plan_install(
+        fs,
+        &root,
+        &req.scope,
+        &req.skill,
+        &harnesses,
+        mode,
+        req.destination,
+    )?;
     let destination = plan
         .primary_path()
         .ok_or_else(|| {
