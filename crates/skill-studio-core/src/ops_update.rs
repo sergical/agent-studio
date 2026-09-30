@@ -429,7 +429,7 @@ fn write_copy_registry(
     destination: &Path,
     mut read: CopyRegistryRead,
     content_hash: String,
-) -> Result<(), CoreError> {
+) -> Result<Option<serde_json::Value>, CoreError> {
     let deployment_id = ops_install::copy_deployment_id(
         &req.scope,
         &req.skill,
@@ -438,9 +438,18 @@ fn write_copy_registry(
         "universal",
     );
     let home_doc = read.home_document.as_mut().unwrap_or(&mut read.document);
+    let mut undo = None;
     if let Some(serde_json::Value::Object(copies)) = home_doc.get_mut("copies") {
         if let Some(entry) = copies.get_mut(&deployment_id) {
+            let previous = entry.clone();
             entry["content_hash"] = serde_json::Value::String(content_hash);
+            undo = Some(ops_install::guarded_registry_undo(
+                &rt.scope.home.lexical,
+                "copies",
+                &deployment_id,
+                Some(&previous),
+                Some(&*entry),
+            ));
         }
     }
     if let Some(home_document) = read.home_document {
@@ -449,10 +458,11 @@ fn write_copy_registry(
             fs,
             &rt.scope.home.lexical,
             home_document,
-        )
+        )?;
     } else {
-        ops_install::write_registry_document(&session.guard, fs, &read.root, read.document)
+        ops_install::write_registry_document(&session.guard, fs, &read.root, read.document)?;
     }
+    Ok(undo)
 }
 
 /// The write step every `update` call shares, once its journal row is
@@ -471,7 +481,7 @@ fn update_write(
     destination: &Path,
     copy_registry: Option<CopyRegistryRead>,
     dotagents: Option<&DotagentsPlan>,
-) -> Result<(), CoreError> {
+) -> Result<Option<serde_json::Value>, CoreError> {
     let fs = rt.ports.fs.as_ref();
     match req.method {
         InstallMethod::Copy => {
@@ -523,7 +533,7 @@ fn update_write(
                 }
                 return Err(e);
             }
-            Ok(())
+            Ok(None)
         }
     }
 }
@@ -597,11 +607,6 @@ fn update_body(
         backup_targets.push(plan.config.clone());
         backup_targets.push(plan.lock.clone());
     }
-    if req.method == InstallMethod::Copy {
-        // The update rewrites the row's `content_hash` here; undo must put
-        // the old hash back with the old bytes, or the folder reads as unowned.
-        backup_targets.push(ops_install::registry_path(&rt.scope.home.lexical));
-    }
     let manifest = session
         .store
         .backup_paths(&session.guard, &id, &backup_targets)?;
@@ -635,7 +640,7 @@ fn update_body(
     };
     session.store.record(&session.guard, &id, &draft)?;
 
-    if let Err(e) = update_write(
+    let registry_undo = match update_write(
         rt,
         ctx,
         &mut session,
@@ -645,10 +650,23 @@ fn update_body(
         copy_registry,
         dotagents.as_ref(),
     ) {
-        let _ = session
-            .store
-            .finish(&session.guard, &id, EventStatus::Failed, None);
-        return Err(e);
+        Ok(undo) => undo,
+        Err(e) => {
+            let _ = session
+                .store
+                .finish(&session.guard, &id, EventStatus::Failed, None);
+            return Err(e);
+        }
+    };
+    if let Some(entry) = registry_undo {
+        // The update rewrites one row's `content_hash`; undo puts that row's
+        // old hash back with the old bytes, or the folder reads as unowned.
+        // Only that row: the file holds every other skill's row too.
+        let _ = session.store.patch_inverse(
+            &session.guard,
+            &id,
+            serde_json::json!({ "registry_undo": [entry] }),
+        );
     }
     let tree_hash_after = crate::tree_hash::tree_hash(fs, &destination)?;
     // The post-fingerprint the row records, not `None`: `restore_event`

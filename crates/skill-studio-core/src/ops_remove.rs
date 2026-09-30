@@ -171,6 +171,34 @@ fn drop_fork_registry_entry(
     drop_registry_entry(rt, guard, fs, "forks", name)
 }
 
+/// The `registry_undo` entry for the `copies` (or `forks`) row this removal
+/// drops, or `None` for owner kinds with no row of their own. `expected` is
+/// absent: undo refuses when something re-created the row since.
+fn registry_row_undo(
+    rt: &Runtime,
+    fs: &dyn ScopeFs,
+    deployment: &crate::dto::DeploymentDto,
+    name: &str,
+) -> Result<Option<serde_json::Value>, CoreError> {
+    let (map_key, entry_key) = match deployment.owner_kind {
+        LifecycleOwnerKind::Copy => ("copies", deployment.id.as_str()),
+        LifecycleOwnerKind::Fork => ("forks", name),
+        _ => return Ok(None),
+    };
+    let home = &rt.scope.home.lexical;
+    let document = crate::ops_install::read_registry_document(fs, home)?;
+    let Some(previous) = document.get(map_key).and_then(|map| map.get(entry_key)) else {
+        return Ok(None);
+    };
+    Ok(Some(crate::ops_install::guarded_registry_undo(
+        home,
+        map_key,
+        entry_key,
+        Some(previous),
+        None,
+    )))
+}
+
 fn drop_registry_entry(
     rt: &Runtime,
     guard: &ExclusiveGuard,
@@ -436,22 +464,18 @@ fn remove_body(
     // `restore_backup_inverse`, unlike `park`. `deployment.path` is listed
     // first so its manifest entry (and thus `pre_fingerprint` below) is
     // `manifest.entries[0]` regardless of what else this backs up.
-    // `Copy`/`Fork` also get their own registry.json backed up in the same
-    // manifest, since removing either drops a row from it
+    // `Copy`/`Fork` also drop a registry row
     // (`drop_copy_registry_entry`/`drop_fork_registry_entry` below) that a
-    // restore should bring back, not just the tree's bytes -
-    // `restore_event` replays every entry in a manifest, not only the one
-    // matching its primary `path`, for exactly this reason. Each harness
+    // restore should bring back, not just the tree's bytes; see
+    // `registry_row_undo` for how that row is saved. Each harness
     // link this removes goes in `inverse.links` instead (see
     // `restore_backup_inverse_with_links`'s own doc): a symlink copied into
     // a backup manifest would restore as a plain file, not a link.
-    let mut backup_targets = vec![deployment.path.clone()];
-    if matches!(
-        deployment.owner_kind,
-        LifecycleOwnerKind::Copy | LifecycleOwnerKind::Fork
-    ) {
-        backup_targets.push(crate::ops_install::registry_path(&rt.scope.home.lexical));
-    }
+    let backup_targets = vec![deployment.path.clone()];
+    // The registry row goes in the inverse's `registry_undo` instead of a
+    // whole-file backup: undo puts back only this row, so registry edits made
+    // after the remove survive it.
+    let registry_undo = registry_row_undo(rt, fs, &deployment, &skill.name.0)?;
     let manifest = session
         .store
         .backup_paths(&session.guard, &id, &backup_targets)?;
@@ -471,7 +495,7 @@ fn remove_body(
     } else {
         None
     };
-    let inverse = crate::events::restore_backup_inverse_with_links_and_lock(
+    let mut inverse = crate::events::restore_backup_inverse_with_links_and_lock(
         &deployment.path,
         pre_fingerprint,
         None,
@@ -480,6 +504,9 @@ fn remove_body(
             .as_ref()
             .map(|entry| (skill.name.0.as_str(), entry)),
     );
+    if let Some(entry) = registry_undo {
+        inverse["registry_undo"] = serde_json::json!([entry]);
+    }
     let backup_dir = Some(manifest.backup_dir);
 
     let draft = EventDraft {

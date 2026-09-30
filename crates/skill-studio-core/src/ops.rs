@@ -4909,6 +4909,10 @@ fn restore_event_body(
         }
     }
 
+    if !req.force {
+        crate::ops_install::check_registry_drift(fs, inverse)?;
+    }
+
     let restore_id = rt.ports.ids.next_event_id();
     // Backs up the file's current bytes under the restore event's own id
     // before touching it: with `force` this is exactly "the drifted bytes

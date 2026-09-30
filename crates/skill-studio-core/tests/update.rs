@@ -1178,3 +1178,140 @@ fn copy_update_keeps_each_source_files_mode_or_names_the_file_that_lost_its_bits
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+fn install_copy(rt: &Runtime, skill: &str) {
+    ops::install(
+        rt,
+        &ctx(),
+        &InstallRequest {
+            skill: SkillName(skill.to_string()),
+            method: InstallMethod::Copy,
+            scope: RootScope::Global,
+            harnesses: vec![AgentId::from("universal")],
+            destination: skill_studio_core::identity::SkillDestination::Universal,
+            files: copy_request(skill, "v1").files,
+            source: None,
+            trust_identity: None,
+            trust_confirmed: false,
+            save_as_preference: false,
+            link_mode: InstallLinkMode::Link,
+        },
+    )
+    .unwrap();
+}
+
+fn read_registry(home: &std::path::Path) -> serde_json::Value {
+    let bytes = std::fs::read(home.join(".agents").join("skill-studio.json")).unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+fn write_registry(home: &std::path::Path, doc: &serde_json::Value) {
+    std::fs::write(
+        home.join(".agents").join("skill-studio.json"),
+        serde_json::to_vec(doc).unwrap(),
+    )
+    .unwrap();
+}
+
+fn copy_row_key(registry: &serde_json::Value, skill: &str) -> String {
+    registry["copies"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, row)| row["name"] == skill)
+        .unwrap_or_else(|| panic!("no copies row for {skill}: {registry}"))
+        .0
+        .clone()
+}
+
+/// Flow: Copy-update skill `theta`, then Copy-install skill `iota` and save
+/// a preference, then undo the update of `theta`. Expectation: `theta`'s
+/// `copies` row has its old `content_hash` back, and `iota`'s row and the
+/// preference stay. Failure here means undo restored the whole registry
+/// file from the update's backup and erased every later registry change.
+#[test]
+fn undo_of_a_copy_update_keeps_registry_rows_added_after_it_or_names_the_erased_key() {
+    let home = unique_temp_dir("update_undo_keeps_later_registry_rows");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home, "v2");
+    install_copy(&rt, "theta");
+    let theta_key = copy_row_key(&read_registry(&home), "theta");
+    let hash_before = read_registry(&home)["copies"][&theta_key]["content_hash"].clone();
+
+    let outcome = ops::update(&rt, &ctx(), &copy_request("theta", "v2")).unwrap();
+    assert_ne!(
+        read_registry(&home)["copies"][&theta_key]["content_hash"],
+        hash_before,
+        "setup: the update must change the row's hash"
+    );
+    install_copy(&rt, "iota");
+    let mut doc = read_registry(&home);
+    doc["preferred_method"] = serde_json::json!("copy");
+    write_registry(&home, &doc);
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    let after = read_registry(&home);
+    assert_eq!(after["copies"][&theta_key]["content_hash"], hash_before);
+    copy_row_key(&after, "iota");
+    assert_eq!(after["preferred_method"], "copy");
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: Copy-update `kappa`, then something else rewrites `kappa`'s
+/// `copies` row, then undo the update. Expectation: undo refuses with
+/// `DriftConflict` and leaves the row as it is; with `force` it restores the
+/// old row. Failure here means undo overwrote a row it did not write.
+#[test]
+fn undo_of_a_copy_update_refuses_when_its_registry_row_changed_since_or_names_the_clobbered_row() {
+    let home = unique_temp_dir("update_undo_registry_drift");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home, "v2");
+    install_copy(&rt, "kappa");
+    let key = copy_row_key(&read_registry(&home), "kappa");
+    let hash_before = read_registry(&home)["copies"][&key]["content_hash"].clone();
+    let outcome = ops::update(&rt, &ctx(), &copy_request("kappa", "v2")).unwrap();
+    let mut doc = read_registry(&home);
+    doc["copies"][&key]["content_hash"] = serde_json::json!("changed-by-someone-else");
+    write_registry(&home, &doc);
+
+    let err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id.clone(),
+            force: false,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.code, skill_studio_core::ErrorCode::DriftConflict);
+    assert_eq!(
+        read_registry(&home)["copies"][&key]["content_hash"],
+        "changed-by-someone-else"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        read_registry(&home)["copies"][&key]["content_hash"],
+        hash_before
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}

@@ -1575,3 +1575,49 @@ fn cli_remove_matches_the_npx_skills_remove_trace_byte_for_byte_apart_from_times
         "the lock file's remaining bytes must match lock_before with only {skill:?} removed"
     );
 }
+
+/// Flow: Copy-install `lambda`, remove it, Copy-install `mu` and save a
+/// preference, then undo the removal of `lambda`. Expectation: `lambda`'s
+/// `copies` row is back and `mu`'s row and the preference stay. Failure here
+/// means undo restored the whole registry file from the remove's backup and
+/// erased every later registry change.
+#[test]
+fn undo_of_a_copy_remove_keeps_registry_rows_added_after_it_or_names_the_erased_key() {
+    let home = unique_temp_dir("remove_undo_keeps_later_registry_rows");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = install_and_resolve(&rt, "lambda");
+    let registry_file = home.join(".agents").join("skill-studio.json");
+    let read = || -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(&registry_file).unwrap()).unwrap()
+    };
+    let has_row = |doc: &serde_json::Value, skill: &str| {
+        doc["copies"]
+            .as_object()
+            .is_some_and(|m| m.values().any(|row| row["name"] == skill))
+    };
+
+    let outcome = ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id }).unwrap();
+    assert!(!has_row(&read(), "lambda"), "setup: remove drops the row");
+    install_and_resolve(&rt, "mu");
+    let mut doc = read();
+    doc["preferred_method"] = serde_json::json!("copy");
+    std::fs::write(&registry_file, serde_json::to_vec(&doc).unwrap()).unwrap();
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    let after = read();
+    assert!(has_row(&after, "lambda"), "lambda's row must be back");
+    assert!(has_row(&after, "mu"), "mu's row must stay: {after}");
+    assert_eq!(after["preferred_method"], "copy");
+
+    std::fs::remove_dir_all(&home).ok();
+}

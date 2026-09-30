@@ -842,6 +842,67 @@ impl RegistryUndo {
     }
 }
 
+/// One `registry_undo` entry for a row an update or remove changed. Unlike
+/// [`RegistryUndo::push`]'s install entries, it also records `expected`, the
+/// row as that event left it (`None`: absent). [`check_registry_drift`]
+/// compares it with the live row before undo, so a row someone else changed
+/// since is never overwritten without `force`.
+pub(crate) fn guarded_registry_undo(
+    root: &Path,
+    key: &str,
+    id: &str,
+    previous: Option<&serde_json::Value>,
+    expected: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "root": root,
+        "key": key,
+        "id": id,
+        "previous": previous,
+        "expected": expected,
+    })
+}
+
+/// Refuses an undo whose `registry_undo` entries carry an `expected` row that
+/// no longer matches the live registry. Entries without `expected` (installs,
+/// older events) are never checked.
+pub(crate) fn check_registry_drift(
+    fs: &dyn ScopeFs,
+    inverse: &serde_json::Value,
+) -> Result<(), CoreError> {
+    let Some(edits) = inverse
+        .get("registry_undo")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(());
+    };
+    for edit in edits {
+        let (Some(expected), Some(root), Some(key), Some(id)) = (
+            edit.get("expected"),
+            edit.get("root").and_then(serde_json::Value::as_str),
+            edit.get("key").and_then(serde_json::Value::as_str),
+            edit.get("id").and_then(serde_json::Value::as_str),
+        ) else {
+            continue;
+        };
+        let document = read_registry_document(fs, Path::new(root))?;
+        let live = document
+            .get(key)
+            .and_then(|map| map.get(id))
+            .unwrap_or(&serde_json::Value::Null);
+        if live != expected {
+            return Err(CoreError::new(
+                ErrorCode::DriftConflict,
+                format!(
+                    "the {key} registry row {id} changed since this event; pass force to restore anyway"
+                ),
+            )
+            .at(registry_path(Path::new(root))));
+        }
+    }
+    Ok(())
+}
+
 /// Replays an inverse's `registry_undo` list: each key goes back to its
 /// recorded value, or is removed when it held none. An inverse without the
 /// list (an older event) changes nothing. Only the recorded keys are
