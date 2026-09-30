@@ -1129,6 +1129,21 @@ impl SkillInvocationIndex {
         }
     }
 
+    /// Load the cache from `cache_path` without ever writing it. Unlike
+    /// [`Self::load_or_empty`], a corrupt cache is ignored rather than
+    /// renamed, because the file belongs to the desktop app and a CLI or MCP
+    /// reader must leave it exactly as it found it.
+    pub fn load_read_only(cache_path: &Path) -> Self {
+        let too_big = fs::metadata(cache_path).is_ok_and(|meta| meta.len() > MAX_CACHE_BYTES);
+        if too_big {
+            return Self::default();
+        }
+        fs::read_to_string(cache_path)
+            .ok()
+            .and_then(|content| serde_json::from_str(&content).ok())
+            .unwrap_or_default()
+    }
+
     /// Persist the cache to `cache_path`, creating its parent directory if
     /// needed. Writes to a sibling `<path>.tmp` file and renames it into
     /// place, so a crash mid-write never leaves a half-written cache file.
@@ -1398,7 +1413,7 @@ impl SkillInvocationIndex {
     /// that appears in more than one database (`opencode-next.db` rows get
     /// copied into `opencode.db`) counts once: databases are visited in
     /// path order and the first one to have a row wins.
-    fn all_uses(&self) -> impl Iterator<Item = &SkillInvocation> {
+    pub(crate) fn all_uses(&self) -> impl Iterator<Item = &SkillInvocation> {
         let mut seen_row_ids: BTreeSet<&str> = BTreeSet::new();
         let database_uses: Vec<&SkillInvocation> = self
             .databases

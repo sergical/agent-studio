@@ -167,8 +167,9 @@ fn is_known_skill(skill: &str, known_skills: &BTreeSet<String>) -> bool {
 
 /// The subset of `uses` that count under `filter`, applying the enabled-harness,
 /// known-skill, and file-read-dedupe rules shared by [`skill_stats`] and
-/// [`skill_heatmap`].
-fn counted_uses<'a>(
+/// [`skill_heatmap`]. Public for callers that need a window other than the
+/// fixed ones `skill_stats` computes.
+pub fn counted_uses<'a>(
     uses: impl IntoIterator<Item = &'a SkillInvocation>,
     filter: &SkillUseFilter,
 ) -> Vec<&'a SkillInvocation> {

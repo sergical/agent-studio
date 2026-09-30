@@ -786,10 +786,22 @@ async fn the_outdated_tool_separates_an_unknown_check_from_an_untracked_skill_or
 #[tokio::test]
 async fn tools_that_need_no_input_accept_an_empty_argument_object() {
     let home = materialized_fixture("basic");
-    let (client, _) = connect(&[("SKILL_STUDIO_HOME", home.to_str().unwrap())]).await;
+    let (client, _) = connect(&[
+        ("SKILL_STUDIO_HOME", home.to_str().unwrap()),
+        ("SKILL_STUDIO_MCP_DEV_TOOLS", "1"),
+    ])
+    .await;
 
     let tools = client.list_all_tools().await.expect("list tools");
-    let no_input = ["scan", "diagnose", "capabilities", "list_events"];
+    let no_input = [
+        "scan",
+        "diagnose",
+        "capabilities",
+        "list_events",
+        "skill_usage",
+        "diagnose_conflict",
+        "doctor",
+    ];
     for name in no_input {
         let schema = &tools
             .iter()
@@ -820,5 +832,361 @@ async fn tools_that_need_no_input_accept_an_empty_argument_object() {
     }
 
     client.cancel().await.ok();
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// The id of `skill`'s deployment in the root of `kind` (`universal`,
+/// `parked`, `harness`), read from the MCP `scan` tool on `client`.
+async fn deployment_id_via_mcp(
+    client: &RunningService<RoleClient, CountingClient>,
+    skill: &str,
+    kind: &str,
+) -> String {
+    let scan = call_tool(client, "scan", serde_json::json!({})).await;
+    let found = scan["data"]["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == skill)
+        .unwrap_or_else(|| panic!("{skill} missing from scan: {scan:?}"))
+        .clone();
+    found["deployments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["root"]["kind"]["kind"] == kind)
+        .unwrap_or_else(|| panic!("{skill} has no {kind} deployment: {found:?}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Flow: on one server process, park `gamma` by its universal id, then
+/// unpark it by the parked id `scan` reports next.
+/// Expectation: after park, `gamma` is under `.agents/skills-parked` and its
+/// Claude Code link is gone; after unpark, the folder and the link are back.
+/// A failure here means the documented undo for park (unpark) does not
+/// bring a skill back, so an agent that parks over MCP strands it.
+#[tokio::test]
+async fn park_then_unpark_on_one_process_puts_the_skill_and_its_link_back() {
+    let (_home_dir, home) = live_home();
+    let (client, _) = connect(&[("SKILL_STUDIO_HOME", home.to_str().unwrap())]).await;
+
+    let universal_id = deployment_id_via_mcp(&client, "gamma", "universal").await;
+    let park = call_tool(
+        &client,
+        "park",
+        serde_json::json!({ "deployment_id": universal_id }),
+    )
+    .await;
+    assert_eq!(park["status"], "ok", "{park:?}");
+    assert!(
+        home.join(".agents/skills-parked/gamma/SKILL.md").is_file(),
+        "park did not move gamma to the parked root: {park:?}"
+    );
+    assert!(
+        home.join(".claude/skills/gamma")
+            .symlink_metadata()
+            .is_err(),
+        "park left the Claude Code link in place: {park:?}"
+    );
+
+    let parked_id = deployment_id_via_mcp(&client, "gamma", "parked").await;
+    let unpark = call_tool(
+        &client,
+        "unpark",
+        serde_json::json!({ "deployment_id": parked_id }),
+    )
+    .await;
+    client.cancel().await.ok();
+
+    assert_eq!(unpark["status"], "ok", "{unpark:?}");
+    assert!(
+        home.join(".agents/skills/gamma/SKILL.md").is_file(),
+        "unpark left gamma in the parked root: {unpark:?}"
+    );
+    assert!(
+        home.join(".claude/skills/gamma").symlink_metadata().is_ok(),
+        "unpark did not recreate the Claude Code link: {unpark:?}"
+    );
+}
+
+/// Flow: park `gamma`, then call `restore_event` with park's `event_id`.
+/// Expectation: an error envelope with code `unsupported`, and `gamma`
+/// still parked.
+/// A failure here means park became restorable through history, and the
+/// tool descriptions ("Undo with unpark") and docs are now wrong.
+#[tokio::test]
+async fn restore_event_on_a_park_reports_unsupported() {
+    let (_home_dir, home) = live_home();
+    let (client, _) = connect(&[("SKILL_STUDIO_HOME", home.to_str().unwrap())]).await;
+
+    let universal_id = deployment_id_via_mcp(&client, "gamma", "universal").await;
+    let park = call_tool(
+        &client,
+        "park",
+        serde_json::json!({ "deployment_id": universal_id }),
+    )
+    .await;
+    assert_eq!(park["status"], "ok", "{park:?}");
+    let event_id = park["event_id"].as_str().expect("park returns an event_id");
+
+    let restore = call_tool(
+        &client,
+        "restore_event",
+        serde_json::json!({ "event_id": event_id }),
+    )
+    .await;
+    client.cancel().await.ok();
+
+    assert_eq!(restore["status"], "error", "{restore:?}");
+    assert_eq!(restore["errors"][0]["code"], "unsupported", "{restore:?}");
+    assert!(home.join(".agents/skills-parked/gamma/SKILL.md").is_file());
+}
+
+/// Flow: add a shared skill recorded as a fork, remove it, then call
+/// `restore_event` with the `event_id` from remove's result. A fork is
+/// removed in-process; a lock-file skill would go through `npx skills`,
+/// which runs against the real home.
+/// Expectation: remove takes `SKILL.md` off disk; restore puts it back.
+/// A failure here means the undo that remove's description promises does
+/// not work.
+#[tokio::test]
+async fn remove_then_restore_event_puts_the_copy_back() {
+    let (_home_dir, home) = live_home();
+    let skill_dir = home.join(".agents/skills/loose");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    let skill_md = skill_dir.join("SKILL.md");
+    std::fs::write(
+        &skill_md,
+        b"---\nname: loose\ndescription: A forked skill.\n---\nBody.\n",
+    )
+    .unwrap();
+    // An empty record matches any id and expects `.agents/skills/loose`.
+    std::fs::write(
+        home.join(".agents/skill-studio.json"),
+        br#"{"forks":{"loose":{}}}"#,
+    )
+    .unwrap();
+    let (client, _) = connect(&[("SKILL_STUDIO_HOME", home.to_str().unwrap())]).await;
+
+    let id = deployment_id_via_mcp(&client, "loose", "universal").await;
+    let remove = call_tool(
+        &client,
+        "remove",
+        serde_json::json!({ "deployment_id": id }),
+    )
+    .await;
+    assert_eq!(remove["status"], "ok", "{remove:?}");
+    assert!(
+        !skill_md.exists(),
+        "remove left SKILL.md on disk: {remove:?}"
+    );
+    let event_id = remove["event_id"]
+        .as_str()
+        .expect("remove returns an event_id");
+
+    let restore = call_tool(
+        &client,
+        "restore_event",
+        serde_json::json!({ "event_id": event_id }),
+    )
+    .await;
+    client.cancel().await.ok();
+
+    assert_eq!(restore["status"], "ok", "{restore:?}");
+    assert!(
+        skill_md.is_file(),
+        "restore did not bring SKILL.md back: {restore:?}"
+    );
+}
+
+/// Flow: write a Claude Code transcript under the live home where the model
+/// called the Skill tool for `gamma` yesterday, then call `skill_usage`
+/// with no input.
+/// Expectation: `gamma` has 1 recent use by claude-code, and `manual-only`,
+/// never used, is the only name in `unused`.
+/// A failure here means an agent asking "what can I park?" gets the wrong
+/// list.
+#[tokio::test]
+async fn skill_usage_counts_a_transcript_use_and_lists_the_unused_skill() {
+    let (_home_dir, home) = live_home();
+    let transcript_dir = home.join(".claude/projects/-work");
+    std::fs::create_dir_all(&transcript_dir).unwrap();
+    let yesterday = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+    std::fs::write(
+        transcript_dir.join("session.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": yesterday,
+                "cwd": "/work",
+                "message": {"content": [{
+                    "type": "tool_use",
+                    "name": "Skill",
+                    "input": {"skill": "gamma"}
+                }]}
+            })
+        ),
+    )
+    .unwrap();
+
+    let (client, _) = connect(&[("SKILL_STUDIO_HOME", home.to_str().unwrap())]).await;
+    let envelope = call_tool(&client, "skill_usage", serde_json::json!({})).await;
+    client.cancel().await.ok();
+
+    assert_eq!(envelope["status"], "ok", "{envelope:?}");
+    assert_eq!(envelope["operation"], "skill_usage", "{envelope:?}");
+    let data = &envelope["data"];
+    assert_eq!(data["days"], 30, "{data:?}");
+    assert_eq!(
+        data["unused"],
+        serde_json::json!(["manual-only"]),
+        "{data:?}"
+    );
+    let gamma = data["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["skill"] == "gamma")
+        .unwrap_or_else(|| panic!("gamma has no row: {data:?}"));
+    assert_eq!(gamma["recent_uses"], 1, "{gamma:?}");
+    assert_eq!(gamma["agents"]["claude-code"], 1, "{gamma:?}");
+}
+
+/// The tools an agent sees by default, read-only ones first. A change to
+/// this list changes what every client loads into context.
+const READ_TOOLS: &[&str] = &[
+    "scan",
+    "diagnose",
+    "skill_usage",
+    "preview_frontmatter_repair",
+    "list_events",
+    "diagnose_conflict",
+    "outdated",
+];
+const WRITE_TOOLS: &[&str] = &[
+    "apply_frontmatter_repair",
+    "restore_event",
+    "fix",
+    "update",
+    "update_all",
+    "remove",
+    "add",
+    "park",
+    "split",
+    "unpark",
+    "set_harness_enabled",
+];
+
+/// Flow: list tools with the default environment.
+/// Expectation: exactly the read and write tools above; each read tool has
+/// `readOnlyHint: true`; each write tool has `readOnlyHint: false` and a
+/// description that says how to undo it; only `remove` is destructive.
+/// A failure here means a client may auto-approve a write, warn on a read,
+/// or show an agent a write with no way back.
+#[tokio::test]
+async fn tools_list_publishes_hints_and_an_undo_for_every_write() {
+    let home = materialized_fixture("basic");
+    let (client, _) = connect(&[("SKILL_STUDIO_HOME", home.to_str().unwrap())]).await;
+    let tools = client.list_all_tools().await.expect("list tools");
+    client.cancel().await.ok();
+
+    let mut listed: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+    listed.sort_unstable();
+    let mut expected: Vec<&str> = READ_TOOLS.iter().chain(WRITE_TOOLS).copied().collect();
+    expected.sort_unstable();
+    assert_eq!(listed, expected, "dev tools leaked or a tool went missing");
+
+    for tool in &tools {
+        let name = tool.name.as_ref();
+        let annotations = tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} has no annotations"));
+        let description = tool.description.as_deref().unwrap_or_default();
+        if READ_TOOLS.contains(&name) {
+            assert_eq!(annotations.read_only_hint, Some(true), "{name}");
+        } else {
+            assert_eq!(annotations.read_only_hint, Some(false), "{name}");
+            assert!(
+                description.to_lowercase().contains("undo"),
+                "{name}'s description does not say how to undo it: {description}"
+            );
+            assert_eq!(
+                annotations.destructive_hint,
+                Some(name == "remove"),
+                "{name}'s destructive hint"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: list tools with `SKILL_STUDIO_MCP_DEV_TOOLS=1`, then walk every
+/// input schema.
+/// Expectation: the dev tools are listed; no schema has a `$ref` or `$defs`
+/// anywhere, and each has a `properties` object at the root.
+/// A failure here means a strict client (Codex) refuses to load the server.
+#[tokio::test]
+async fn every_input_schema_is_self_contained_with_a_properties_object() {
+    fn has_ref(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(object) => {
+                object.contains_key("$ref")
+                    || object.contains_key("$defs")
+                    || object.values().any(has_ref)
+            }
+            serde_json::Value::Array(items) => items.iter().any(has_ref),
+            _ => false,
+        }
+    }
+
+    let home = materialized_fixture("basic");
+    let (client, _) = connect(&[
+        ("SKILL_STUDIO_HOME", home.to_str().unwrap()),
+        ("SKILL_STUDIO_MCP_DEV_TOOLS", "1"),
+    ])
+    .await;
+    let tools = client.list_all_tools().await.expect("list tools");
+    client.cancel().await.ok();
+
+    for dev_tool in ["capabilities", "harnesses", "doctor", "sweep_quarantine"] {
+        assert!(
+            tools.iter().any(|t| t.name == dev_tool),
+            "{dev_tool} missing with dev tools on"
+        );
+    }
+    for tool in &tools {
+        let schema = serde_json::Value::Object((*tool.input_schema).clone());
+        assert!(
+            !has_ref(&schema),
+            "{} schema has a $ref: {schema}",
+            tool.name
+        );
+        assert!(
+            schema["properties"].is_object(),
+            "{} schema has no properties object: {schema}",
+            tool.name
+        );
+    }
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: connect and read the server's `initialize` result.
+/// Expectation: `serverInfo.name` is `skill-studio` and the version is this
+/// crate's.
+/// A failure here means clients show the server as "rmcp".
+#[tokio::test]
+async fn server_info_names_skill_studio() {
+    let home = materialized_fixture("basic");
+    let (client, _) = connect(&[("SKILL_STUDIO_HOME", home.to_str().unwrap())]).await;
+    let info = client.peer_info().expect("initialize result").clone();
+    client.cancel().await.ok();
+
+    let server = info.server_info.as_ref().expect("serverInfo");
+    assert_eq!(server.name, "skill-studio");
+    assert_eq!(server.version, env!("CARGO_PKG_VERSION"));
     std::fs::remove_dir_all(&home).ok();
 }
