@@ -2075,6 +2075,8 @@ fn is_config_file_name(name: &std::ffi::OsStr, home: &Path) -> bool {
         || name == "opencode.jsonc"
         || name == "skill-studio.json"
         || name == "settings.json"
+        || name == "agents.toml"
+        || name == "agents.lock"
         || fork_registry_name.is_some_and(|fork_name| name == fork_name)
 }
 
@@ -2729,6 +2731,31 @@ mod tests {
             None,
         );
         assert_eq!(plan.full_rebuild_by, Some(file));
+    }
+
+    /// Flow: the user edits `<project>/agents.toml` or `<project>/agents.lock`,
+    /// or `~/.agents/agents.lock` changes after a dotagents install.
+    /// Expectation: each is classified as a skills change, because
+    /// provenance is read from these files and decides a skill's source.
+    /// Failure: the edit is ignored and a skill keeps a stale provenance
+    /// until something else triggers a rebuild.
+    #[test]
+    fn classify_watch_event_dotagents_files_are_skills_changes() {
+        let home = PathBuf::from("/home/tester");
+        let claude_projects = home.join(".claude/projects");
+        let opencode_databases = skill_studio_host::opencode_databases(&home);
+        for path in [
+            PathBuf::from("/work/my-project/agents.toml"),
+            PathBuf::from("/work/my-project/agents.lock"),
+            home.join(".agents/agents.lock"),
+        ] {
+            assert_eq!(
+                classify_watch_event(&path, &home, &claude_projects, &opencode_databases),
+                WatchEventKind::Skills,
+                "{} feeds provenance",
+                path.display()
+            );
+        }
     }
 
     #[test]
