@@ -4,15 +4,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use serde::Serialize;
+use skill_studio_core::doctor::DoctorInvariant;
 use skill_studio_core::dto::{
     CommandHealth, ConflictReport, Diagnosis, DoctorReport, EventDto, FixApplied, FixSkillOutcome,
     FrontmatterRepairPreview, InstallHarnessResult, InstallOutcome, InstallPreferences, Inventory,
-    ParkOutcome, RemoveOutcome, RepairOutcome, RestoreOutcome, ScanRequest,
-    SetHarnessEnabledOutcome, UnparkOutcome, UpdateAllOutcome, UpdateOutcome,
+    IssueKind, ParkOutcome, RemoveOutcome, RepairOutcome, RestoreOutcome, ScanRequest,
+    SetHarnessEnabledOutcome, Severity, UnparkOutcome, UpdateAllOutcome, UpdateOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
 use skill_studio_core::skill_update_check::{Currency, OutdatedRecord};
+use skill_studio_host::{SkillUsageRow, UsageReport};
 use std::collections::BTreeMap;
 
 /// Prints one envelope as a single JSON document with a trailing newline.
@@ -50,17 +52,23 @@ fn print_inventory(inventory: &Inventory) {
     }
     for skill in &inventory.skills {
         println!(
-            "{}  ({} deployment{})",
+            "{}  ({} {})",
             skill.name.0,
             skill.deployments.len(),
             if skill.deployments.len() == 1 {
-                ""
+                "copy"
             } else {
-                "s"
+                "copies"
             }
         );
+        // The id is what `park`, `unpark` and `remove --id` take when a
+        // name matches more than one copy.
         for deployment in &skill.deployments {
-            println!("  - {}", deployment.path.display());
+            println!(
+                "  - {}  id {}",
+                deployment.path.display(),
+                deployment.id.as_str()
+            );
         }
     }
     for observation in &inventory.observations {
@@ -68,7 +76,7 @@ fn print_inventory(inventory: &Inventory) {
     }
 }
 
-/// Prints `scan`'s table: one line per skill, its deployment paths.
+/// Prints `scan`'s table: one line per skill, then each copy's path and id.
 pub fn print_scan_table(envelope: &ResultEnvelope<Inventory>) {
     print_errors(envelope);
     if let Some(inventory) = &envelope.data {
@@ -90,9 +98,45 @@ pub fn print_diagnose_table(envelope: &ResultEnvelope<Diagnosis>) {
     println!("Issues:");
     for issue in &diagnosis.issues {
         println!(
-            "  [{:?}] {:?} {}: {}",
-            issue.severity, issue.kind, issue.skill.0, issue.message
+            "  [{}] {}, {}: {}",
+            severity_word(issue.severity),
+            issue_kind_words(issue.kind),
+            issue.skill.0,
+            issue.message
         );
+    }
+}
+
+fn severity_word(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Off => "note",
+        Severity::Warning => "warning",
+        Severity::Error => "error",
+    }
+}
+
+fn issue_kind_words(kind: IssueKind) -> &'static str {
+    match kind {
+        IssueKind::BrokenLink => "broken link",
+        IssueKind::UnreadableLink => "link cannot be read",
+        IssueKind::SpecViolation => "does not follow the skill format",
+        IssueKind::RepairableFrontmatter => "header can be fixed",
+        IssueKind::Drift => "copies differ",
+        IssueKind::Duplicate => "installed twice",
+        IssueKind::Parked => "parked",
+        IssueKind::Disabled => "turned off",
+        IssueKind::RootUnreadable => "folder not read in time",
+    }
+}
+
+fn doctor_check_words(invariant: DoctorInvariant) -> &'static str {
+    match invariant {
+        DoctorInvariant::LinkResolvesInRoot => "link points outside its folder",
+        DoctorInvariant::RegistryEntryHasFolder => "registry entry has no folder",
+        DoctorInvariant::LockfileEntryHasFolder => "lock file entry has no folder",
+        DoctorInvariant::NoFolderInTwoStates => "folder is in two states at once",
+        DoctorInvariant::QuarantineWithinCap => "recovery folder is over its limit",
+        DoctorInvariant::JournalHasNoOpenPlan => "history has an unfinished change",
     }
 }
 
@@ -244,17 +288,79 @@ pub fn print_doctor_report_table(envelope: &ResultEnvelope<DoctorReport>) {
         return;
     };
     if report.violations.is_empty() {
-        println!("no violations ({} skills checked)", report.checked);
+        println!("No problems found ({} skills checked).", report.checked);
         return;
     }
     for violation in &report.violations {
         println!(
-            "{:?}: {} ({})",
-            violation.invariant,
+            "{}: {} ({})",
+            doctor_check_words(violation.invariant),
             violation.path.display(),
             violation.detail
         );
     }
+}
+
+/// Prints `usage`'s table: skills not used in the window first, then the
+/// used ones, then a count of the unused ones.
+pub fn print_usage_table(envelope: &ResultEnvelope<UsageReport>) {
+    print_errors(envelope);
+    let Some(report) = &envelope.data else {
+        return;
+    };
+    let (unused, used): (Vec<_>, Vec<_>) = report.rows.iter().partition(|row| row.recent_uses == 0);
+    let width = report
+        .rows
+        .iter()
+        .map(|row| row.skill.len())
+        .max()
+        .unwrap_or(0);
+    if !unused.is_empty() {
+        println!("Not used in the last {} days:", report.days);
+        for row in &unused {
+            println!("  {:width$}  last used {}", row.skill, last_used(row));
+        }
+    }
+    if !used.is_empty() {
+        if !unused.is_empty() {
+            println!();
+        }
+        println!("Used in the last {} days:", report.days);
+        for row in &used {
+            let agents = row
+                .agents
+                .iter()
+                .map(|(agent, uses)| format!("{agent} {uses}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!(
+                "  {:width$}  {:>4} {}  last used {}  ({agents})",
+                row.skill,
+                row.recent_uses,
+                if row.recent_uses == 1 { "use " } else { "uses" },
+                last_used(row),
+            );
+        }
+    }
+    if !report.rows.is_empty() {
+        println!();
+    }
+    println!(
+        "{} of {} skills not used in {} days",
+        report.unused.len(),
+        report.rows.len(),
+        report.days
+    );
+    if report.partial {
+        println!("note: some session history could not be read, so some counts may be low.");
+    }
+}
+
+/// The date part of a row's last use, or "never".
+fn last_used(row: &SkillUsageRow) -> &str {
+    row.last_used
+        .as_deref()
+        .map_or("never", |at| at.get(..10).unwrap_or(at))
 }
 
 /// Prints `install`'s table: what got installed, or the trust prompt.
@@ -440,11 +546,11 @@ pub fn print_remove_outcome_table(envelope: &ResultEnvelope<RemoveOutcome>) {
     };
     match &outcome.quarantine_path {
         Some(path) => println!(
-            "removed {} -> quarantined at {}",
+            "Removed {}. A copy is in the recovery folder: {}. Run `undo` to bring it back.",
             outcome.skill.0,
             path.display()
         ),
-        None => println!("removed {}", outcome.skill.0),
+        None => println!("Removed {}.", outcome.skill.0),
     }
 }
 
@@ -455,8 +561,7 @@ pub fn print_park_outcome_table(envelope: &ResultEnvelope<ParkOutcome>) {
         return;
     };
     println!(
-        "{} parked -> {}",
-        outcome.deployment_id.as_str(),
+        "Parked. The skill is now in {}. Run `unpark` to turn it on again.",
         outcome.parked_path.display()
     );
 }
@@ -485,8 +590,7 @@ pub fn print_unpark_outcome_table(envelope: &ResultEnvelope<UnparkOutcome>) {
         return;
     };
     println!(
-        "{} restored -> {}",
-        outcome.deployment_id.as_str(),
+        "Turned on again. The skill is back in {}.",
         outcome.restored_path.display()
     );
 }
