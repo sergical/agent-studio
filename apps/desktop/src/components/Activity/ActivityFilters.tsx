@@ -101,7 +101,7 @@ export function useActivityLens(stats: SkillInvocationStats[], now: Date) {
   };
 }
 
-export type ActivityLens = ReturnType<typeof useActivityLens>;
+type ActivityLens = ReturnType<typeof useActivityLens>;
 
 export function ActivityFilters({
   stats,

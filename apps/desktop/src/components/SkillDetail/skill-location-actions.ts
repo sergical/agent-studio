@@ -72,7 +72,7 @@ interface UseLocationActionsResult {
 
 type SplitLocationRequest = Omit<Extract<LocationAction, { kind: "split" }>, "kind">;
 
-export interface MaterializeLocationRequest {
+interface MaterializeLocationRequest {
   target: LifecycleTarget;
   harness: string;
   harnessLabel: string;
@@ -312,11 +312,6 @@ export function useLocationActions(
     closeSplitRequest: () => setSplitRequest(null),
   };
 }
-
-// `setSkillInvocation` is used by the Invocation footer's segmented control,
-// re-exported here so `SkillLocationsCard` has one import site for every
-// Locations-card write call.
-export { setSkillInvocation };
 
 /**
  * Sets `file`'s invocation policy, forking first when needed - the same rule

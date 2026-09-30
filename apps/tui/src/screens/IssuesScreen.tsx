@@ -10,7 +10,7 @@ import { useMemo } from "react";
 import type { Diagnosis, NextAction } from "../cli-types.ts";
 import { CliTransportError } from "../cli-transport.ts";
 
-export interface IssuesScreenProps {
+interface IssuesScreenProps {
   diagnosis: Diagnosis | null;
   loading: boolean;
   error: CliTransportError | null;

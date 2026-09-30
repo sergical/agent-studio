@@ -29,7 +29,7 @@ import { issueRowState, rowState, updateRowState } from "../SkillList/skill-row-
 import type { RowState } from "../SkillList/skill-row-state";
 
 /** How many of "Recently used" to show. */
-export const RECENTLY_USED_COUNT = 5;
+const RECENTLY_USED_COUNT = 5;
 /** How many rows any other group shows before it collapses into a "Show all" link. */
 export const MAX_ROWS_PER_GROUP = 6;
 
@@ -91,7 +91,7 @@ export function issueActionLabel(kind: HealthIssueKind): string {
   }
 }
 
-export interface UpdateAllTally {
+interface UpdateAllTally {
   attempted: number;
   succeeded: number;
   failures: number;

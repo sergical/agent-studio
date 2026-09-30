@@ -8,7 +8,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import { Button } from "@skill-studio/ui";
 
-export const LIST_CAP = 10;
+const LIST_CAP = 10;
 
 export function SectionHeader({ title, children }: { title: string; children?: ReactNode }) {
   return (

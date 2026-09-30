@@ -30,7 +30,7 @@ export function componentNameFromStack(componentStack: string | null | undefined
 // `cause.name` for `Error` instances (e.g. "TypeError"), "string" for a
 // thrown string, "unknown" for anything else - never `cause.message`, which
 // can quote a path or a skill name.
-export function errorKind(cause: unknown): string {
+function errorKind(cause: unknown): string {
   if (cause instanceof Error) return cause.name;
   if (Object.prototype.toString.call(cause) === "[object String]") return "string";
   return "unknown";

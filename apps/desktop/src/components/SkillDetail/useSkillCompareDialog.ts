@@ -7,7 +7,7 @@
 import { useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 
-export interface UseSkillCompareDialog {
+interface UseSkillCompareDialog {
   isCompareOpen: boolean;
   setIsCompareOpen: Dispatch<SetStateAction<boolean>>;
 }

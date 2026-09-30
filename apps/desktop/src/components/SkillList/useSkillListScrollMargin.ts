@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-export interface UseSkillListScrollMargin {
+interface UseSkillListScrollMargin {
   scrollElement: HTMLElement | null;
   scrollMargin: number;
   /** Resolves the ancestor scroll container once the grid element attaches - `PageShell`'s

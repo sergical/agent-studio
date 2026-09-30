@@ -5,9 +5,7 @@
 // through that one op, run inside `tauri::async_runtime::spawn_blocking` so
 // a `gh` fetch, an `npx` shell-out, or a file copy never sits on the UI
 // task, the same shape `harness_first_run.rs`'s `detect_with_runtime`
-// already uses. `install_preferences` is the second, much smaller adapter:
-// it reads the same saved-preference/environment-default fact
-// `add_method_defaults.rs` used to compute locally.
+// already uses.
 //
 // Old path deleted in this unit: `skill_add.rs`'s own `add_via_copy`/
 // `add_via_dotagents`/`add_via_skills_sh` (direct `std::fs`/`npx` calls,
@@ -709,36 +707,6 @@ pub async fn add_skill(
         "add_skill",
         add_skill_with_runtime(super::core_runtime::build_runtime_write, request, github),
     )
-    .await
-}
-
-/// The saved or environment-default install method/harnesses, so
-/// `AddSkillSheet.tsx` can pre-fill the second install the way it already
-/// pre-fills the first from `add_method_defaults.rs`. `add_method_defaults.rs`
-/// stays as-is: `ops::install_preferences` falls back to the exact same
-/// environment default (`npx` on `PATH` -> `SkillsSh`, else `Copy`) when
-/// nothing has been saved yet, so nothing downstream needs to reconcile two
-/// different defaults.
-#[tauri::command]
-pub async fn install_preferences(
-    scope: InstallScope,
-    project_path: Option<String>,
-    app: tauri::AppHandle,
-) -> Result<skill_studio_core::dto::InstallPreferences, String> {
-    crate::timing_log::time_command_blocking(&app, "install_preferences", move || {
-        let rt = super::core_runtime::build_runtime_write()?;
-        let root_scope = match scope {
-            InstallScope::Global => RootScope::Global,
-            InstallScope::Project => RootScope::Project(ProjectRef(PathBuf::from(
-                project_path.ok_or("Project scope needs a project path")?,
-            ))),
-        };
-        let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-        let result = ops::install_preferences(&rt, &ctx, &root_scope);
-        let envelope =
-            ResultEnvelope::from_result(Operation::InstallPreferences, &rt.scope, &ctx, result);
-        super::core_runtime::to_command_result(envelope)
-    })
     .await
 }
 

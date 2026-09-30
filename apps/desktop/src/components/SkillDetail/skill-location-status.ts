@@ -30,7 +30,7 @@ import { canOfferHarnessSwitch, REGISTRY_COPY_NO_SWITCH_TITLE } from "./skill-lo
 export type StatusLevel = "error" | "warning" | "off";
 
 /** `rollup`/`skillRollup`'s result: the one dot a folder or the whole skill shows, and its tooltip body. */
-export interface RollupResult {
+interface RollupResult {
   level: StatusLevel | null;
   tip: string;
 }
@@ -100,7 +100,7 @@ export interface MenuEntry {
 }
 
 /** One condition a row (or the folder/skill it rolls up into) is in - see status-spec.md §3. */
-export interface Condition {
+interface Condition {
   level: StatusLevel;
   /** Stack-glyph/tooltip status word, e.g. "Broken link", "Off". */
   status: string;
@@ -120,8 +120,6 @@ export interface Condition {
   /** A hint line shown under the menu's first item. */
   hint?: string;
 }
-
-export type LocationKind = "shared" | "link" | "copy" | "plugin" | "reader";
 
 interface BaseLocationRow {
   harnessLabel: string;
@@ -257,7 +255,7 @@ function harnessId(agent: string): AgentId | null {
 }
 
 /** True when a skill parked globally still has a live copy or Universal folder outside the parked one. */
-export function liveElsewhere(skill: InstalledSkill): boolean {
+function liveElsewhere(skill: InstalledSkill): boolean {
   return skill.parked && skill.deployments.some((d) => d.scope !== "parked" && !d.disabled);
 }
 
@@ -522,7 +520,7 @@ function topLevel(conditions: Condition[]): StatusLevel | null {
 }
 
 /** The icon/dot tooltip: what's wrong, the fix, then any child sentences, then the mono path. */
-export function rowTipLines(conditions: Condition[]): string[] {
+function rowTipLines(conditions: Condition[]): string[] {
   if (!conditions.length) return [];
   const [top, ...rest] = conditions;
   return [top.what, top.fix, ...rest.map((c) => c.what), top.path].filter((line): line is string =>
@@ -843,7 +841,7 @@ export function titleLink(
 }
 
 /** `promoteToGlobal`'s result: the project folder to copy into `~/.agents/skills`, and the harnesses that need a link of their own. */
-export interface PromoteSource {
+interface PromoteSource {
   path: string;
   agents: AgentId[];
 }
@@ -936,7 +934,7 @@ export function invocationFooterNote(files: InvocationFile[], skillName: string)
 }
 
 /** `rowMenu`'s result: the plain entries, the danger entries (rendered after a separator), and an optional hint line. */
-export interface RowMenuResult {
+interface RowMenuResult {
   entries: MenuEntry[];
   danger: MenuEntry[];
   hint?: string;

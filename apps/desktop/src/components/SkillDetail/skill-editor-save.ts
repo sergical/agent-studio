@@ -4,7 +4,7 @@
 // ============================================================================
 
 /** One inline editor draft and the exact file content from when editing started. */
-export interface SkillEditorDraft {
+interface SkillEditorDraft {
   path: string;
   openedContent: string;
   draftContent: string;
