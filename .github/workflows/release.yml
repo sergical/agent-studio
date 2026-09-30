@@ -193,7 +193,7 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "Apple code signing secrets present - build will sign and notarize."
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
