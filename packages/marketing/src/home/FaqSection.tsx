@@ -45,7 +45,7 @@ const questions: ReadonlyArray<{ question: string; answer: ReactNode }> = [
   {
     question: "Does it send my data anywhere?",
     answer:
-      "No account is needed and it runs on your Mac. It sends anonymous crash reports, which you can turn off. They never include skill names, files or paths.",
+      "No account is needed and it runs on your Mac. It goes online only to browse and install skills, check for updates and send crash reports. Crash reports are anonymous and you can turn them off. They never include skill names, files or paths.",
   },
   {
     question: "Is it free?",

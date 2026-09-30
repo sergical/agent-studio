@@ -56,6 +56,7 @@ Skill Studio installs skills with the `npx skills` command, so the skills stay i
 
 - You do not need an account.
 - Skill Studio runs on your Mac.
+- It goes online only to browse and install skills, check for updates and send crash reports. Skill browsing goes through the Skill Studio server. Update checks go to GitHub.
 - It sends anonymous crash reports. They do not include skill names, files or paths.
 - To turn crash reports off, open **Settings**, then **Telemetry**. You can also turn them off on the first screen.
 
