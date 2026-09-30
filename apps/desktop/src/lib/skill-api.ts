@@ -18,8 +18,6 @@ import type {
   BulkTargetResult,
   DiscoverySourceSetting,
   ImportResult,
-  InstallPreferences,
-  InstallScope,
   FixSkillOutcome,
   ForkRecord,
   FrontmatterRepairApplyMode,
@@ -482,7 +480,7 @@ export async function addSkill(request: AddSkillRequest): Promise<AddSkillResult
 }
 
 /** Event name every background Add Skill status is emitted on. */
-export const ADD_SKILL_OPERATION_EVENT = "skills://add-skill-operation";
+const ADD_SKILL_OPERATION_EVENT = "skills://add-skill-operation";
 
 /**
  * Schedule a single-skill add. Returns the queued event before `npx` or
@@ -562,19 +560,6 @@ export async function getAddMethodDefaults(
   projectPath: string | null = null,
 ): Promise<AddMethodDefaults> {
   return callCommand("get_add_method_defaults", { projectPath });
-}
-
-/**
- * The saved method/harnesses for `scope` (falling back to the environment
- * default when nothing has been saved yet), so the Add Skill sheet can
- * pre-fill a second install the way `getAddMethodDefaults` pre-fills the
- * first.
- */
-export async function installPreferences(
-  scope: InstallScope,
-  projectPath?: string,
-): Promise<InstallPreferences> {
-  return callCommand("install_preferences", { scope, projectPath });
 }
 
 // ============================================================================

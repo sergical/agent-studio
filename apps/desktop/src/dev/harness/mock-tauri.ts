@@ -49,7 +49,7 @@ function splitCopyPath(harness: string, skillName: string, projectPath: string |
 }
 
 /** What the harness exposes on `window.__harness` for an agent driving the app. */
-export interface HarnessControl {
+interface HarnessControl {
   snapshot(): SkillSnapshot;
   /** Bumps `revision` and emits `skills://snapshot`, exactly like a real background rebuild. */
   publish(next: SkillSnapshot): Promise<void>;
@@ -474,8 +474,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
             skills: [{ name: "frontend-design", path: "frontend-design" }],
             truncated: false,
           };
-        case "install_preferences":
-          return { method: "dotagents", harnesses: ["claude-code", "codex"], saved: true };
         case "import_skill_pack":
           return { status: "imported", result: { bundled: [], referenced: [], errors: [] } };
         case "confirm_skill_pack_trust":
