@@ -748,3 +748,42 @@ fn split_that_fails_part_way_removes_the_codex_row_it_carried() {
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// Flow: the skill is off in Codex and Codex reads it through its own
+/// per-skill link into the Universal folder; split keeps Codex. Expect the
+/// new Codex copy off. Catches a carried-row check that follows the Codex
+/// link to the Universal `SKILL.md`, finds it already off, and adds no row,
+/// so the real copy starts on.
+#[test]
+fn split_keeps_a_skill_off_for_a_codex_copy_that_replaces_a_codex_link() {
+    let home = unique_temp_dir("split_codex_link_off");
+    splittable_home(&home);
+    std::fs::create_dir_all(home.join(".codex/skills")).unwrap();
+    std::os::unix::fs::symlink(universal(&home), codex_copy(&home)).unwrap();
+    codex_config_with_universal_off(&home);
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+
+    ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["claude-code", "codex"]),
+        },
+    )
+    .unwrap();
+
+    assert!(is_real_dir(&codex_copy(&home)));
+    let fs = RealFs::new();
+    let off = ops::codex_disabled_skill_md_paths(&fs, &home.join(".codex"));
+    assert!(
+        off.contains(&ops::codex_path_form(
+            &fs,
+            &codex_copy(&home).join("SKILL.md")
+        )),
+        "the Codex copy must stay off after the split, off paths: {off:?}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}

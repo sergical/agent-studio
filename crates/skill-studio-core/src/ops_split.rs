@@ -237,11 +237,10 @@ fn split_body(
     let universal_skill_md = deployment.path.join("SKILL.md");
     let mut codex_rows: Vec<PathBuf> = Vec::new();
     for copy in &copies {
-        let skill_md = copy.path.join("SKILL.md");
         if copy.harness.as_str() == AgentId::CODEX
-            && crate::ops::codex_needs_carried_row(rt, &universal_skill_md, &skill_md)?
+            && crate::ops::codex_needs_carried_row(rt, &universal_skill_md, &copy.path)?
         {
-            codex_rows.push(skill_md);
+            codex_rows.push(copy.path.join("SKILL.md"));
         }
     }
     let inverse = crate::events::with_remove_codex_rows(

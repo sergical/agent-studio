@@ -2309,22 +2309,27 @@ pub(crate) fn codex_rewrite_skill_path(
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
-/// Whether a copy at `new_skill_md` needs its own disabled `[[skills.config]]`
-/// row: `old_skill_md` is off in Codex's config and `new_skill_md` is not.
+/// Whether a copy folder at `new_dir` needs its own disabled
+/// `[[skills.config]]` row: `old_skill_md` is off in Codex's config and
+/// `new_dir/SKILL.md` is not.
 ///
 /// `ops::split` asks this for the Codex copy before it records its event, so
 /// the event names every row it will add: Codex keys its rows by path, so
-/// the copy would otherwise start on.
+/// the copy would otherwise start on. `new_dir` may still be a link into the
+/// folder being split, so its own last segment is never followed.
 pub(crate) fn codex_needs_carried_row(
     rt: &Runtime,
     old_skill_md: &Path,
-    new_skill_md: &Path,
+    new_dir: &Path,
 ) -> Result<bool, CoreError> {
     let fs = rt.ports.fs.as_ref();
     let doc = read_codex_config_document(fs, &rt.scope.codex_home)?;
     let off = codex_disabled_forms(fs, &doc);
-    Ok(off.contains(&codex_path_form(fs, old_skill_md))
-        && !off.contains(&codex_path_form(fs, new_skill_md)))
+    let new_form = match (new_dir.parent(), new_dir.file_name()) {
+        (Some(parent), Some(name)) => codex_path_form(fs, parent).join(name).join("SKILL.md"),
+        _ => codex_path_form(fs, &new_dir.join("SKILL.md")),
+    };
+    Ok(off.contains(&codex_path_form(fs, old_skill_md)) && !off.contains(&new_form))
 }
 
 /// Writes the disabled row [`codex_needs_carried_row`] asked for, or removes
