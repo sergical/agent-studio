@@ -2309,6 +2309,33 @@ pub(crate) fn codex_rewrite_skill_path(
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
+/// Adds a disabled `[[skills.config]]` row for `new_skill_md` when `old_skill_md`
+/// is off in Codex's config, and leaves the old row where it is so an undo
+/// still finds it. A no-op when the old path is not off, or the new one
+/// already is.
+///
+/// `ops::split` calls this for the Codex copy it writes: Codex keys its rows
+/// by path, so the copy would otherwise start on.
+pub(crate) fn codex_carry_disabled_row(
+    rt: &Runtime,
+    guard: &ExclusiveGuard,
+    old_skill_md: &Path,
+    new_skill_md: &Path,
+) -> Result<(), CoreError> {
+    let fs = rt.ports.fs.as_ref();
+    let codex_home = &rt.scope.codex_home;
+    let mut doc = read_codex_config_document(fs, codex_home)?;
+    let off = codex_disabled_forms(fs, &doc);
+    if !off.contains(&codex_path_form(fs, old_skill_md))
+        || off.contains(&codex_path_form(fs, new_skill_md))
+    {
+        return Ok(());
+    }
+    codex_write_disabled_row(fs, &mut doc, new_skill_md, true)
+        .map_err(|e| e.at(codex_config_path(codex_home)))?;
+    codex_write_config_document(rt, fs, guard, codex_home, &doc)
+}
+
 fn codex_write_config_document(
     rt: &Runtime,
     fs: &dyn ScopeFs,
