@@ -28,7 +28,7 @@ const marqueeMove = stylex.keyframes({
 const GITHUB_REPOSITORY_URL = "https://github.com/sergical/skill-studio";
 
 // Tauri's default deployment target applies because tauri.conf.json sets no minimumSystemVersion.
-const REQUIREMENTS = "macOS 10.13 or later · Apple Silicon and Intel";
+const REQUIREMENTS = "macOS 13 or later · Apple Silicon and Intel";
 
 function DownloadButton({ theme }: { theme: SiteTheme }) {
   return (
@@ -183,7 +183,7 @@ const styles = stylex.create({
   nav: { display: "flex", gap: 26, "@media (max-width: 700px)": { display: "none" } },
   navLink: {
     color: siteTokens.muted,
-    fontSize: 12,
+    fontSize: 14,
     textDecoration: "none",
     transition: "color 150ms ease-out",
     ":hover": { color: siteTokens.text },
@@ -194,12 +194,12 @@ const styles = stylex.create({
     gap: "clamp(38px,5vw,74px)",
     gridTemplateColumns: "minmax(460px,.78fr) minmax(0,1.22fr)",
     paddingBlock: "20px 56px",
-    "@media (max-width: 1120px)": { gridTemplateColumns: "1fr", paddingTop: 40 },
+    "@media (max-width: 1200px)": { gridTemplateColumns: "1fr", paddingTop: 40 },
     "@media (max-width: 600px)": { gap: 52, paddingBlock: "52px 80px" },
   },
   copy: {
     maxWidth: 560,
-    "@media (max-width: 600px)": {
+    "@media (max-width: 1200px)": {
       alignItems: "center",
       display: "flex",
       flexDirection: "column",
@@ -230,7 +230,7 @@ const styles = stylex.create({
     display: "flex",
     flexWrap: "wrap",
     gap: 14,
-    "@media (max-width: 600px)": { justifyContent: "center", width: "100%" },
+    "@media (max-width: 1200px)": { justifyContent: "center", width: "100%" },
   },
   fineprint: {
     color: siteTokens.muted,
@@ -302,7 +302,7 @@ const styles = stylex.create({
     borderWidth: 1,
     color: siteTokens.text,
     display: "inline-flex",
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: 620,
     gap: 9,
     justifyContent: "center",
@@ -316,11 +316,12 @@ const styles = stylex.create({
     "@media (max-width: 600px)": { minHeight: 48 },
   },
   productWrap: {
-    height: 540,
     minWidth: 0,
     position: "relative",
+    // Wider than its column on purpose: the page clips the overflow at the viewport edge,
+    // so the demo keeps its real size instead of shrinking to fit.
+    "@media (min-width: 1201px)": { width: "max(100%, 960px)" },
     "@media (max-width: 680px)": { marginInline: "auto", maxWidth: 430, width: "100%" },
-    "@media (max-width: 600px)": { height: 520, overflow: "visible" },
   },
   productHalo: {
     backgroundColor: siteTokens.accentSoft,

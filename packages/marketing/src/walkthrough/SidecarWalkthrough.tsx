@@ -4,7 +4,6 @@ import { ChevronDown } from "lucide-react";
 import { chapters, type WalkthroughProps } from "./walkthrough-chapters";
 import { WalkthroughVideo } from "./WalkthroughVideo";
 import { walkthroughStyles as s } from "./Walkthrough.stylex";
-import "./walkthrough.css";
 
 export function SidecarWalkthrough({ theme }: WalkthroughProps) {
   const [selection, setSelection] = useState({ index: 0, animate: false });

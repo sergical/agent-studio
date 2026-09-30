@@ -45,10 +45,14 @@ html[data-site-theme="light"] body {
   color-scheme: light;
 }
 
-button,
-a,
-input {
-  font: inherit;
+/* StyleX emits its rules in cascade layers, and any unlayered rule beats every layer.
+   index.html declares this layer first, so component font sizes win over it. */
+@layer reset {
+  button,
+  a,
+  input {
+    font: inherit;
+  }
 }
 
 button {

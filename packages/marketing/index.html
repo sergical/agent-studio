@@ -2,6 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Declared first so the reset layer sits under StyleX's layers in dev and build alike. -->
+    <style>
+      @layer reset;
+    </style>
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
     <link rel="preload" as="image" href="/skill-studio-logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
