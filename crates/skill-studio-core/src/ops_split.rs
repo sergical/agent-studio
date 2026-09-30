@@ -274,10 +274,12 @@ fn split_body(
     };
     session.store.record(&session.guard, &id, &draft)?;
 
+    let mut appended_codex_rows = Vec::new();
     let write_result = write_split(
         rt,
         &session,
         fs,
+        &mut appended_codex_rows,
         &SplitWrites {
             links: &links,
             scoped_links: &scoped_links,
@@ -290,7 +292,14 @@ fn split_body(
         },
     );
     if let Err(e) = write_result {
-        roll_back_split(rt, &session, fs, &copies, &codex_rows, &link_targets);
+        roll_back_split(
+            rt,
+            &session,
+            fs,
+            &copies,
+            &appended_codex_rows,
+            &link_targets,
+        );
         let _ = session
             .store
             .finish(&session.guard, &id, EventStatus::Failed, None);
@@ -369,10 +378,13 @@ struct SplitWrites<'a> {
 }
 
 /// Links come down first: a Claude Code copy lands where its link was.
+/// `appended_codex_rows` collects each carried Codex row once it is written,
+/// so a rollback removes only rows this split added.
 fn write_split(
     rt: &Runtime,
     session: &MutationSession,
     fs: &dyn ScopeFs,
+    appended_codex_rows: &mut Vec<PathBuf>,
     writes: &SplitWrites<'_>,
 ) -> Result<(), CoreError> {
     for (link, scoped_link) in writes.links.iter().zip(writes.scoped_links) {
@@ -386,6 +398,7 @@ fn write_split(
         let skill_md = copy.path.join("SKILL.md");
         if writes.codex_rows.contains(&skill_md) {
             crate::ops::codex_append_carried_row(rt, &session.guard, &skill_md)?;
+            appended_codex_rows.push(skill_md);
         }
     }
     crate::ops::ensure_dir_all(rt, session, fs, writes.quarantine_dir)?;
@@ -403,10 +416,10 @@ fn roll_back_split(
     session: &MutationSession,
     fs: &dyn ScopeFs,
     copies: &[SplitCopy],
-    codex_rows: &[PathBuf],
+    appended_codex_rows: &[PathBuf],
     link_targets: &[(PathBuf, PathBuf)],
 ) {
-    for skill_md in codex_rows {
+    for skill_md in appended_codex_rows {
         let _ = crate::ops::codex_remove_carried_row(rt, &session.guard, skill_md);
     }
     for copy in copies {

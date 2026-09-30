@@ -2383,11 +2383,11 @@ pub(crate) fn codex_append_carried_row(
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
-/// Removes the last disabled row whose `path` is exactly `skill_md`'s text:
-/// the one [`codex_append_carried_row`] appended. Matches the text, never a
-/// resolved path, so a link still sitting at `skill_md`'s folder cannot
-/// lead it to another skill's row. Writes nothing when no row matches, so a
-/// split rollback can call it for a copy it never reached.
+/// Removes the last row whose `path` is exactly `skill_md`'s text: the one
+/// [`codex_append_carried_row`] appended, even when a later toggle set it
+/// to `enabled = true`. Matches the text, never a resolved path, so a link
+/// still sitting at `skill_md`'s folder cannot lead it to another skill's
+/// row. Writes nothing when no row matches, as after the user deleted it.
 pub(crate) fn codex_remove_carried_row(
     rt: &Runtime,
     guard: &ExclusiveGuard,
@@ -2401,7 +2401,6 @@ pub(crate) fn codex_remove_carried_row(
         .enumerate()
         .filter(|(_, row)| {
             row.get("path").and_then(toml_edit::Item::as_str) == Some(literal.as_ref())
-                && row.get("enabled").and_then(toml_edit::Item::as_bool) == Some(false)
         })
         .map(|(idx, _)| idx)
         .last()

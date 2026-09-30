@@ -888,3 +888,100 @@ fn split_that_fails_with_the_codex_link_in_place_keeps_the_universal_row() {
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// Flow: the user has a disabled row and a later enabled row at the Codex
+/// link path, so the Codex copy needs a carried row, but the split fails
+/// before it writes that copy. Expect Codex's config unchanged. Catches a
+/// rollback that removes a carried row for every copy it planned, and so
+/// deletes the user's row with the same path text.
+#[test]
+fn split_that_fails_before_the_codex_copy_keeps_the_users_rows_at_its_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = unique_temp_dir("split_rollback_unwritten_row");
+    splittable_home(&home);
+    std::fs::create_dir_all(home.join(".codex/skills")).unwrap();
+    std::os::unix::fs::symlink(universal(&home), codex_copy(&home)).unwrap();
+    let link_md = codex_copy(&home).join("SKILL.md");
+    let universal_md = universal(&home).join("SKILL.md");
+    let before = format!(
+        "model = \"o3\"\n\n[[skills.config]]\npath = \"{link}\"\nenabled = false\n\n\
+         [[skills.config]]\npath = \"{link}\"\nenabled = true\n\n\
+         [[skills.config]]\npath = \"{universal}\"\nenabled = false\n",
+        link = link_md.display(),
+        universal = universal_md.display()
+    );
+    std::fs::write(home.join(".codex/config.toml"), &before).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+    let link_dirs = [home.join(".claude/skills"), home.join(".pi/agent/skills")];
+    for dir in &link_dirs {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+
+    let result = ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["claude-code", "codex"]),
+        },
+    );
+
+    for dir in &link_dirs {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    assert!(result.is_err(), "the split must fail: {result:?}");
+    assert_eq!(
+        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
+        before
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: split carries a disabled row to the Codex copy, then Codex's own
+/// toggle turns the copy on by setting that row to `enabled = true`, then
+/// the split is undone. Expect Codex's config back to its pre-split bytes.
+/// Catches an undo that removes only a disabled row: the enabled row stays
+/// and, through the restored link, turns the Universal skill on in Codex.
+#[test]
+fn undo_split_removes_the_carried_codex_row_after_a_toggle_enabled_it() {
+    let home = unique_temp_dir("split_undo_toggled_row");
+    splittable_home(&home);
+    let before = codex_config_with_universal_off(&home);
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+    let outcome = ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["claude-code", "codex"]),
+        },
+    )
+    .unwrap();
+    let carried = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
+    let toggled_on = format!(
+        "{before}{}",
+        carried[before.len()..].replace("enabled = false", "enabled = true")
+    );
+    std::fs::write(home.join(".codex/config.toml"), &toggled_on).unwrap();
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
+        before
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
