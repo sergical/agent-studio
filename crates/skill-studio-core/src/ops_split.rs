@@ -75,7 +75,8 @@ pub fn split_target_root(rt: &Runtime, scope: &RootScope, harness: &AgentId) -> 
 /// every link into the folder, write each copy, then move the Universal
 /// folder into the Universal root's quarantine (pruned by the same caps as
 /// `remove`'s). Undo (`restore_event`) writes the Universal folder back from
-/// the backup, removes the copies, and recreates the links.
+/// the backup, removes the copies and any Codex row carried to a copy, and
+/// recreates the links.
 pub fn split(rt: &Runtime, ctx: &OpContext, req: &SplitRequest) -> Result<SplitOutcome, CoreError> {
     rt.run(Operation::Split, ctx, || split_body(rt, ctx, req))
 }
@@ -233,14 +234,27 @@ fn split_body(
         .iter()
         .map(|copy| (copy.path.clone(), pre_fingerprint.clone()))
         .collect();
-    let inverse = crate::events::with_remove_copies(
-        crate::events::restore_backup_inverse_with_links(
-            &deployment.path,
-            Some(&pre_fingerprint),
-            None,
-            &link_targets,
+    let universal_skill_md = deployment.path.join("SKILL.md");
+    let mut codex_rows: Vec<PathBuf> = Vec::new();
+    for copy in &copies {
+        let skill_md = copy.path.join("SKILL.md");
+        if copy.harness.as_str() == AgentId::CODEX
+            && crate::ops::codex_needs_carried_row(rt, &universal_skill_md, &skill_md)?
+        {
+            codex_rows.push(skill_md);
+        }
+    }
+    let inverse = crate::events::with_remove_codex_rows(
+        crate::events::with_remove_copies(
+            crate::events::restore_backup_inverse_with_links(
+                &deployment.path,
+                Some(&pre_fingerprint),
+                None,
+                &link_targets,
+            ),
+            &copy_fingerprints,
         ),
-        &copy_fingerprints,
+        &codex_rows,
     );
 
     let draft = EventDraft {
@@ -269,6 +283,7 @@ fn split_body(
             links: &links,
             scoped_links: &scoped_links,
             copies: &copies,
+            codex_rows: &codex_rows,
             files: &files,
             universal: &deployment.path,
             quarantine_dir: &quarantine_dir,
@@ -276,7 +291,7 @@ fn split_body(
         },
     );
     if let Err(e) = write_result {
-        roll_back_split(rt, &session, fs, &copies, &link_targets);
+        roll_back_split(rt, &session, fs, &copies, &codex_rows, &link_targets);
         let _ = session
             .store
             .finish(&session.guard, &id, EventStatus::Failed, None);
@@ -347,6 +362,7 @@ struct SplitWrites<'a> {
     links: &'a [PathBuf],
     scoped_links: &'a [crate::ports::ScopedPath],
     copies: &'a [SplitCopy],
+    codex_rows: &'a [PathBuf],
     files: &'a [crate::fsops::StageFile],
     universal: &'a Path,
     quarantine_dir: &'a Path,
@@ -368,13 +384,9 @@ fn write_split(
         let root = copy.path.parent().unwrap_or(&copy.path);
         crate::ops::ensure_dir_all(rt, session, fs, root)?;
         crate::ops::restore_write_dir(rt, &session.guard, &copy.path, writes.files)?;
-        if copy.harness.as_str() == AgentId::CODEX {
-            crate::ops::codex_carry_disabled_row(
-                rt,
-                &session.guard,
-                &writes.universal.join("SKILL.md"),
-                &copy.path.join("SKILL.md"),
-            )?;
+        let skill_md = copy.path.join("SKILL.md");
+        if writes.codex_rows.contains(&skill_md) {
+            crate::ops::codex_set_carried_row(rt, &session.guard, &skill_md, true)?;
         }
     }
     crate::ops::ensure_dir_all(rt, session, fs, writes.quarantine_dir)?;
@@ -392,8 +404,12 @@ fn roll_back_split(
     session: &MutationSession,
     fs: &dyn ScopeFs,
     copies: &[SplitCopy],
+    codex_rows: &[PathBuf],
     link_targets: &[(PathBuf, PathBuf)],
 ) {
+    for skill_md in codex_rows {
+        let _ = crate::ops::codex_set_carried_row(rt, &session.guard, skill_md, false);
+    }
     for copy in copies {
         if fs
             .symlink_metadata(&copy.path)

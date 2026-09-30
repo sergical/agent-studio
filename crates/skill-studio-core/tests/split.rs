@@ -662,3 +662,89 @@ fn split_that_fails_part_way_rolls_back_its_copies_and_links() {
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+fn codex_config_with_universal_off(home: &Path) -> String {
+    let text = format!(
+        "model = \"o3\"\n\n[[skills.config]]\npath = \"{}\"\nenabled = false\n",
+        universal(home).join("SKILL.md").display()
+    );
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(home.join(".codex/config.toml"), &text).unwrap();
+    text
+}
+
+/// Flow: the skill is off in Codex, split carries a disabled row to the
+/// Codex copy, then the split is undone. Expect Codex's config back to its
+/// pre-split bytes: the Universal row kept, the carried row gone. Catches
+/// an undo that removes the copy but leaves a row naming a path that no
+/// longer exists, which a later split or install at that path would inherit.
+#[test]
+fn undo_split_removes_the_codex_row_it_carried_and_keeps_the_universal_row() {
+    let home = unique_temp_dir("split_undo_codex_row");
+    splittable_home(&home);
+    let before = codex_config_with_universal_off(&home);
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+    let outcome = ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["claude-code", "codex"]),
+        },
+    )
+    .unwrap();
+    assert_ne!(
+        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
+        before,
+        "the split must carry a row to the Codex copy"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
+        before
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the skill is off in Codex and a regular file blocks the quarantine
+/// folder, so the split fails after it wrote the Codex copy and its carried
+/// row. Expect Codex's config back to its pre-split bytes. Catches a
+/// rollback that removes the copy folder but leaves its row behind.
+#[test]
+fn split_that_fails_part_way_removes_the_codex_row_it_carried() {
+    let home = unique_temp_dir("split_rollback_codex_row");
+    splittable_home(&home);
+    let before = codex_config_with_universal_off(&home);
+    std::fs::write(home.join(".agents/skills/.skill-studio-quarantine"), b"").unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+
+    let result = ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["claude-code", "codex"]),
+        },
+    );
+
+    assert!(result.is_err(), "the split must fail: {result:?}");
+    assert_eq!(
+        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
+        before
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}

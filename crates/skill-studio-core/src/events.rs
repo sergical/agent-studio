@@ -608,6 +608,32 @@ pub(crate) fn parse_restore_remove_copies(inverse: &serde_json::Value) -> Vec<(P
         .collect()
 }
 
+/// Adds a `"remove_codex_rows"` array to a `restore_backup` inverse: the
+/// `SKILL.md` paths whose disabled `[[skills.config]]` row the same event
+/// added to Codex's config (`ops::split` carries one to a Codex copy of a
+/// skill that was off). `restore_event` removes exactly those rows.
+pub(crate) fn with_remove_codex_rows(
+    mut inverse: serde_json::Value,
+    rows: &[PathBuf],
+) -> serde_json::Value {
+    if !rows.is_empty() {
+        inverse["remove_codex_rows"] = serde_json::json!(rows);
+    }
+    inverse
+}
+
+/// Reads back the `"remove_codex_rows"` array [`with_remove_codex_rows`]
+/// adds, or an empty list for an inverse that has none.
+pub(crate) fn parse_restore_remove_codex_rows(inverse: &serde_json::Value) -> Vec<PathBuf> {
+    inverse
+        .get("remove_codex_rows")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.as_str().map(PathBuf::from))
+        .collect()
+}
+
 /// Reads a `restore_backup` inverse payload back into its path and
 /// fingerprints. `None` for either fingerprint means `"absent"`. Returns
 /// `None` when `inverse` is not a `restore_backup` op (an unrecognized op,

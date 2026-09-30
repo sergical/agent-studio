@@ -2309,29 +2309,41 @@ pub(crate) fn codex_rewrite_skill_path(
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
-/// Adds a disabled `[[skills.config]]` row for `new_skill_md` when `old_skill_md`
-/// is off in Codex's config, and leaves the old row where it is so an undo
-/// still finds it. A no-op when the old path is not off, or the new one
-/// already is.
+/// Whether a copy at `new_skill_md` needs its own disabled `[[skills.config]]`
+/// row: `old_skill_md` is off in Codex's config and `new_skill_md` is not.
 ///
-/// `ops::split` calls this for the Codex copy it writes: Codex keys its rows
-/// by path, so the copy would otherwise start on.
-pub(crate) fn codex_carry_disabled_row(
+/// `ops::split` asks this for the Codex copy before it records its event, so
+/// the event names every row it will add: Codex keys its rows by path, so
+/// the copy would otherwise start on.
+pub(crate) fn codex_needs_carried_row(
     rt: &Runtime,
-    guard: &ExclusiveGuard,
     old_skill_md: &Path,
     new_skill_md: &Path,
+) -> Result<bool, CoreError> {
+    let fs = rt.ports.fs.as_ref();
+    let doc = read_codex_config_document(fs, &rt.scope.codex_home)?;
+    let off = codex_disabled_forms(fs, &doc);
+    Ok(off.contains(&codex_path_form(fs, old_skill_md))
+        && !off.contains(&codex_path_form(fs, new_skill_md)))
+}
+
+/// Writes the disabled row [`codex_needs_carried_row`] asked for, or removes
+/// every row naming `skill_md` when `disabled` is false. Removing is a no-op
+/// that writes nothing when no row names the path, so a split rollback can
+/// call it for a copy it never reached.
+pub(crate) fn codex_set_carried_row(
+    rt: &Runtime,
+    guard: &ExclusiveGuard,
+    skill_md: &Path,
+    disabled: bool,
 ) -> Result<(), CoreError> {
     let fs = rt.ports.fs.as_ref();
     let codex_home = &rt.scope.codex_home;
     let mut doc = read_codex_config_document(fs, codex_home)?;
-    let off = codex_disabled_forms(fs, &doc);
-    if !off.contains(&codex_path_form(fs, old_skill_md))
-        || off.contains(&codex_path_form(fs, new_skill_md))
-    {
+    if !disabled && codex_find_row_indices(fs, &doc, skill_md).is_empty() {
         return Ok(());
     }
-    codex_write_disabled_row(fs, &mut doc, new_skill_md, true)
+    codex_write_disabled_row(fs, &mut doc, skill_md, disabled)
         .map_err(|e| e.at(codex_config_path(codex_home)))?;
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
@@ -5106,9 +5118,14 @@ fn restore_event_body(
             let _ = result;
         }
     }
+    let mut copy_errors: Vec<String> = Vec::new();
+    for skill_md in crate::events::parse_restore_remove_codex_rows(inverse) {
+        if let Err(error) = codex_set_carried_row(rt, &session.guard, &skill_md, false) {
+            copy_errors.push(error.message);
+        }
+    }
     // Before the links below: a split copy can sit exactly where a link it
     // replaced has to come back.
-    let mut copy_errors: Vec<String> = Vec::new();
     for (copy, _) in &remove_copies {
         let Ok(facts) = fs.symlink_metadata(copy) else {
             continue;
