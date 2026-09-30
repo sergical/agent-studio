@@ -27,6 +27,9 @@ const marqueeMove = stylex.keyframes({
 
 const GITHUB_REPOSITORY_URL = "https://github.com/sergical/agent-studio";
 
+// Tauri's default deployment target applies because tauri.conf.json sets no minimumSystemVersion.
+const REQUIREMENTS = "macOS 10.13 or later · Apple Silicon and Intel";
+
 function DownloadButton({ theme }: { theme: SiteTheme }) {
   return (
     <a href={`${GITHUB_REPOSITORY_URL}/releases`} {...stylex.props(styles.primaryButton)}>
@@ -41,7 +44,7 @@ function DownloadButton({ theme }: { theme: SiteTheme }) {
 export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
   return (
     <div id="top" {...stylex.props(styles.page, theme === "light" && lightSiteTheme)}>
-      <header {...stylex.props(styles.header)}>
+      <header {...stylex.props(styles.container, styles.header)}>
         <LogoLockup inverse={theme === "dark"} compact />
         <nav {...stylex.props(styles.nav)} aria-label="Main navigation">
           <a href="#how-it-works" {...stylex.props(styles.navLink)}>
@@ -54,7 +57,7 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
       </header>
 
       <main>
-        <section {...stylex.props(styles.hero)}>
+        <section {...stylex.props(styles.container, styles.hero)}>
           <div {...stylex.props(styles.copy)}>
             <h1 {...stylex.props(styles.title)}>
               Your skills.
@@ -79,6 +82,7 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
                 <span>Browse source</span>
               </a>
             </div>
+            <p {...stylex.props(styles.fineprint)}>{REQUIREMENTS}</p>
           </div>
 
           <div id="product" {...stylex.props(styles.productWrap)}>
@@ -116,20 +120,25 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
           </div>
         </section>
 
-        <section id="how-it-works" {...stylex.props(styles.importSection)}>
+        <section id="how-it-works" {...stylex.props(styles.container, styles.importSection)}>
           <SidecarWalkthrough theme={theme} />
         </section>
 
-        <section id="download" {...stylex.props(styles.closingSection)}>
+        <section id="download" {...stylex.props(styles.container, styles.closingSection)}>
           <h2 {...stylex.props(styles.closingTitle)}>Get Skill Studio.</h2>
           <p {...stylex.props(styles.closingCopy)}>
             Find your installed skills and check which agents can use them.
           </p>
           <DownloadButton theme={theme} />
+          <p {...stylex.props(styles.fineprint)}>{REQUIREMENTS}</p>
+          <p {...stylex.props(styles.trust)}>
+            Free and open source under the MIT license. Runs locally on your Mac, with no account.
+            Crash reports are off unless you turn them on.
+          </p>
         </section>
       </main>
 
-      <footer {...stylex.props(styles.footer)}>
+      <footer {...stylex.props(styles.container, styles.footer)}>
         <LogoLockup inverse={theme === "dark"} compact />
         <nav {...stylex.props(styles.footerLinks)} aria-label="Footer navigation">
           <a
@@ -156,14 +165,20 @@ const styles = stylex.create({
     minHeight: "100vh",
     overflow: "clip",
   },
+  container: {
+    boxSizing: "border-box",
+    marginInline: "auto",
+    maxWidth: 1280,
+    paddingInline: 28,
+    width: "100%",
+    "@media (max-width: 600px)": { paddingInline: 20 },
+  },
   header: {
     alignItems: "center",
-    display: "grid",
-    gridTemplateColumns: "1fr auto 1fr",
-    margin: "0 auto",
-    maxWidth: 1280,
-    padding: "22px 28px",
-    "@media (max-width: 700px)": { display: "flex", padding: "16px 20px" },
+    display: "flex",
+    justifyContent: "space-between",
+    paddingBlock: 22,
+    "@media (max-width: 700px)": { paddingBlock: 16 },
   },
   nav: { display: "flex", gap: 26, "@media (max-width: 700px)": { display: "none" } },
   navLink: {
@@ -178,15 +193,12 @@ const styles = stylex.create({
     display: "grid",
     gap: "clamp(38px,5vw,74px)",
     gridTemplateColumns: "minmax(460px,.78fr) minmax(0,1.22fr)",
-    margin: "0 auto",
-    maxWidth: 1380,
-    minHeight: 720,
-    padding: "72px 28px 62px",
-    "@media (max-width: 1120px)": { gridTemplateColumns: "1fr", paddingTop: 54 },
-    "@media (max-width: 600px)": { gap: 52, minHeight: 0, padding: "52px 20px 80px" },
+    paddingBlock: "20px 56px",
+    "@media (max-width: 1120px)": { gridTemplateColumns: "1fr", paddingTop: 40 },
+    "@media (max-width: 600px)": { gap: 52, paddingBlock: "52px 80px" },
   },
   copy: {
-    maxWidth: 520,
+    maxWidth: 560,
     "@media (max-width: 600px)": {
       alignItems: "center",
       display: "flex",
@@ -199,7 +211,7 @@ const styles = stylex.create({
   title: {
     fontSize: "clamp(58px,5.5vw,86px)",
     fontWeight: 720,
-    letterSpacing: "-.067em",
+    letterSpacing: "-.035em",
     lineHeight: 0.9,
     margin: 0,
   },
@@ -219,6 +231,18 @@ const styles = stylex.create({
     flexWrap: "wrap",
     gap: 14,
     "@media (max-width: 600px)": { justifyContent: "center", width: "100%" },
+  },
+  fineprint: {
+    color: siteTokens.muted,
+    fontSize: 12,
+    margin: "14px 0 0",
+  },
+  trust: {
+    color: siteTokens.muted,
+    fontSize: 13,
+    lineHeight: 1.6,
+    margin: "20px 0 0",
+    maxWidth: "52ch",
   },
   primaryButton: {
     textDecoration: "none",
@@ -292,11 +316,9 @@ const styles = stylex.create({
     "@media (max-width: 600px)": { minHeight: 48 },
   },
   productWrap: {
-    height: 542,
+    height: 540,
     minWidth: 0,
     position: "relative",
-    transform: "translateY(58px)",
-    "@media (max-width: 1050px)": { transform: "none" },
     "@media (max-width: 680px)": { marginInline: "auto", maxWidth: 430, width: "100%" },
     "@media (max-width: 600px)": { height: 520, overflow: "visible" },
   },
@@ -385,22 +407,23 @@ const styles = stylex.create({
     width: 1,
   },
   importSection: {
-    margin: "0 auto",
-    maxWidth: 1220,
-    padding: "124px 28px 48px",
-    "@media (max-width: 600px)": { padding: "86px 20px 24px" },
+    paddingBlock: "124px 24px",
+    "@media (max-width: 600px)": { paddingBlock: "86px 24px" },
   },
   closingSection: {
-    alignItems: "center",
+    alignItems: "flex-start",
     display: "flex",
     flexDirection: "column",
-    padding: "150px 28px 142px",
-    textAlign: "center",
-    "@media (max-width: 600px)": { padding: "104px 20px 100px" },
+    paddingBlock: "76px 142px",
+    "@media (max-width: 600px)": {
+      alignItems: "center",
+      paddingBlock: "52px 100px",
+      textAlign: "center",
+    },
   },
   closingTitle: {
     fontSize: "clamp(42px,5vw,68px)",
-    letterSpacing: "-.055em",
+    letterSpacing: "-.035em",
     lineHeight: 0.98,
     margin: 0,
     maxWidth: "14ch",
@@ -420,11 +443,8 @@ const styles = stylex.create({
     borderTopWidth: 1,
     display: "flex",
     justifyContent: "space-between",
-    margin: "0 auto",
-    maxWidth: 1280,
-    padding: "28px",
+    paddingBlock: 28,
     paddingBottom: "max(28px, env(safe-area-inset-bottom))",
-    "@media (max-width: 600px)": { paddingInline: 20 },
   },
   footerLinks: { alignItems: "center", display: "flex", gap: 22 },
   footerLink: {

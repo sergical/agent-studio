@@ -1320,13 +1320,14 @@ const styles = stylex.create({
     boxShadow: "0 2px 5px oklch(0 0 0 / .22), 0 20px 55px oklch(0 0 0 / .34)",
     color: tokens.text,
     fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif",
-    height: 800,
+    height: 614,
     isolation: "isolate",
+    maskImage: "linear-gradient(to bottom, black 84%, transparent)",
     overflow: "hidden",
     position: "relative",
-    transform: "scale(.678)",
+    transform: "scale(.88)",
     transformOrigin: "top left",
-    width: "147.493%",
+    width: "113.636%",
     "@media (max-width: 680px)": {
       borderRadius: "min(3vw, 10px)",
       height: 520,
@@ -1336,6 +1337,7 @@ const styles = stylex.create({
   },
   walkthroughWindow: {
     height: 800,
+    maskImage: "none",
     transform: "scale(.57)",
     width: "175.439%",
     "@media (max-width: 680px)": {
@@ -1346,6 +1348,7 @@ const styles = stylex.create({
   },
   captureWindow: {
     height: 800,
+    maskImage: "none",
     transform: "scale(1.14)",
     width: "87.719%",
   },

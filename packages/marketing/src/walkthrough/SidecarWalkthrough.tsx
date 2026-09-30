@@ -69,10 +69,6 @@ export function SidecarWalkthrough({ theme }: WalkthroughProps) {
       theme={theme}
       compact={compact}
       animate={selection.animate}
-      onEnded={() => {
-        if (selection.automatic && !matchMedia("(prefers-reduced-motion: reduce)").matches)
-          selectChapter((active + 1) % chapters.length, true, true);
-      }}
     />
   );
 

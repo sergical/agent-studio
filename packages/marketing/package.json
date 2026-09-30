@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host ${HOST:-localhost} --port ${PORT:-5173}",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "remotion:studio": "remotion studio src/remotion/index.ts",
