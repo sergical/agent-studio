@@ -40,7 +40,7 @@ Each change goes into a history.
 2. Find the change in **History**.
 3. Select **Restore**.
 
-To undo a park, you can also select **Unpark**.
+To undo a park, select **Unpark**.
 
 ## Install from skills.sh
 

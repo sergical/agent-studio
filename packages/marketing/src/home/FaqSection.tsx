@@ -27,7 +27,7 @@ const questions: ReadonlyArray<{ question: string; answer: ReactNode }> = [
   {
     question: "Can I undo a change?",
     answer:
-      "Yes. Changes go into a history you can undo. Skills you remove go to a quarantine first.",
+      "Yes. Changes go into a history you can undo. Skill Studio keeps a backup of each skill it removes. To undo a park, unpark the skill.",
   },
   {
     question: "Does it work with npx skills?",

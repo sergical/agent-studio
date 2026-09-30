@@ -77,10 +77,14 @@ Add it to `opencode.json` in your project, or to `~/.config/opencode/opencode.js
 ## What your agent can do
 
 - List your skills and find problems.
+- Find unused skills.
+- Find skills that have copies with different content.
 - Fix broken skills.
 - Park and unpark skills.
-- Find skills that have a newer version, and update them.
-- Restore an earlier change.
+- Remove a duplicate copy.
+- Turn a skill off for one agent: Claude Code, Codex or OpenCode.
+- Install skills, find skills that have a newer version, and update them.
+- List past changes and restore one.
 
 ## Try it
 
@@ -92,4 +96,4 @@ Find my unused and broken skills and park the ones I don't need.
 
 ## Undo
 
-Each change that your agent makes goes into the same history that the app shows. To undo a change, open **Activity** in the app and select **Restore**, or run `npx skill-studio undo`. To undo a park, you can also unpark the skill.
+Each change that your agent makes goes into the same history that the app shows. To undo a change, open **Activity** in the app and select **Restore**, or run `npx skill-studio undo`. To undo a park, unpark the skill.

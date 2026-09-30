@@ -18,7 +18,7 @@ npx skill-studio --help
 
 ## Check your skills
 
-List every skill, with its agents and an id for each copy:
+List every skill, with the path and id of each copy:
 
 ```sh
 npx skill-studio scan
@@ -30,7 +30,7 @@ Find problems, for example broken links or bad frontmatter:
 npx skill-studio diagnose
 ```
 
-Find skills with the same name in more than one place:
+Find skills that have copies with different content:
 
 ```sh
 npx skill-studio conflicts
@@ -38,7 +38,7 @@ npx skill-studio conflicts
 
 ## Find unused skills
 
-List the skills that no agent used in the last 30 days. Never-used skills come first.
+Show which skills your agents used in the last 30 days, and which they did not. Unused skills come first.
 
 ```sh
 npx skill-studio usage
@@ -60,13 +60,13 @@ The CLI repairs what it can. If it cannot fix a problem, it prints the path to t
 
 ## Park and unpark
 
-Park a skill to hide it from every agent. The CLI does not delete it.
+Park a skill to hide it from every agent. The CLI does not delete it. You can park a skill that is in the shared `.agents/skills` folder.
 
 ```sh
 npx skill-studio park my-skill
 ```
 
-To use the skill again:
+To use the skill again, or to undo a park:
 
 ```sh
 npx skill-studio unpark my-skill
@@ -129,11 +129,13 @@ Install a skill from a GitHub repository:
 npx skill-studio add owner/repo --name my-skill
 ```
 
-Remove a skill:
+Remove a skill that you installed with Skill Studio, `npx skills` or dotagents:
 
 ```sh
 npx skill-studio remove my-skill
 ```
+
+To get the skill back, run `undo`.
 
 ## Use it in scripts
 
@@ -143,4 +145,4 @@ Add `--json` to get output that a script can read:
 npx skill-studio diagnose --json
 ```
 
-`scan`, `diagnose` and `fix` exit with code 1 when they find a problem. Other errors use codes 2 and higher.
+`diagnose`, `conflicts` and `fix` exit with code 1 when they find a problem. Other errors use codes 2 and higher.
