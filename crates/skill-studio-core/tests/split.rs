@@ -787,3 +787,104 @@ fn split_keeps_a_skill_off_for_a_codex_copy_that_replaces_a_codex_link() {
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// Flow: the user turned the skill off in Codex with a row written at the
+/// Codex link path, then splits keeping Codex and undoes the split. Expect
+/// Codex's config unchanged through both. Catches a carried-row check that
+/// misses the user's row once the link becomes a real folder and adds its
+/// own row, so undo then deletes the user's row and turns the skill on.
+#[test]
+fn undo_split_keeps_a_codex_row_the_user_wrote_at_the_codex_link_path() {
+    let home = unique_temp_dir("split_undo_link_row");
+    splittable_home(&home);
+    std::fs::create_dir_all(home.join(".codex/skills")).unwrap();
+    std::os::unix::fs::symlink(universal(&home), codex_copy(&home)).unwrap();
+    let before = format!(
+        "model = \"o3\"\n\n[[skills.config]]\npath = \"{}\"\nenabled = false\n",
+        codex_copy(&home).join("SKILL.md").display()
+    );
+    std::fs::write(home.join(".codex/config.toml"), &before).unwrap();
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+    let outcome = ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["claude-code", "codex"]),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
+        before,
+        "the user's row already keeps the Codex copy off"
+    );
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: outcome.event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
+        before
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the skill is off in Codex, Codex reads it through its own link, and
+/// the split fails while that link is still in place (the Claude Code and pi
+/// links cannot be removed). Expect Codex's config unchanged. Catches a
+/// rollback that looks up the carried row through the Codex link, reaches
+/// the Universal `SKILL.md`, and deletes the Universal row, which turns the
+/// skill on in Codex.
+#[test]
+fn split_that_fails_with_the_codex_link_in_place_keeps_the_universal_row() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = unique_temp_dir("split_rollback_codex_link");
+    splittable_home(&home);
+    std::fs::create_dir_all(home.join(".codex/skills")).unwrap();
+    std::os::unix::fs::symlink(universal(&home), codex_copy(&home)).unwrap();
+    let before = codex_config_with_universal_off(&home);
+    let rt = runtime_for(&home);
+    let deployment_id = universal_deployment_id(&rt);
+    let link_dirs = [home.join(".claude/skills"), home.join(".pi/agent/skills")];
+    for dir in &link_dirs {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+
+    let result = ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id,
+            harnesses: harnesses(&["claude-code", "codex"]),
+        },
+    );
+
+    for dir in &link_dirs {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    assert!(result.is_err(), "the split must fail: {result:?}");
+    assert!(
+        std::fs::symlink_metadata(codex_copy(&home))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the Codex link must still be in place when the rollback runs"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
+        before
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}

@@ -2184,50 +2184,7 @@ fn codex_write_disabled_row(
     let existing = codex_find_row_indices(fs, doc, skill_md_path);
 
     if !disabled {
-        if !existing.is_empty() {
-            let (removed_decor, array_is_empty) = {
-                let Some(array) = doc["skills"]["config"].as_array_of_tables_mut() else {
-                    unreachable!("codex_find_row_indices only finds rows in an array of tables");
-                };
-                let mut removed_decor = Vec::new();
-                for &idx in existing.iter().rev() {
-                    let removed = array.remove(idx);
-                    let decor = CodexOrphanedTableDecor {
-                        position: removed.position(),
-                        text: codex_table_decor_as_prefix(&removed),
-                    };
-                    if let Some(next_row) = array.get_mut(idx) {
-                        codex_prepend_table_decor(next_row, &decor.text);
-                    } else {
-                        removed_decor.push(decor);
-                    }
-                }
-                (removed_decor, array.is_empty())
-            };
-
-            let mut orphaned_decor = removed_decor;
-            let remove_skills = {
-                let Some(skills_table) = doc["skills"].as_table_mut() else {
-                    unreachable!("skills is a table when config was");
-                };
-                if array_is_empty {
-                    skills_table.remove("config");
-                }
-                if skills_table.is_empty() {
-                    orphaned_decor.push(CodexOrphanedTableDecor {
-                        position: skills_table.position(),
-                        text: codex_table_decor_as_prefix(skills_table),
-                    });
-                    true
-                } else {
-                    false
-                }
-            };
-            if remove_skills {
-                doc.as_table_mut().remove("skills");
-            }
-            codex_rehome_table_decor_blocks(doc, orphaned_decor);
-        }
+        codex_remove_rows(doc, &existing);
     } else if !existing.is_empty() {
         // A row the user (or Codex's own `/skills` toggle) wrote with
         // `enabled = true` would otherwise keep the skill on; Codex applies
@@ -2244,31 +2201,92 @@ fn codex_write_disabled_row(
             }
         }
     } else {
-        let skills_item = doc
-            .entry("skills")
-            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
-        let skills_type = skills_item.type_name();
-        let skills_table = skills_item.as_table_mut().ok_or_else(|| {
-            CoreError::new(
-                ErrorCode::InvalidRequest,
-                format!("skills in config.toml is a {skills_type}, not a table"),
-            )
-        })?;
-        let config_item = skills_table
-            .entry("config")
-            .or_insert_with(|| toml_edit::Item::ArrayOfTables(Default::default()));
-        let config_type = config_item.type_name();
-        let config_array = config_item.as_array_of_tables_mut().ok_or_else(|| {
-            CoreError::new(
-                ErrorCode::InvalidRequest,
-                format!("skills.config in config.toml is a {config_type}, not an array of tables"),
-            )
-        })?;
-        let mut row = toml_edit::Table::new();
-        row["path"] = toml_edit::value(skill_md_path.to_string_lossy().to_string());
-        row["enabled"] = toml_edit::value(false);
-        config_array.push(row);
+        codex_push_disabled_row(doc, skill_md_path)?;
     }
+    Ok(())
+}
+
+/// Removes the `[[skills.config]]` rows at `indices` (ascending), moving
+/// their comments onto the next table and dropping `skills.config` and
+/// `skills` once they are empty.
+fn codex_remove_rows(doc: &mut toml_edit::DocumentMut, indices: &[usize]) {
+    if indices.is_empty() {
+        return;
+    }
+    let (removed_decor, array_is_empty) = {
+        let Some(array) = doc["skills"]["config"].as_array_of_tables_mut() else {
+            unreachable!("row indices only come from an array of tables");
+        };
+        let mut removed_decor = Vec::new();
+        for &idx in indices.iter().rev() {
+            let removed = array.remove(idx);
+            let decor = CodexOrphanedTableDecor {
+                position: removed.position(),
+                text: codex_table_decor_as_prefix(&removed),
+            };
+            if let Some(next_row) = array.get_mut(idx) {
+                codex_prepend_table_decor(next_row, &decor.text);
+            } else {
+                removed_decor.push(decor);
+            }
+        }
+        (removed_decor, array.is_empty())
+    };
+
+    let mut orphaned_decor = removed_decor;
+    let remove_skills = {
+        let Some(skills_table) = doc["skills"].as_table_mut() else {
+            unreachable!("skills is a table when config was");
+        };
+        if array_is_empty {
+            skills_table.remove("config");
+        }
+        if skills_table.is_empty() {
+            orphaned_decor.push(CodexOrphanedTableDecor {
+                position: skills_table.position(),
+                text: codex_table_decor_as_prefix(skills_table),
+            });
+            true
+        } else {
+            false
+        }
+    };
+    if remove_skills {
+        doc.as_table_mut().remove("skills");
+    }
+    codex_rehome_table_decor_blocks(doc, orphaned_decor);
+}
+
+/// Appends a `[[skills.config]] path = "<skill_md_path>" enabled = false`
+/// row, creating `skills` and `skills.config` when missing.
+fn codex_push_disabled_row(
+    doc: &mut toml_edit::DocumentMut,
+    skill_md_path: &Path,
+) -> Result<(), CoreError> {
+    let skills_item = doc
+        .entry("skills")
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+    let skills_type = skills_item.type_name();
+    let skills_table = skills_item.as_table_mut().ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::InvalidRequest,
+            format!("skills in config.toml is a {skills_type}, not a table"),
+        )
+    })?;
+    let config_item = skills_table
+        .entry("config")
+        .or_insert_with(|| toml_edit::Item::ArrayOfTables(Default::default()));
+    let config_type = config_item.type_name();
+    let config_array = config_item.as_array_of_tables_mut().ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::InvalidRequest,
+            format!("skills.config in config.toml is a {config_type}, not an array of tables"),
+        )
+    })?;
+    let mut row = toml_edit::Table::new();
+    row["path"] = toml_edit::value(skill_md_path.to_string_lossy().to_string());
+    row["enabled"] = toml_edit::value(false);
+    config_array.push(row);
     Ok(())
 }
 
@@ -2311,12 +2329,13 @@ pub(crate) fn codex_rewrite_skill_path(
 
 /// Whether a copy folder at `new_dir` needs its own disabled
 /// `[[skills.config]]` row: `old_skill_md` is off in Codex's config and
-/// `new_dir/SKILL.md` is not.
+/// `new_dir/SKILL.md` will not be.
 ///
 /// `ops::split` asks this for the Codex copy before it records its event, so
 /// the event names every row it will add: Codex keys its rows by path, so
 /// the copy would otherwise start on. `new_dir` may still be a link into the
-/// folder being split, so its own last segment is never followed.
+/// folder being split, so a path through it is resolved as it will be once
+/// the copy is a real folder there, never through the link.
 pub(crate) fn codex_needs_carried_row(
     rt: &Runtime,
     old_skill_md: &Path,
@@ -2324,32 +2343,72 @@ pub(crate) fn codex_needs_carried_row(
 ) -> Result<bool, CoreError> {
     let fs = rt.ports.fs.as_ref();
     let doc = read_codex_config_document(fs, &rt.scope.codex_home)?;
-    let off = codex_disabled_forms(fs, &doc);
-    let new_form = match (new_dir.parent(), new_dir.file_name()) {
-        (Some(parent), Some(name)) => codex_path_form(fs, parent).join(name).join("SKILL.md"),
-        _ => codex_path_form(fs, &new_dir.join("SKILL.md")),
+    if !codex_disabled_forms(fs, &doc).contains(&codex_path_form(fs, old_skill_md)) {
+        return Ok(false);
+    }
+    let new_dir_form = match (new_dir.parent(), new_dir.file_name()) {
+        (Some(parent), Some(name)) => codex_path_form(fs, parent).join(name),
+        _ => new_dir.to_path_buf(),
     };
-    Ok(off.contains(&codex_path_form(fs, old_skill_md)) && !off.contains(&new_form))
+    let new_form = new_dir_form.join("SKILL.md");
+    let mut new_off = false;
+    for row in codex_skills_config_rows(&doc) {
+        let Some(path) = row.get("path").and_then(toml_edit::Item::as_str) else {
+            continue;
+        };
+        let path = Path::new(path);
+        let form = match path.strip_prefix(new_dir) {
+            Ok(rest) => new_dir_form.join(rest),
+            Err(_) => codex_path_form(fs, path),
+        };
+        if form == new_form {
+            new_off = row.get("enabled").and_then(toml_edit::Item::as_bool) == Some(false);
+        }
+    }
+    Ok(!new_off)
 }
 
-/// Writes the disabled row [`codex_needs_carried_row`] asked for, or removes
-/// every row naming `skill_md` when `disabled` is false. Removing is a no-op
-/// that writes nothing when no row names the path, so a split rollback can
-/// call it for a copy it never reached.
-pub(crate) fn codex_set_carried_row(
+/// Appends the disabled row [`codex_needs_carried_row`] asked for, as its
+/// own row even when another row already names the path, so
+/// [`codex_remove_carried_row`] can take back exactly this one.
+pub(crate) fn codex_append_carried_row(
     rt: &Runtime,
     guard: &ExclusiveGuard,
     skill_md: &Path,
-    disabled: bool,
 ) -> Result<(), CoreError> {
     let fs = rt.ports.fs.as_ref();
     let codex_home = &rt.scope.codex_home;
     let mut doc = read_codex_config_document(fs, codex_home)?;
-    if !disabled && codex_find_row_indices(fs, &doc, skill_md).is_empty() {
+    codex_push_disabled_row(&mut doc, skill_md).map_err(|e| e.at(codex_config_path(codex_home)))?;
+    codex_write_config_document(rt, fs, guard, codex_home, &doc)
+}
+
+/// Removes the last disabled row whose `path` is exactly `skill_md`'s text:
+/// the one [`codex_append_carried_row`] appended. Matches the text, never a
+/// resolved path, so a link still sitting at `skill_md`'s folder cannot
+/// lead it to another skill's row. Writes nothing when no row matches, so a
+/// split rollback can call it for a copy it never reached.
+pub(crate) fn codex_remove_carried_row(
+    rt: &Runtime,
+    guard: &ExclusiveGuard,
+    skill_md: &Path,
+) -> Result<(), CoreError> {
+    let fs = rt.ports.fs.as_ref();
+    let codex_home = &rt.scope.codex_home;
+    let mut doc = read_codex_config_document(fs, codex_home)?;
+    let literal = skill_md.to_string_lossy();
+    let Some(idx) = codex_skills_config_rows(&doc)
+        .enumerate()
+        .filter(|(_, row)| {
+            row.get("path").and_then(toml_edit::Item::as_str) == Some(literal.as_ref())
+                && row.get("enabled").and_then(toml_edit::Item::as_bool) == Some(false)
+        })
+        .map(|(idx, _)| idx)
+        .last()
+    else {
         return Ok(());
-    }
-    codex_write_disabled_row(fs, &mut doc, skill_md, disabled)
-        .map_err(|e| e.at(codex_config_path(codex_home)))?;
+    };
+    codex_remove_rows(&mut doc, &[idx]);
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
@@ -5125,7 +5184,7 @@ fn restore_event_body(
     }
     let mut copy_errors: Vec<String> = Vec::new();
     for skill_md in crate::events::parse_restore_remove_codex_rows(inverse) {
-        if let Err(error) = codex_set_carried_row(rt, &session.guard, &skill_md, false) {
+        if let Err(error) = codex_remove_carried_row(rt, &session.guard, &skill_md) {
             copy_errors.push(error.message);
         }
     }

@@ -385,7 +385,7 @@ fn write_split(
         crate::ops::restore_write_dir(rt, &session.guard, &copy.path, writes.files)?;
         let skill_md = copy.path.join("SKILL.md");
         if writes.codex_rows.contains(&skill_md) {
-            crate::ops::codex_set_carried_row(rt, &session.guard, &skill_md, true)?;
+            crate::ops::codex_append_carried_row(rt, &session.guard, &skill_md)?;
         }
     }
     crate::ops::ensure_dir_all(rt, session, fs, writes.quarantine_dir)?;
@@ -407,7 +407,7 @@ fn roll_back_split(
     link_targets: &[(PathBuf, PathBuf)],
 ) {
     for skill_md in codex_rows {
-        let _ = crate::ops::codex_set_carried_row(rt, &session.guard, skill_md, false);
+        let _ = crate::ops::codex_remove_carried_row(rt, &session.guard, skill_md);
     }
     for copy in copies {
         if fs
