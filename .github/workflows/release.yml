@@ -290,6 +290,12 @@ jobs:
           cp "target/${{ matrix.target }}/release/skill-studio" "$cli_dir/skill-studio"
           echo "cli_bin=$cli_dir/skill-studio" >> "$GITHUB_ENV"
 
+      # Runs on the native leg only: both legs build the same source, and the
+      # x86_64 binary would need Rosetta to run on this arm64 runner.
+      - name: Check the CLI has every command the npm README documents
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: ./scripts/release/check-cli-commands.sh "$cli_bin"
+
       # Uses the certificate that "Configure Apple code signing" wrote to
       # $GITHUB_ENV. tauri-bundler deletes its own signing keychain when it
       # finishes, so this step imports the certificate into a keychain of its
@@ -371,6 +377,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/release/check-release-complete.sh "${{ github.ref_name }}"
+      # npmjs.com lets you set a trusted publisher only on a package that
+      # already exists, so a package never published by hand cannot accept
+      # the OIDC publish in `npm-publish`. Checked here, while the release is
+      # still a draft, so a missing package never leaves a public release
+      # with no matching npm version.
+      - name: Assert every npm package exists on the registry
+        run: |
+          set -euo pipefail
+          status=0
+          for package in cli-darwin-arm64 cli-darwin-x64 skill-studio; do
+            name="$(jq -r .name "packages/npm/$package/package.json")"
+            if ! npm view "$name" name --registry https://registry.npmjs.org > /dev/null 2>&1; then
+              echo "::error::$name is not on npm. Publish a 0.0.0 placeholder by hand and set its trusted publisher before tagging."
+              status=1
+            fi
+          done
+          exit "$status"
       # A pre-release tag (e.g. v0.1.0-rc.1) stays a GitHub pre-release; a
       # plain vX.Y.Z tag becomes the latest release. Same rule tauri-action's
       # `prerelease` input used when it created the draft.
@@ -389,8 +412,11 @@ jobs:
   # Publishes the CLI to npm only after `publish` has verified the GitHub
   # release, so npm never carries a version whose release is incomplete.
   # Auth is npm trusted publishing (GitHub OIDC, hence id-token: write): no
-  # stored token. Each of the three packages must have this repository and
-  # workflow set as its trusted publisher on npmjs.com before the first run.
+  # stored token. One-time setup before the first tag, for each of the three
+  # packages: publish a 0.0.0 placeholder by hand (npmjs.com offers trusted
+  # publisher settings only on a package that exists), then set this
+  # repository and release.yml as its trusted publisher. `publish` checks
+  # that the packages exist before it makes the release public.
   npm-publish:
     needs: publish
     runs-on: ubuntu-latest
