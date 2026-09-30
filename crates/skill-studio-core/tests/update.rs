@@ -1329,7 +1329,7 @@ fn undo_of_a_copy_update_refuses_when_its_registry_row_changed_since_or_names_th
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// The SQLite history, except `patch_inverse` does nothing: the state a
+/// The `SQLite` history, except `patch_inverse` does nothing: the state a
 /// crash between an op's write and its inverse patch leaves behind.
 struct PatchlessHistory(SqliteHistoryOpener);
 
