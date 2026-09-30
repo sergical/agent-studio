@@ -44,8 +44,13 @@ struct Run {
 }
 
 fn run(args: &[&str]) -> Run {
+    run_with_env(args, &[])
+}
+
+fn run_with_env(args: &[&str], env: &[(&str, &str)]) -> Run {
     let output = Command::new(bin())
         .args(args)
+        .envs(env.iter().copied())
         .output()
         .expect("run skill-studio");
     let status = output.status.code().expect("no signal");
@@ -269,9 +274,8 @@ fn a_lease_held_by_another_process_exits_3() {
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// Lists every path under `dir`, relative to it, sorted - `None` when `dir`
-/// doesn't exist. Used to snapshot the real ambient data root before and
-/// after a `--home <tempdir>` run.
+/// Lists every file under `dir`, relative to it, sorted - `None` when `dir`
+/// doesn't exist.
 fn snapshot_tree(dir: &Path) -> Option<Vec<PathBuf>> {
     if !dir.exists() {
         return None;
@@ -291,15 +295,6 @@ fn snapshot_tree(dir: &Path) -> Option<Vec<PathBuf>> {
     walk(dir, dir, &mut out);
     out.sort();
     Some(out)
-}
-
-fn real_ambient_data_root() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        if !xdg.is_empty() {
-            return PathBuf::from(xdg).join("skill-studio");
-        }
-    }
-    dirs::home_dir().unwrap().join(".local/share/skill-studio")
 }
 
 /// A universal, skills.sh-owned skill with the unquoted `description: a: b`
@@ -330,10 +325,21 @@ fn repairable_live_home() -> PathBuf {
 /// the real machine's ambient XDG data root - checked end to end through
 /// `apply-repair`, the write command that exercises both the lease and the
 /// history store.
+///
+/// Each run's `HOME` is a private empty directory and `XDG_DATA_HOME` is
+/// cleared, so its ambient data root sits where only this test can write.
+/// The real `~/.local/share/skill-studio` also takes writes from the
+/// desktop app and other test runs, which a before/after snapshot of it
+/// cannot tell apart from a leak.
 #[test]
 fn home_flag_writes_nothing_outside_the_given_directory() {
-    let real_root = real_ambient_data_root();
-    let before = snapshot_tree(&real_root);
+    let ambient_home = tempfile::tempdir().unwrap();
+    let ambient_home = ambient_home.path().canonicalize().unwrap();
+    let ambient_env = [
+        ("HOME", ambient_home.to_str().unwrap()),
+        ("XDG_DATA_HOME", ""),
+    ];
+    let run = |args: &[&str]| run_with_env(args, &ambient_env);
 
     let home = repairable_live_home();
     // The deployment id is opaque (embeds the percent-encoded home path);
@@ -385,12 +391,11 @@ fn home_flag_writes_nothing_outside_the_given_directory() {
         .iter()
         .any(|e| e["id"] == event_id));
 
-    let after = snapshot_tree(&real_root);
     assert_eq!(
-        before,
-        after,
-        "--home run touched the real ambient data root {}",
-        real_root.display()
+        snapshot_tree(&ambient_home),
+        Some(Vec::new()),
+        "--home run wrote under the ambient home {}",
+        ambient_home.display()
     );
 
     std::fs::remove_dir_all(&home).ok();

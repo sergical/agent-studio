@@ -307,10 +307,8 @@ fn no_progress_token_yields_no_notification() {
     );
 }
 
-/// Lists every path under `dir`, relative to it, sorted; `None` when `dir`
-/// doesn't exist. Snapshots the real ambient data root around a
-/// `SKILL_STUDIO_HOME`-scoped run, mirroring
-/// `apps/cli/tests/envelope.rs::snapshot_tree`.
+/// Lists every file under `dir`, relative to it, sorted; `None` when `dir`
+/// doesn't exist.
 fn snapshot_tree(dir: &Path) -> Option<Vec<PathBuf>> {
     if !dir.exists() {
         return None;
@@ -332,23 +330,20 @@ fn snapshot_tree(dir: &Path) -> Option<Vec<PathBuf>> {
     Some(out)
 }
 
-fn real_ambient_data_root() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        if !xdg.is_empty() {
-            return PathBuf::from(xdg).join("skill-studio");
-        }
-    }
-    dirs::home_dir().unwrap().join(".local/share/skill-studio")
-}
-
 /// The same hazard the CLI's `--home` flag has: `SKILL_STUDIO_HOME` must
 /// derive its own history root from itself, never from the real machine's
 /// ambient XDG data root. Scope resolution follows the scope (the
 /// environment the server was started with), never the process.
+///
+/// The server's `HOME` is a private empty directory and `XDG_DATA_HOME` is
+/// cleared, so its ambient data root sits where only this run can write.
+/// The real `~/.local/share/skill-studio` also takes writes from the
+/// desktop app and other test runs, which a before/after snapshot of it
+/// cannot tell apart from a leak.
 #[tokio::test]
 async fn skill_studio_home_env_var_never_touches_the_real_data_root() {
-    let real_root = real_ambient_data_root();
-    let before = snapshot_tree(&real_root);
+    let ambient_home = tempfile::tempdir().unwrap();
+    let ambient_home = ambient_home.path().canonicalize().unwrap();
 
     let home = tempfile::tempdir().unwrap().keep();
     let dir = home.join(".agents/skills/zeta-bad");
@@ -365,7 +360,11 @@ async fn skill_studio_home_env_var_never_touches_the_real_data_root() {
     .unwrap();
     let home = home.canonicalize().unwrap();
 
-    let env = [("SKILL_STUDIO_HOME", home.to_str().unwrap())];
+    let env = [
+        ("SKILL_STUDIO_HOME", home.to_str().unwrap()),
+        ("HOME", ambient_home.to_str().unwrap()),
+        ("XDG_DATA_HOME", ""),
+    ];
     let (client, _) = connect(&env).await;
     let scan = call_scan(&client, None).await;
     let history_root = scan["scope"]["history_root"].as_str().unwrap();
@@ -377,12 +376,11 @@ async fn skill_studio_home_env_var_never_touches_the_real_data_root() {
         home.display()
     );
 
-    let after = snapshot_tree(&real_root);
     assert_eq!(
-        before,
-        after,
-        "an env-scoped run touched the real ambient data root {}",
-        real_root.display()
+        snapshot_tree(&ambient_home),
+        Some(Vec::new()),
+        "an env-scoped run wrote under the ambient home {}",
+        ambient_home.display()
     );
     std::fs::remove_dir_all(&home).ok();
 }
