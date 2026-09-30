@@ -2081,10 +2081,21 @@ fn is_config_file_name(name: &std::ffi::OsStr, home: &Path) -> bool {
 /// Editor and OS temp files that are never a skill's content.
 fn is_editor_temp_name(name: &str) -> bool {
     name == "4913"
+        || name == ".DS_Store"
         || name.ends_with('~')
         || Path::new(name)
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("swp"))
+}
+
+/// A dotfile such as `.gitignore` that is not an OS or editor temp file. Only
+/// meaningful for a path already known to sit inside a skill folder, where
+/// the scan hashes and counts it.
+fn is_skill_content_dotfile(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| {
+        let name = name.to_string_lossy();
+        name.starts_with('.') && !is_editor_temp_name(&name) && !path.is_dir()
+    })
 }
 
 /// A file (not a directory) that cannot change `snapshot.skills`: a dotfile
@@ -2174,6 +2185,16 @@ fn plan_watch_batch<'a>(
 ) -> WatchBatchPlan {
     let mut plan = WatchBatchPlan::default();
     for path in paths {
+        // The scan hashes dotfiles inside a skill folder, so an edit there
+        // changes that skill's row even though `classify_watch_event` treats
+        // a bare dotfile as noise.
+        if let Some(name) = known
+            .and_then(|known| known.skill_containing(path))
+            .filter(|_| is_skill_content_dotfile(path))
+        {
+            plan.targeted_skills.insert(name);
+            continue;
+        }
         match classify_watch_event(path, home, claude_projects_dir, opencode_databases) {
             WatchEventKind::Skills => match known.and_then(|known| known.skill_containing(path)) {
                 Some(name) => {
@@ -2626,6 +2647,47 @@ mod tests {
             plan.full_rebuild_by,
             Some(file),
             "a removed skill must leave the list"
+        );
+    }
+
+    /// Flow: a user edits `.gitignore` and adds `.env.example` inside the
+    /// known skill `docx`; the scan hashes every file in a skill folder, so
+    /// both change its `content_hash` and `file_count`. `.DS_Store` and a
+    /// vim swap file land in the same folder, and another app rewrites
+    /// `.last-complete-round` in a folder that is not a known skill.
+    /// Expectation: the two content dotfiles target `docx` (no full
+    /// rebuild); the OS and editor files, and the dotfile outside any known
+    /// skill, ask for nothing.
+    /// Failure: a dotfile edit inside a skill leaves "copies differ" and the
+    /// file count stale, or noise files cause refreshes again.
+    #[test]
+    fn watch_batch_dotfile_inside_a_known_skill_targets_it_but_noise_files_ask_for_nothing() {
+        let fixture = WatchFixture::new();
+        let plan = fixture.plan(&[
+            fixture.root().join("docx/.gitignore"),
+            fixture.root().join("docx/.env.example"),
+        ]);
+        assert_eq!(
+            plan.full_rebuild_by, None,
+            "a dotfile edit inside a skill must not rescan every root"
+        );
+        assert_eq!(
+            plan.targeted_skills,
+            BTreeSet::from(["docx".to_string()]),
+            "a dotfile the scan hashes must refresh its skill"
+        );
+
+        let noise_plan = fixture.plan(&[
+            fixture.root().join("docx/.DS_Store"),
+            fixture.root().join("docx/.SKILL.md.swp"),
+            fixture
+                .root()
+                .join("synced/0a1b2c3d_4e5f6a7b/.last-complete-round"),
+        ]);
+        assert_eq!(
+            noise_plan,
+            WatchBatchPlan::default(),
+            "OS and editor files, and dotfiles outside a known skill, are noise"
         );
     }
 
