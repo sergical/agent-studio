@@ -77,24 +77,39 @@
     padding: 1px 6px;
   }
 
+  /* The Copy button gets its own grid column, so no code line can sit under it. */
   .docs-code {
+    align-items: start;
     background: var(--docs-surface);
     border: 1px solid var(--docs-border);
     border-radius: 12px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     margin: 0 0 20px;
-    position: relative;
   }
 
+  /* Scroll shadows: the "local" layers move with the code and hide the "scroll" shadow
+     layers at each end, so a shadow shows only on a side that has more code. */
   .docs-code pre {
+    --docs-scroll-shadow: color-mix(in oklab, var(--docs-text) 16%, transparent);
+    background:
+      linear-gradient(to right, var(--docs-surface) 50%, transparent) left / 24px 100% no-repeat
+        local,
+      linear-gradient(to left, var(--docs-surface) 50%, transparent) right / 24px 100% no-repeat
+        local,
+      linear-gradient(to right, var(--docs-scroll-shadow), transparent) left / 12px 100% no-repeat
+        scroll,
+      linear-gradient(to left, var(--docs-scroll-shadow), transparent) right / 12px 100% no-repeat
+        scroll;
+    border-radius: 11px 0 0 11px;
     line-height: 1.6;
     margin: 0;
     overflow-x: auto;
-    padding: 16px 88px 16px 16px;
+    padding: 16px;
   }
 
   .docs-copy {
     align-items: center;
-    /* Opaque, because a long command scrolls under the button. */
     background: var(--docs-surface);
     border: 1px solid var(--docs-border);
     border-radius: 8px;
@@ -102,10 +117,8 @@
     display: inline-flex;
     font-size: 12px;
     height: 32px;
+    margin: 11px 11px 0 0;
     padding: 0 10px;
-    position: absolute;
-    right: 11px;
-    top: 11px;
     transition:
       color 150ms ease-out,
       border-color 150ms ease-out;

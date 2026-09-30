@@ -429,18 +429,18 @@ function HomeScreen({
           <div {...stylex.props(styles.laneSegments)}>
             <button type="button" {...stylex.props(styles.lanePrimary, styles.laneBoth)}>
               <b>202</b>
-              <span {...stylex.props(styles.mobileHidden)}>you or the model</span>
-              <span {...stylex.props(styles.mobileOnly)}>both</span>
+              <span {...stylex.props(styles.laneLongLabel)}>you or the model</span>
+              <span {...stylex.props(styles.laneShortLabel)}>both</span>
             </button>
             <button type="button" {...stylex.props(styles.laneSecondary, styles.laneModel)}>
               <b>18</b>
-              <span {...stylex.props(styles.mobileHidden)}>model only</span>
-              <span {...stylex.props(styles.mobileOnly)}>model</span>
+              <span {...stylex.props(styles.laneLongLabel)}>model only</span>
+              <span {...stylex.props(styles.laneShortLabel)}>model</span>
             </button>
             <button type="button" {...stylex.props(styles.laneTertiary, styles.laneUser)}>
               <b>87</b>
-              <span {...stylex.props(styles.mobileHidden)}>you only</span>
-              <span {...stylex.props(styles.mobileOnly)}>you</span>
+              <span {...stylex.props(styles.laneLongLabel)}>you only</span>
+              <span {...stylex.props(styles.laneShortLabel)}>you</span>
             </button>
           </div>
         </div>
@@ -451,13 +451,13 @@ function HomeScreen({
           <div {...stylex.props(styles.laneSegments)}>
             <button type="button" {...stylex.props(styles.lanePrimary, styles.laneActive)}>
               <b>9.3k</b>
-              <span {...stylex.props(styles.mobileHidden)}>· 214 skills used in 30 days</span>
-              <span {...stylex.props(styles.mobileOnly)}>active</span>
+              <span {...stylex.props(styles.laneLongLabel)}>· 214 skills used in 30 days</span>
+              <span {...stylex.props(styles.laneShortLabel)}>active</span>
             </button>
             <button type="button" {...stylex.props(styles.laneTertiary, styles.laneIdle)}>
               <b>3.2k</b>
-              <span {...stylex.props(styles.mobileHidden)}>· 76 skills not used</span>
-              <span {...stylex.props(styles.mobileOnly)}>idle</span>
+              <span {...stylex.props(styles.laneLongLabel)}>· 76 skills not used</span>
+              <span {...stylex.props(styles.laneShortLabel)}>idle</span>
             </button>
           </div>
         </div>
@@ -1310,6 +1310,11 @@ export function ProductMock({
 
 const tableColumns = "minmax(0,1.2fr) minmax(0,1.8fr) 140px 48px 64px";
 
+// The lane card width follows the hero column, not the viewport, so the lane layout uses
+// container queries. Both rows of long labels need about 360 px of lane width.
+const LANE_ROW_STACKED = "@container (max-width: 559px)";
+const LANE_LONG_LABELS = "@container (min-width: 380px)";
+
 const styles = stylex.create({
   window: {
     backgroundColor: tokens.background,
@@ -1872,7 +1877,6 @@ const styles = stylex.create({
     ":disabled": { backgroundColor: tokens.raised, color: tokens.faint },
   },
   mobileHidden: { "@media (max-width: 680px)": { display: "none" } },
-  mobileOnly: { display: "none", "@media (max-width: 680px)": { display: "inline" } },
   statGrid: {
     display: "grid",
     gap: 12,
@@ -1934,6 +1938,7 @@ const styles = stylex.create({
     borderRadius: 6,
     borderStyle: "solid",
     borderWidth: 1,
+    containerType: "inline-size",
     display: "flex",
     flexDirection: "column",
     gap: 8,
@@ -1944,12 +1949,12 @@ const styles = stylex.create({
   laneRow: {
     alignItems: "baseline",
     display: "grid",
-    gap: 12,
-    gridTemplateColumns: "170px minmax(0,1fr)",
-    "@media (max-width: 680px)": { gap: 6, gridTemplateColumns: "1fr" },
+    gap: { default: 12, [LANE_ROW_STACKED]: 6 },
+    gridTemplateColumns: { default: "170px minmax(0,1fr)", [LANE_ROW_STACKED]: "1fr" },
   },
   laneTitle: { color: tokens.muted, fontSize: 12, whiteSpace: "nowrap" },
   laneSegments: {
+    containerType: "inline-size",
     display: "flex",
     gap: 2,
     height: 28,
@@ -1966,7 +1971,7 @@ const styles = stylex.create({
     display: "flex",
     fontSize: 12,
     gap: 4,
-    minWidth: 0,
+    minWidth: "max-content",
     overflow: "hidden",
     paddingInline: 10,
     whiteSpace: "nowrap",
@@ -1981,7 +1986,7 @@ const styles = stylex.create({
     display: "flex",
     fontSize: 12,
     gap: 4,
-    minWidth: 0,
+    minWidth: "max-content",
     overflow: "hidden",
     paddingInline: 10,
     whiteSpace: "nowrap",
@@ -1996,12 +2001,14 @@ const styles = stylex.create({
     display: "flex",
     fontSize: 12,
     gap: 4,
-    minWidth: 0,
+    minWidth: "max-content",
     overflow: "hidden",
     paddingInline: 10,
     whiteSpace: "nowrap",
     "@media (max-width: 680px)": { paddingInline: 6 },
   },
+  laneLongLabel: { display: { default: "none", [LANE_LONG_LABELS]: "inline" } },
+  laneShortLabel: { display: { default: "inline", [LANE_LONG_LABELS]: "none" } },
   laneBoth: { flex: "2.1 1 0", "@media (max-width: 680px)": { flex: "1 1 0" } },
   laneModel: { flex: "1 1 0" },
   laneUser: { flex: "1 1 0" },
