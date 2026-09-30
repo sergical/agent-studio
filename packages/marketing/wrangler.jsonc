@@ -1,0 +1,15 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "skill-studio-site",
+  "compatibility_date": "2026-09-30",
+  "account_id": "a6221d3398c2e695ab8e1a2f1237bd1b",
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "useskillstudio.com", "custom_domain": true },
+    { "pattern": "www.useskillstudio.com", "custom_domain": true },
+  ],
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "404-page",
+  },
+}

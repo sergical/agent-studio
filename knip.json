@@ -1,5 +1,9 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
+  "ignoreExportsUsedInFile": {
+    "interface": true,
+    "type": true
+  },
   "workspaces": {
     ".": {
       "entry": [
@@ -28,7 +32,11 @@
       "project": ["src/**/*.{ts,tsx}"]
     },
     "packages/marketing": {
-      "entry": ["src/remotion/index.ts"],
+      "entry": [
+        "src/remotion/index.ts",
+        "src/docs/docs-main.ts",
+        "src/prerender/site-prerender.tsx"
+      ],
       "project": ["src/**/*.{ts,tsx}"]
     }
   }

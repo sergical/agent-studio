@@ -429,18 +429,18 @@ function HomeScreen({
           <div {...stylex.props(styles.laneSegments)}>
             <button type="button" {...stylex.props(styles.lanePrimary, styles.laneBoth)}>
               <b>202</b>
-              <span {...stylex.props(styles.mobileHidden)}>you or the model</span>
-              <span {...stylex.props(styles.mobileOnly)}>both</span>
+              <span {...stylex.props(styles.laneLongLabel)}>you or the model</span>
+              <span {...stylex.props(styles.laneShortLabel)}>both</span>
             </button>
             <button type="button" {...stylex.props(styles.laneSecondary, styles.laneModel)}>
               <b>18</b>
-              <span {...stylex.props(styles.mobileHidden)}>model only</span>
-              <span {...stylex.props(styles.mobileOnly)}>model</span>
+              <span {...stylex.props(styles.laneLongLabel)}>model only</span>
+              <span {...stylex.props(styles.laneShortLabel)}>model</span>
             </button>
             <button type="button" {...stylex.props(styles.laneTertiary, styles.laneUser)}>
               <b>87</b>
-              <span {...stylex.props(styles.mobileHidden)}>you only</span>
-              <span {...stylex.props(styles.mobileOnly)}>you</span>
+              <span {...stylex.props(styles.laneLongLabel)}>you only</span>
+              <span {...stylex.props(styles.laneShortLabel)}>you</span>
             </button>
           </div>
         </div>
@@ -451,13 +451,13 @@ function HomeScreen({
           <div {...stylex.props(styles.laneSegments)}>
             <button type="button" {...stylex.props(styles.lanePrimary, styles.laneActive)}>
               <b>9.3k</b>
-              <span {...stylex.props(styles.mobileHidden)}>· 214 skills used in 30 days</span>
-              <span {...stylex.props(styles.mobileOnly)}>active</span>
+              <span {...stylex.props(styles.laneLongLabel)}>· 214 skills used in 30 days</span>
+              <span {...stylex.props(styles.laneShortLabel)}>active</span>
             </button>
             <button type="button" {...stylex.props(styles.laneTertiary, styles.laneIdle)}>
               <b>3.2k</b>
-              <span {...stylex.props(styles.mobileHidden)}>· 76 skills not used</span>
-              <span {...stylex.props(styles.mobileOnly)}>idle</span>
+              <span {...stylex.props(styles.laneLongLabel)}>· 76 skills not used</span>
+              <span {...stylex.props(styles.laneShortLabel)}>idle</span>
             </button>
           </div>
         </div>
@@ -1310,6 +1310,11 @@ export function ProductMock({
 
 const tableColumns = "minmax(0,1.2fr) minmax(0,1.8fr) 140px 48px 64px";
 
+// The lane card width follows the hero column, not the viewport, so the lane layout uses
+// container queries. Both rows of long labels need about 360 px of lane width.
+const LANE_ROW_STACKED = "@container (max-width: 559px)";
+const LANE_LONG_LABELS = "@container (min-width: 380px)";
+
 const styles = stylex.create({
   window: {
     backgroundColor: tokens.background,
@@ -1319,24 +1324,24 @@ const styles = stylex.create({
     borderWidth: 1,
     boxShadow: "0 2px 5px oklch(0 0 0 / .22), 0 20px 55px oklch(0 0 0 / .34)",
     color: tokens.text,
+    display: "flex",
+    flexDirection: "column",
     fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif",
-    height: 800,
+    height: 600,
     isolation: "isolate",
     overflow: "hidden",
     position: "relative",
-    transform: "scale(.678)",
-    transformOrigin: "top left",
-    width: "147.493%",
+    WebkitFontSmoothing: "antialiased",
+    width: "100%",
     "@media (max-width: 680px)": {
       borderRadius: "min(3vw, 10px)",
       height: 520,
-      transform: "none",
-      width: "100%",
     },
   },
   walkthroughWindow: {
     height: 800,
     transform: "scale(.57)",
+    transformOrigin: "top left",
     width: "175.439%",
     "@media (max-width: 680px)": {
       height: 500,
@@ -1347,6 +1352,7 @@ const styles = stylex.create({
   captureWindow: {
     height: 800,
     transform: "scale(1.14)",
+    transformOrigin: "top left",
     width: "87.719%",
   },
   compareBackdrop: {
@@ -1437,11 +1443,12 @@ const styles = stylex.create({
     borderBottomWidth: 1,
     color: tokens.muted,
     display: "grid",
-    fontSize: 10,
+    flexShrink: 0,
+    fontSize: 12,
     gridTemplateColumns: "auto 1fr auto",
-    gap: 7,
-    height: 22,
-    paddingInline: 7,
+    gap: 10,
+    height: 30,
+    paddingInline: 12,
     "@media (max-width: 680px)": { height: 40, paddingInline: 10 },
   },
   windowThemeButton: {
@@ -1462,23 +1469,24 @@ const styles = stylex.create({
     },
     ":active": { transform: "scale(.94)" },
   },
-  traffic: { display: "flex", gap: 5 },
+  traffic: { display: "flex", gap: 7 },
   trafficDot: {
     backgroundColor: tokens.border,
     borderRadius: "50%",
     display: "block",
-    height: 6,
-    width: 6,
+    height: 10,
+    width: 10,
   },
   scanned: { fontVariantNumeric: "tabular-nums", justifySelf: "end" },
   app: {
     display: "grid",
+    flex: 1,
     gridTemplateColumns: "240px minmax(0,1fr)",
-    height: 778,
+    gridTemplateRows: "minmax(0,1fr)",
+    minHeight: 0,
     "@media (max-width: 680px)": {
       display: "flex",
       flexDirection: "column",
-      height: 480,
     },
   },
   sidebar: {
@@ -1489,7 +1497,7 @@ const styles = stylex.create({
     display: "flex",
     flexDirection: "column",
     minWidth: 0,
-    padding: 10,
+    padding: 12,
     "@media (max-width: 680px)": {
       borderBottomColor: tokens.border,
       borderBottomStyle: "solid",
@@ -1577,7 +1585,12 @@ const styles = stylex.create({
       paddingInline: 4,
     },
   },
-  navCount: { "@media (max-width: 680px)": { display: "none" } },
+  navCount: {
+    color: tokens.faint,
+    fontSize: 11,
+    fontVariantNumeric: "tabular-nums",
+    "@media (max-width: 680px)": { display: "none" },
+  },
   navItemActive: { backgroundColor: tokens.accentSoft, color: tokens.text },
   sidebarFooter: {
     alignItems: "center",
@@ -1619,12 +1632,12 @@ const styles = stylex.create({
     animationDuration: "190ms",
     animationName: viewEnter,
     animationTimingFunction: "cubic-bezier(.16,1,.3,1)",
-    height: 778,
+    minHeight: 0,
     minWidth: 0,
     overflow: "auto",
     scrollbarWidth: "none",
     "::-webkit-scrollbar": { display: "none" },
-    "@media (max-width: 680px)": { height: 424, width: "100%" },
+    "@media (max-width: 680px)": { flex: 1, width: "100%" },
     "@media (prefers-reduced-motion: reduce)": { animationName: "none" },
   },
   page: {
@@ -1864,7 +1877,6 @@ const styles = stylex.create({
     ":disabled": { backgroundColor: tokens.raised, color: tokens.faint },
   },
   mobileHidden: { "@media (max-width: 680px)": { display: "none" } },
-  mobileOnly: { display: "none", "@media (max-width: 680px)": { display: "inline" } },
   statGrid: {
     display: "grid",
     gap: 12,
@@ -1926,6 +1938,7 @@ const styles = stylex.create({
     borderRadius: 6,
     borderStyle: "solid",
     borderWidth: 1,
+    containerType: "inline-size",
     display: "flex",
     flexDirection: "column",
     gap: 8,
@@ -1936,12 +1949,12 @@ const styles = stylex.create({
   laneRow: {
     alignItems: "baseline",
     display: "grid",
-    gap: 12,
-    gridTemplateColumns: "170px minmax(0,1fr)",
-    "@media (max-width: 680px)": { gap: 6, gridTemplateColumns: "1fr" },
+    gap: { default: 12, [LANE_ROW_STACKED]: 6 },
+    gridTemplateColumns: { default: "170px minmax(0,1fr)", [LANE_ROW_STACKED]: "1fr" },
   },
   laneTitle: { color: tokens.muted, fontSize: 12, whiteSpace: "nowrap" },
   laneSegments: {
+    containerType: "inline-size",
     display: "flex",
     gap: 2,
     height: 28,
@@ -1958,7 +1971,7 @@ const styles = stylex.create({
     display: "flex",
     fontSize: 12,
     gap: 4,
-    minWidth: 0,
+    minWidth: "max-content",
     overflow: "hidden",
     paddingInline: 10,
     whiteSpace: "nowrap",
@@ -1973,7 +1986,7 @@ const styles = stylex.create({
     display: "flex",
     fontSize: 12,
     gap: 4,
-    minWidth: 0,
+    minWidth: "max-content",
     overflow: "hidden",
     paddingInline: 10,
     whiteSpace: "nowrap",
@@ -1988,12 +2001,14 @@ const styles = stylex.create({
     display: "flex",
     fontSize: 12,
     gap: 4,
-    minWidth: 0,
+    minWidth: "max-content",
     overflow: "hidden",
     paddingInline: 10,
     whiteSpace: "nowrap",
     "@media (max-width: 680px)": { paddingInline: 6 },
   },
+  laneLongLabel: { display: { default: "none", [LANE_LONG_LABELS]: "inline" } },
+  laneShortLabel: { display: { default: "inline", [LANE_LONG_LABELS]: "none" } },
   laneBoth: { flex: "2.1 1 0", "@media (max-width: 680px)": { flex: "1 1 0" } },
   laneModel: { flex: "1 1 0" },
   laneUser: { flex: "1 1 0" },

@@ -9,16 +9,9 @@ interface WalkthroughVideoProps extends WalkthroughProps {
   animate: boolean;
   compact: boolean;
   index: number;
-  onEnded: () => void;
 }
 
-export function WalkthroughVideo({
-  index,
-  theme,
-  animate,
-  compact,
-  onEnded,
-}: WalkthroughVideoProps) {
+export function WalkthroughVideo({ index, theme, animate, compact }: WalkthroughVideoProps) {
   const chapter = chapters[index];
   const video = useRef<HTMLVideoElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -83,7 +76,7 @@ export function WalkthroughVideo({
   }, [expanded]);
 
   return (
-    <div {...stylex.props(styles.media)}>
+    <div {...stylex.props(styles.media, compact && styles.mobileMedia)}>
       <div {...stylex.props(styles.videoFrame)}>
         <video
           ref={video}
@@ -91,12 +84,11 @@ export function WalkthroughVideo({
           poster={poster}
           preload="none"
           muted
-          loop={false}
+          loop
           playsInline
           aria-label={chapter.title}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
-          onEnded={onEnded}
           onError={() => setFailed(true)}
           {...stylex.props(styles.video, compact && styles.mobileVideo)}
         />

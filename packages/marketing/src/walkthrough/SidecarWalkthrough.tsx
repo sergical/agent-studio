@@ -4,23 +4,22 @@ import { ChevronDown } from "lucide-react";
 import { chapters, type WalkthroughProps } from "./walkthrough-chapters";
 import { WalkthroughVideo } from "./WalkthroughVideo";
 import { walkthroughStyles as s } from "./Walkthrough.stylex";
-import "./walkthrough.css";
 
 export function SidecarWalkthrough({ theme }: WalkthroughProps) {
-  const [selection, setSelection] = useState({ index: 0, automatic: true, animate: false });
+  const [selection, setSelection] = useState({ index: 0, animate: false });
   const list = useRef<HTMLDivElement>(null);
   const previousPositions = useRef<number[]>([]);
   const animations = useRef<Animation[]>([]);
   const compact = useCompactWalkthrough();
   const active = selection.index;
 
-  const selectChapter = (index: number, automatic: boolean, animate: boolean) => {
+  const selectChapter = (index: number, animate: boolean) => {
     previousPositions.current = Array.from(
       list.current?.children ?? [],
       (item) => item.getBoundingClientRect().top,
     );
     animations.current.forEach((animation) => animation.cancel());
-    setSelection({ index, automatic, animate });
+    setSelection({ index, animate });
   };
 
   useLayoutEffect(() => {
@@ -54,13 +53,13 @@ export function SidecarWalkthrough({ theme }: WalkthroughProps) {
           timing,
         ),
       );
-    if (compact && !selection.automatic) {
+    if (compact) {
       const button = document.getElementById(`sidecar-${active}`);
       if (button && button.getBoundingClientRect().top < 24)
         button.scrollIntoView({ block: "start", behavior: "instant" });
     }
     return () => animations.current.forEach((animation) => animation.cancel());
-  }, [selection, active, compact]);
+  }, [selection, active, compact, list, previousPositions, animations]);
 
   const video = (
     <WalkthroughVideo
@@ -69,16 +68,12 @@ export function SidecarWalkthrough({ theme }: WalkthroughProps) {
       theme={theme}
       compact={compact}
       animate={selection.animate}
-      onEnded={() => {
-        if (selection.automatic && !matchMedia("(prefers-reduced-motion: reduce)").matches)
-          selectChapter((active + 1) % chapters.length, true, true);
-      }}
     />
   );
 
   return (
-    <div data-walkthrough="sidecar" data-automatic={selection.automatic}>
-      <h2 {...stylex.props(s.sidecarTitle)}>Manage your installed skills.</h2>
+    <div data-walkthrough="sidecar">
+      <h2 {...stylex.props(s.sidecarTitle)}>How it works.</h2>
       <div {...stylex.props(s.sidecar)}>
         <div ref={list} {...stylex.props(s.sidecarList)}>
           {chapters.map((chapter, index) => (
@@ -88,7 +83,7 @@ export function SidecarWalkthrough({ theme }: WalkthroughProps) {
                 aria-expanded={compact ? active === index : undefined}
                 aria-pressed={compact ? undefined : active === index}
                 aria-controls={compact ? `sidecar-panel-${index}` : "sidecar-video"}
-                onClick={(event) => selectChapter(index, false, event.detail !== 0)}
+                onClick={(event) => selectChapter(index, event.detail !== 0)}
                 {...stylex.props(
                   s.sidecarButton,
                   active === index && s.selectedText,

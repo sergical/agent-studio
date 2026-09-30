@@ -64,7 +64,7 @@ export const walkthroughStyles = stylex.create({
   chevron: { flexShrink: 0, transform: "rotate(-90deg)", color: siteTokens.muted },
   chevronOpen: { transform: "rotate(0deg)" },
   copy: { color: siteTokens.muted, fontSize: 14, lineHeight: 1.65, margin: 0, maxWidth: "48ch" },
-  media: { minWidth: 0 },
+  media: { maxWidth: 1280, minWidth: 0 },
   videoFrame: {
     backgroundColor: siteTokens.surface,
     borderColor: siteTokens.border,
@@ -75,6 +75,7 @@ export const walkthroughStyles = stylex.create({
   },
   video: { aspectRatio: "16 / 9", display: "block", objectFit: "contain", width: "100%" },
   mobileVideo: { aspectRatio: "1 / 1" },
+  mobileMedia: { maxWidth: 768 },
   mediaControls: {
     alignItems: "center",
     display: "flex",

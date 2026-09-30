@@ -4,11 +4,6 @@
 
 html {
   scroll-behavior: smooth;
-  scrollbar-width: none;
-}
-
-html::-webkit-scrollbar {
-  display: none;
 }
 
 html,
@@ -45,14 +40,35 @@ html[data-site-theme="light"] body {
   color-scheme: light;
 }
 
-button,
-a,
-input {
-  font: inherit;
+/* StyleX emits its rules in cascade layers, and any unlayered rule beats every layer.
+   index.html declares this layer first, so component font sizes win over it. */
+@layer reset {
+  button,
+  a,
+  input {
+    font: inherit;
+  }
 }
 
 button {
   cursor: pointer;
+}
+
+/* The prerendered homepage is drawn in the dark theme. A light-theme visitor sees nothing until
+   the client render replaces it, instead of a flash of the dark page. */
+html[data-site-theme="light"] #root[data-prerendered="dark"] {
+  visibility: hidden;
+}
+
+/* Prerendered pages ship both theme icons; show the one for the current theme. */
+html:not([data-site-theme="light"]) [data-theme-icon="light"],
+html[data-site-theme="light"] [data-theme-icon="dark"] {
+  display: none;
+}
+
+/* Safari still draws the disclosure triangle unless the marker pseudo-element is hidden. */
+summary::-webkit-details-marker {
+  display: none;
 }
 
 ::selection {

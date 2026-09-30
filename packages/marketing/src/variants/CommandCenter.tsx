@@ -1,11 +1,17 @@
 import * as stylex from "@stylexjs/stylex";
-import { Code2 } from "lucide-react";
+import { BookOpen } from "lucide-react";
 
 import { AgentIcon, type AgentId } from "../AgentIcon";
 import { ProductMock, type ThemeToggleOrigin } from "../ProductMock";
-import { Arrow, LogoLockup } from "../MarketingBrand";
+import { Arrow } from "../MarketingBrand";
+import { SiteFooter, SiteHeader, siteLayout } from "../SiteChrome";
 import { lightSiteTheme, siteTokens, type SiteTheme } from "../SiteTheme.stylex";
 import { SidecarWalkthrough } from "../walkthrough/SidecarWalkthrough";
+import { FaqSection } from "../home/FaqSection";
+import { homeSectionStyles } from "../home/HomeSection.stylex";
+import { ProblemSection } from "../home/ProblemSection";
+import { UsageSection } from "../home/UsageSection";
+import { DOCS_URL, DOWNLOAD_URL, TRUST_LINE } from "../site-links";
 
 interface CommandCenterProps {
   theme: SiteTheme;
@@ -25,11 +31,9 @@ const marqueeMove = stylex.keyframes({
   to: { transform: "translateX(-50%)" },
 });
 
-const GITHUB_REPOSITORY_URL = "https://github.com/sergical/agent-studio";
-
 function DownloadButton({ theme }: { theme: SiteTheme }) {
   return (
-    <a href={`${GITHUB_REPOSITORY_URL}/releases`} {...stylex.props(styles.primaryButton)}>
+    <a href={DOWNLOAD_URL} {...stylex.props(styles.primaryButton)}>
       <span>Download for macOS</span>
       <span aria-hidden="true" {...stylex.props(styles.primaryButtonArrow)}>
         <Arrow inverse={theme === "dark"} />
@@ -40,45 +44,30 @@ function DownloadButton({ theme }: { theme: SiteTheme }) {
 
 export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
   return (
-    <div id="top" {...stylex.props(styles.page, theme === "light" && lightSiteTheme)}>
-      <header {...stylex.props(styles.header)}>
-        <LogoLockup inverse={theme === "dark"} compact />
-        <nav {...stylex.props(styles.nav)} aria-label="Main navigation">
-          <a href="#how-it-works" {...stylex.props(styles.navLink)}>
-            How it works
-          </a>
-          <a href="#download" {...stylex.props(styles.navLink)}>
-            Download
-          </a>
-        </nav>
-      </header>
+    <div id="top" {...stylex.props(siteLayout.page, theme === "light" && lightSiteTheme)}>
+      <SiteHeader page="home" />
 
       <main>
-        <section {...stylex.props(styles.hero)}>
+        <section {...stylex.props(siteLayout.container, styles.hero)}>
           <div {...stylex.props(styles.copy)}>
             <h1 {...stylex.props(styles.title)}>
-              Your skills.
+              Tidy up your
               <br />
-              Your agents.
-              <br />
-              <span {...stylex.props(styles.titleAccent)}>One place.</span>
+              <span {...stylex.props(styles.titleAccent)}>agent skills.</span>
             </h1>
             <p {...stylex.props(styles.lede)}>
-              A desktop app for managing agent skills. Find installed copies, compare changes, and
-              choose where to install.
+              Skills pile up across your agents and projects. Skill Studio shows which are broken,
+              which are duplicates and which your agents never use, so you can clear them out with
+              undo.
             </p>
             <div {...stylex.props(styles.actions)}>
               <DownloadButton theme={theme} />
-              <a
-                href={GITHUB_REPOSITORY_URL}
-                target="_blank"
-                rel="noreferrer"
-                {...stylex.props(styles.sourceLink)}
-              >
-                <Code2 aria-hidden="true" size={18} />
-                <span>Browse source</span>
+              <a href={DOCS_URL} {...stylex.props(styles.sourceLink)}>
+                <BookOpen aria-hidden="true" size={18} />
+                <span>Read the docs</span>
               </a>
             </div>
+            <p {...stylex.props(styles.fineprint)}>{TRUST_LINE}</p>
           </div>
 
           <div id="product" {...stylex.props(styles.productWrap)}>
@@ -116,78 +105,54 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
           </div>
         </section>
 
-        <section id="how-it-works" {...stylex.props(styles.importSection)}>
+        <section id="problem" {...stylex.props(siteLayout.container, styles.problemSection)}>
+          <ProblemSection />
+        </section>
+
+        <section id="how-it-works" {...stylex.props(siteLayout.container, styles.importSection)}>
           <SidecarWalkthrough theme={theme} />
         </section>
 
-        <section id="download" {...stylex.props(styles.closingSection)}>
-          <h2 {...stylex.props(styles.closingTitle)}>Get Skill Studio.</h2>
+        <section id="use-it" {...stylex.props(siteLayout.container, homeSectionStyles.section)}>
+          <UsageSection />
+        </section>
+
+        <section id="faq" {...stylex.props(siteLayout.container, homeSectionStyles.section)}>
+          <FaqSection />
+        </section>
+
+        <section id="download" {...stylex.props(siteLayout.container, styles.closingSection)}>
+          <h2 {...stylex.props(styles.closingTitle)}>Clear out your skills.</h2>
           <p {...stylex.props(styles.closingCopy)}>
-            Find your installed skills and check which agents can use them.
+            Keep the ones your agents use and park the rest.
           </p>
           <DownloadButton theme={theme} />
+          <p {...stylex.props(styles.fineprint)}>{TRUST_LINE}</p>
+          <p {...stylex.props(styles.trust)}>
+            Runs on your Mac. It sends anonymous crash reports, which you can turn off. They never
+            include skill names, files or paths.
+          </p>
         </section>
       </main>
 
-      <footer {...stylex.props(styles.footer)}>
-        <LogoLockup inverse={theme === "dark"} compact />
-        <nav {...stylex.props(styles.footerLinks)} aria-label="Footer navigation">
-          <a
-            href={GITHUB_REPOSITORY_URL}
-            target="_blank"
-            rel="noreferrer"
-            {...stylex.props(styles.footerLink)}
-          >
-            Source
-          </a>
-          <a href="#top" {...stylex.props(styles.footerLink)}>
-            Back to top
-          </a>
-        </nav>
-      </footer>
+      <SiteFooter page="home" />
     </div>
   );
 }
 
 const styles = stylex.create({
-  page: {
-    backgroundColor: siteTokens.background,
-    color: siteTokens.text,
-    minHeight: "100vh",
-    overflow: "clip",
-  },
-  header: {
-    alignItems: "center",
-    display: "grid",
-    gridTemplateColumns: "1fr auto 1fr",
-    margin: "0 auto",
-    maxWidth: 1280,
-    padding: "22px 28px",
-    "@media (max-width: 700px)": { display: "flex", padding: "16px 20px" },
-  },
-  nav: { display: "flex", gap: 26, "@media (max-width: 700px)": { display: "none" } },
-  navLink: {
-    color: siteTokens.muted,
-    fontSize: 12,
-    textDecoration: "none",
-    transition: "color 150ms ease-out",
-    ":hover": { color: siteTokens.text },
-  },
   hero: {
     alignItems: "center",
     display: "grid",
     gap: "clamp(38px,5vw,74px)",
     gridTemplateColumns: "minmax(460px,.78fr) minmax(0,1.22fr)",
-    margin: "0 auto",
-    maxWidth: 1380,
-    minHeight: 720,
-    padding: "72px 28px 62px",
-    "@media (max-width: 1120px)": { gridTemplateColumns: "1fr", paddingTop: 54 },
-    "@media (max-width: 600px)": { gap: 52, minHeight: 0, padding: "52px 20px 80px" },
+    paddingBlock: "20px 56px",
+    "@media (max-width: 1200px)": { gridTemplateColumns: "1fr", paddingTop: 40 },
+    "@media (max-width: 600px)": { gap: 52, paddingBlock: "52px 80px" },
   },
   copy: {
-    maxWidth: 520,
-    "@media (max-width: 600px)": {
+    maxWidth: 560,
+    "@media (max-width: 1200px)": {
       alignItems: "center",
       display: "flex",
       flexDirection: "column",
@@ -199,7 +164,7 @@ const styles = stylex.create({
   title: {
     fontSize: "clamp(58px,5.5vw,86px)",
     fontWeight: 720,
-    letterSpacing: "-.067em",
+    letterSpacing: "-.035em",
     lineHeight: 0.9,
     margin: 0,
   },
@@ -218,7 +183,21 @@ const styles = stylex.create({
     display: "flex",
     flexWrap: "wrap",
     gap: 14,
-    "@media (max-width: 600px)": { justifyContent: "center", width: "100%" },
+    "@media (max-width: 1200px)": { justifyContent: "center", width: "100%" },
+  },
+  fineprint: {
+    color: siteTokens.muted,
+    fontSize: 12,
+    lineHeight: 1.5,
+    margin: "14px 0 0",
+    textWrap: "balance",
+  },
+  trust: {
+    color: siteTokens.muted,
+    fontSize: 13,
+    lineHeight: 1.6,
+    margin: "20px 0 0",
+    maxWidth: "52ch",
   },
   primaryButton: {
     textDecoration: "none",
@@ -278,7 +257,7 @@ const styles = stylex.create({
     borderWidth: 1,
     color: siteTokens.text,
     display: "inline-flex",
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: 620,
     gap: 9,
     justifyContent: "center",
@@ -292,13 +271,12 @@ const styles = stylex.create({
     "@media (max-width: 600px)": { minHeight: 48 },
   },
   productWrap: {
-    height: 542,
     minWidth: 0,
     position: "relative",
-    transform: "translateY(58px)",
-    "@media (max-width: 1050px)": { transform: "none" },
+    // Wider than its column on purpose: the page clips the overflow at the viewport edge,
+    // so the demo keeps its real size instead of shrinking to fit.
+    "@media (min-width: 1201px)": { width: "max(100%, 960px)" },
     "@media (max-width: 680px)": { marginInline: "auto", maxWidth: 430, width: "100%" },
-    "@media (max-width: 600px)": { height: 520, overflow: "visible" },
   },
   productHalo: {
     backgroundColor: siteTokens.accentSoft,
@@ -384,23 +362,28 @@ const styles = stylex.create({
     whiteSpace: "nowrap",
     width: 1,
   },
+  problemSection: {
+    paddingTop: 112,
+    "@media (max-width: 600px)": { paddingTop: 72 },
+  },
   importSection: {
-    margin: "0 auto",
-    maxWidth: 1220,
-    padding: "124px 28px 48px",
-    "@media (max-width: 600px)": { padding: "86px 20px 24px" },
+    paddingBlock: "124px 24px",
+    "@media (max-width: 600px)": { paddingBlock: "86px 24px" },
   },
   closingSection: {
-    alignItems: "center",
+    alignItems: "flex-start",
     display: "flex",
     flexDirection: "column",
-    padding: "150px 28px 142px",
-    textAlign: "center",
-    "@media (max-width: 600px)": { padding: "104px 20px 100px" },
+    paddingBlock: "124px 142px",
+    "@media (max-width: 600px)": {
+      alignItems: "center",
+      paddingBlock: "86px 100px",
+      textAlign: "center",
+    },
   },
   closingTitle: {
     fontSize: "clamp(42px,5vw,68px)",
-    letterSpacing: "-.055em",
+    letterSpacing: "-.035em",
     lineHeight: 0.98,
     margin: 0,
     maxWidth: "14ch",
@@ -412,29 +395,5 @@ const styles = stylex.create({
     lineHeight: 1.6,
     margin: "24px 0 30px",
     maxWidth: "48ch",
-  },
-  footer: {
-    alignItems: "center",
-    borderTopColor: siteTokens.border,
-    borderTopStyle: "solid",
-    borderTopWidth: 1,
-    display: "flex",
-    justifyContent: "space-between",
-    margin: "0 auto",
-    maxWidth: 1280,
-    padding: "28px",
-    paddingBottom: "max(28px, env(safe-area-inset-bottom))",
-    "@media (max-width: 600px)": { paddingInline: 20 },
-  },
-  footerLinks: { alignItems: "center", display: "flex", gap: 22 },
-  footerLink: {
-    color: siteTokens.muted,
-    fontSize: 12,
-    minHeight: 44,
-    alignItems: "center",
-    display: "inline-flex",
-    textDecoration: "none",
-    transition: "color 150ms ease-out",
-    ":hover": { color: siteTokens.text },
   },
 });
