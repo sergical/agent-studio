@@ -1303,6 +1303,7 @@ mod tests {
                 trust_confirmed: false,
                 save_as_preference: false,
                 link_mode: skill_studio_core::dto::InstallLinkMode::Link,
+                destination: skill_studio_core::identity::SkillDestination::Universal,
             };
             let result = ops::install(&rt, &ctx, &req);
             let envelope = ResultEnvelope::from_result(Operation::Install, &rt.scope, &ctx, result);

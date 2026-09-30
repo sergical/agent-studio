@@ -54,7 +54,7 @@ export function isAddSkillFormValid(input: {
     !noMethodsAvailable &&
     (parsed.kind !== "git" || !!parsed.skillName?.trim()) &&
     (scope !== "project" || !!projectPath) &&
-    installDestinationError(destination, agents) === null &&
+    installDestinationError(destination === "universal", agents) === null &&
     (githubEntries === null || githubEntries.length > 0)
   );
 }

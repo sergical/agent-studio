@@ -358,10 +358,11 @@ pub enum DeploymentMutability {
 }
 
 /// Universal (`.agents/skills`) or per-harness destination.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillDestination {
     /// The shared root.
+    #[default]
     Universal,
     /// A harness's own root.
     PerHarness,

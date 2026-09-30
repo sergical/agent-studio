@@ -21,13 +21,19 @@
 //! agent it detected itself; an agent named with `--agent` gets the folder
 //! created. `install` skips it for every request, per the brief for this
 //! feature, and reports the skip.
+//!
+//! [`SkillDestination::PerHarness`] (`Copy` only) is Skill Studio's own
+//! choice, not the CLI's: every chosen harness gets a real folder in its own
+//! skills folder, Codex, `OpenCode`, and Cursor included, and nothing is
+//! written to the shared folder. A missing `.pi`/`.grok` project folder is
+//! created, not skipped, since the copy is the only place the skill lands.
 
 use std::path::{Component, Path, PathBuf};
 
 use crate::dto::{InstallLinkMode, InstallMethod};
 use crate::error::{CoreError, ErrorCode};
 use crate::fsops;
-use crate::identity::{AgentId, RootScope, SkillName, UNIVERSAL_ROOT_RELATIVE};
+use crate::identity::{AgentId, RootScope, SkillDestination, SkillName, UNIVERSAL_ROOT_RELATIVE};
 use crate::ports::{FileKind, ScopeFs};
 
 /// The `--agent` id for the shared `.agents/skills` folder alone - the
@@ -56,8 +62,35 @@ enum Folder {
     },
 }
 
-fn folder_for(harness: &AgentId, scope: &RootScope) -> Result<Folder, CoreError> {
+/// The own folder `PerHarness` gives Codex, `OpenCode`, and Cursor, which
+/// otherwise read the shared folder.
+fn per_harness_folder(harness: &AgentId, global: bool) -> Option<&'static str> {
+    match harness.as_str() {
+        AgentId::CODEX => Some(".codex/skills"),
+        AgentId::OPEN_CODE => Some(if global {
+            ".config/opencode/skills"
+        } else {
+            ".opencode/skills"
+        }),
+        AgentId::CURSOR => Some(".cursor/skills"),
+        _ => None,
+    }
+}
+
+fn folder_for(
+    harness: &AgentId,
+    scope: &RootScope,
+    destination: SkillDestination,
+) -> Result<Folder, CoreError> {
     let global = matches!(scope, RootScope::Global);
+    if destination == SkillDestination::PerHarness {
+        if let Some(relative) = per_harness_folder(harness, global) {
+            return Ok(Folder::Own {
+                relative,
+                project_marker: None,
+            });
+        }
+    }
     match harness.as_str() {
         UNIVERSAL_TARGET | AgentId::CODEX | AgentId::OPEN_CODE | AgentId::CURSOR => {
             Ok(Folder::Shared)
@@ -72,11 +105,11 @@ fn folder_for(harness: &AgentId, scope: &RootScope) -> Result<Folder, CoreError>
             } else {
                 ".pi/skills"
             },
-            project_marker: Some(".pi"),
+            project_marker: (destination == SkillDestination::Universal).then_some(".pi"),
         }),
         AgentId::GROK_BUILD => Ok(Folder::Own {
             relative: ".grok/skills",
-            project_marker: Some(".grok"),
+            project_marker: (destination == SkillDestination::Universal).then_some(".grok"),
         }),
         other => Err(CoreError::new(
             ErrorCode::InvalidRequest,
@@ -92,7 +125,7 @@ fn folder_for(harness: &AgentId, scope: &RootScope) -> Result<Folder, CoreError>
 /// Grok Build), `false` for one that reads the shared folder.
 pub(crate) fn has_own_folder(harness: &AgentId) -> bool {
     matches!(
-        folder_for(harness, &RootScope::Global),
+        folder_for(harness, &RootScope::Global, SkillDestination::Universal),
         Ok(Folder::Own { .. })
     )
 }
@@ -124,7 +157,7 @@ pub(crate) fn requested_harnesses(harnesses: &[AgentId]) -> Vec<AgentId> {
 /// Fails on the first id `install` cannot write for.
 pub(crate) fn validate_harnesses(harnesses: &[AgentId]) -> Result<(), CoreError> {
     for harness in harnesses {
-        folder_for(harness, &RootScope::Global)?;
+        folder_for(harness, &RootScope::Global, SkillDestination::Universal)?;
     }
     Ok(())
 }
@@ -140,7 +173,7 @@ pub(crate) fn effective_link_mode(
 ) -> Result<InstallLinkMode, CoreError> {
     let mut folders: Vec<Folder> = Vec::new();
     for harness in harnesses {
-        let folder = folder_for(harness, scope)?;
+        let folder = folder_for(harness, scope, SkillDestination::Universal)?;
         if !folders.contains(&folder) {
             folders.push(folder);
         }
@@ -228,13 +261,14 @@ pub(crate) fn plan_install(
     skill: &SkillName,
     harnesses: &[AgentId],
     mode: InstallLinkMode,
+    destination: SkillDestination,
 ) -> Result<InstallPlan, CoreError> {
     let universal_root = root.join(UNIVERSAL_ROOT_RELATIVE);
     let shared_path = universal_root.join(&skill.0);
     let mut shared_needed = mode == InstallLinkMode::Link;
     let mut steps = Vec::new();
     for harness in harnesses {
-        let action = match folder_for(harness, scope)? {
+        let action = match folder_for(harness, scope, destination)? {
             Folder::Shared => {
                 shared_needed = true;
                 StepAction::ReadsShared {
@@ -256,6 +290,18 @@ pub(crate) fn plan_install(
                         ),
                     }
                 } else if folder_reaches_shared(fs, harness, &dir, &universal_root)? {
+                    if destination == SkillDestination::PerHarness {
+                        return Err(CoreError::new(
+                            ErrorCode::InvalidRequest,
+                            format!(
+                                "{} is a link to {}, so a copy for {harness} would land in the \
+                                 shared folder; replace the link with a real folder, then install again",
+                                dir.display(),
+                                universal_root.display(),
+                            ),
+                        )
+                        .at(&dir));
+                    }
                     shared_needed = true;
                     StepAction::ReadsShared {
                         path: shared_path.clone(),

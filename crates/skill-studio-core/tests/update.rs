@@ -897,6 +897,7 @@ fn undo_of_a_copy_update_keeps_the_skill_owned_as_a_copy_or_names_the_stale_cont
             method: InstallMethod::Copy,
             scope: RootScope::Global,
             harnesses: vec![AgentId::from("universal")],
+            destination: skill_studio_core::identity::SkillDestination::Universal,
             files: files("v1"),
             source: None,
             trust_identity: None,

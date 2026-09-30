@@ -7659,6 +7659,7 @@ mod tests {
                 trust_confirmed: false,
                 save_as_preference: false,
                 link_mode: crate::dto::InstallLinkMode::Link,
+                destination: crate::identity::SkillDestination::Universal,
             };
             let err = install(&rt, &ctx, &req).unwrap_err();
 

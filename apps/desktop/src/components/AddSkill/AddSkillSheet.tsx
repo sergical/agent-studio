@@ -61,11 +61,14 @@ import {
   isAddSkillOperationCancellable,
   isAddSkillOperationTerminal,
   chosenInstallHarnesses,
-  installDisabledHarnesses,
+  harnessesKeptWithoutUniversal,
+  installDestinationError,
+  installDestinationFields,
   offeredInstallHarnesses,
   parseSkillSource,
   shouldConsumeAddSkillOperation,
   toWireParsedSkillSource,
+  universalLockReason,
 } from "@skill-studio/lib";
 import type {
   AddSkillOperationEvent,
@@ -79,9 +82,10 @@ import type {
   AgentId,
   GithubSkillEntry,
   GithubSkillListing,
-  InstallLinkMode,
   InstallScope,
 } from "@skill-studio/lib";
+
+type InstallDestinationFields = ReturnType<typeof installDestinationFields>;
 
 const SHEET_TAB_CLASS =
   "text-body font-medium text-text-tertiary after:bg-accent data-active:text-accent hover:text-text-secondary";
@@ -149,7 +153,8 @@ interface FormState {
   /** The harnesses the user picked. `null` until they change one, so the
    * default follows `getAddMethodDefaults` when it answers late. */
   pickedHarnesses: AgentId[] | null;
-  linkMode: InstallLinkMode;
+  /** The Universal row's tick. Choosing skills.sh or dotagents sets it again. */
+  universal: boolean;
   scope: InstallScope;
   projectPath: string | null;
   isSubmitting: boolean;
@@ -163,7 +168,7 @@ function initialFormState(): FormState {
     gitSkillName: "",
     methodChoice: "skills-sh",
     pickedHarnesses: null,
-    linkMode: "link",
+    universal: true,
     scope: "global",
     projectPath: null,
     isSubmitting: false,
@@ -178,7 +183,7 @@ type FormAction =
   | { type: "set_git_skill_name"; name: string }
   | { type: "set_method"; method: SheetMethod }
   | { type: "set_harnesses"; harnesses: AgentId[] }
-  | { type: "set_link_mode"; linkMode: InstallLinkMode }
+  | { type: "set_universal"; universal: boolean; chosen: AgentId[] }
   | { type: "set_scope"; scope: InstallScope }
   | { type: "set_project_path"; path: string | null }
   | { type: "submit_start" }
@@ -200,11 +205,25 @@ function formReducer(state: FormState, action: FormAction): FormState {
     case "set_git_skill_name":
       return { ...state, gitSkillName: action.name };
     case "set_method":
-      return { ...state, methodChoice: action.method };
+      return {
+        ...state,
+        methodChoice: action.method,
+        universal:
+          state.universal || action.method === "skills-sh" || action.method === "dotagents",
+      };
     case "set_harnesses":
       return { ...state, pickedHarnesses: action.harnesses };
-    case "set_link_mode":
-      return { ...state, linkMode: action.linkMode };
+    case "set_universal":
+      // A copy in each harness's own folder is the Copy method, and starts
+      // from the user's own ticks, not the harnesses that only read the shared folder.
+      return action.universal
+        ? { ...state, universal: true }
+        : {
+            ...state,
+            universal: false,
+            methodChoice: "copy",
+            pickedHarnesses: harnessesKeptWithoutUniversal(action.chosen),
+          };
     case "set_scope":
       return { ...state, scope: action.scope };
     case "set_project_path":
@@ -665,9 +684,7 @@ function useAddSkillSubmit(input: {
   parsed: ParsedSkillSource | { error: string };
   method: SheetMethod;
   noMethodsAvailable: boolean;
-  agents: AgentId[];
-  disabledHarnesses: AgentId[];
-  linkMode: InstallLinkMode;
+  destination: InstallDestinationFields;
   scope: InstallScope;
   projectPath: string | null;
   githubEntries: GithubSkillEntry[] | null;
@@ -680,9 +697,7 @@ function useAddSkillSubmit(input: {
     parsed,
     method,
     noMethodsAvailable,
-    agents,
-    disabledHarnesses,
-    linkMode,
+    destination,
     scope,
     projectPath,
     githubEntries,
@@ -703,8 +718,8 @@ function useAddSkillSubmit(input: {
   const isValid = isAddSkillFormValid({
     parsed,
     noMethodsAvailable,
-    destination: "universal",
-    agents,
+    destination: destination.destination,
+    agents: destination.agents,
     scope,
     projectPath,
     githubEntries,
@@ -722,7 +737,7 @@ function useAddSkillSubmit(input: {
     method === "pack" && packSource
       ? {
           source: packSource,
-          agents,
+          agents: destination.agents,
           method: "pack",
           destination: "universal",
           scope: "global",
@@ -830,22 +845,14 @@ function useAddSkillSubmit(input: {
         queued = await startAddSkillsOperation(operationId, {
           source: toWireParsedSkillSource(parsed),
           skills: githubEntries,
-          method,
-          destination: "universal",
-          agents,
-          disabled_harnesses: disabledHarnesses,
-          link_mode: linkMode,
+          ...destination,
           scope,
           project_path: projectArg,
         });
       } else {
         queued = await startAddSkillOperation(operationId, {
           source: toWireParsedSkillSource(parsed),
-          method,
-          destination: "universal",
-          agents,
-          disabled_harnesses: disabledHarnesses,
-          link_mode: linkMode,
+          ...destination,
           scope,
           project_path: projectArg,
         });
@@ -976,7 +983,9 @@ function ManualTabFields({
   onBrowseProject,
   offeredHarnesses,
   chosenHarnesses,
-  linkMode,
+  universal,
+  universalLockedReason,
+  destinationError,
   claudeReadsShared,
 }: {
   method: SheetMethod;
@@ -988,7 +997,9 @@ function ManualTabFields({
   onBrowseProject: () => void;
   offeredHarnesses: AgentId[];
   chosenHarnesses: AgentId[];
-  linkMode: InstallLinkMode;
+  universal: boolean;
+  universalLockedReason: string | null;
+  destinationError: string | null;
   claudeReadsShared: boolean;
 }) {
   return (
@@ -1015,8 +1026,12 @@ function ManualTabFields({
         offered={offeredHarnesses}
         chosen={chosenHarnesses}
         onChosenChange={(harnesses) => dispatch({ type: "set_harnesses", harnesses })}
-        linkMode={linkMode}
-        onLinkModeChange={(next) => dispatch({ type: "set_link_mode", linkMode: next })}
+        universal={universal}
+        onUniversalChange={(next) =>
+          dispatch({ type: "set_universal", universal: next, chosen: chosenHarnesses })
+        }
+        universalLockedReason={universalLockedReason}
+        error={destinationError}
         claudeReadsShared={claudeReadsShared}
         scope={method === "pack" ? "global" : scope}
         lockedReason={method === "dotagents" ? DOTAGENTS_HARNESS_REASON : undefined}
@@ -1143,7 +1158,7 @@ function deriveMethodAndVisibility(
   source: string,
   methodChoice: SheetMethod,
   pickedHarnesses: AgentId[] | null,
-  pickedLinkMode: InstallLinkMode,
+  universalChoice: boolean,
   keptHarnesses: string[],
   defaults: AddMethodDefaults | null,
   scope: InstallScope,
@@ -1165,20 +1180,32 @@ function deriveMethodAndVisibility(
       : METHOD_TOOLTIPS[method];
 
   const detected = defaults?.installed_harnesses ?? [];
+  // Universal stays ticked when the source has no Copy method, and for a pack.
+  const universalLockedReason =
+    method === "pack"
+      ? "Pack import always writes the shared folder."
+      : universalLockReason(methods);
+  const universal = universalChoice || universalLockedReason !== null;
   const claudeReadsShared = defaults?.claude_reads_shared_folder ?? false;
   const offeredHarnesses = offeredInstallHarnesses(detected, keptHarnesses);
   // dotagents keeps its own default: the user's pick does not reach it.
-  const dotagents = method === "dotagents";
+  const dotagentsOnShared = method === "dotagents" && universal;
   const chosenHarnesses = chosenInstallHarnesses(
     offeredHarnesses,
-    dotagents ? null : pickedHarnesses,
+    dotagentsOnShared ? null : pickedHarnesses,
     claudeReadsShared,
     scope,
+    universal,
   );
-  const linkMode: InstallLinkMode = dotagents ? "link" : pickedLinkMode;
-  const disabledHarnesses = dotagents
-    ? []
-    : installDisabledHarnesses(detected, chosenHarnesses, scope);
+  const destination = installDestinationFields({
+    offered: offeredHarnesses,
+    chosen: chosenHarnesses,
+    scope,
+    // A pack has its own request; only its agents come from here.
+    method: method === "pack" ? "copy" : method,
+    universal,
+  });
+  const destinationError = installDestinationError(universal, chosenHarnesses);
 
   return {
     parsed,
@@ -1189,8 +1216,10 @@ function deriveMethodAndVisibility(
     claudeReadsShared,
     offeredHarnesses,
     chosenHarnesses,
-    linkMode,
-    disabledHarnesses,
+    universal,
+    universalLockedReason,
+    destination,
+    destinationError,
   };
 }
 
@@ -1250,7 +1279,7 @@ export function AddSkillSheet() {
     gitSkillName,
     methodChoice,
     pickedHarnesses,
-    linkMode: pickedLinkMode,
+    universal: universalChoice,
     scope,
     projectPath,
     isSubmitting,
@@ -1315,13 +1344,15 @@ export function AddSkillSheet() {
     claudeReadsShared,
     offeredHarnesses,
     chosenHarnesses,
-    linkMode,
-    disabledHarnesses,
+    universal,
+    universalLockedReason,
+    destination,
+    destinationError,
   } = deriveMethodAndVisibility(
     source,
     methodChoice,
     pickedHarnesses,
-    pickedLinkMode,
+    universalChoice,
     keptHarnesses,
     defaults,
     scope,
@@ -1351,9 +1382,7 @@ export function AddSkillSheet() {
     parsed: submitParsed,
     method,
     noMethodsAvailable,
-    agents: chosenHarnesses,
-    disabledHarnesses,
-    linkMode,
+    destination,
     scope,
     projectPath,
     githubEntries,
@@ -1475,7 +1504,9 @@ export function AddSkillSheet() {
               onBrowseProject={handleBrowseProject}
               offeredHarnesses={offeredHarnesses}
               chosenHarnesses={chosenHarnesses}
-              linkMode={linkMode}
+              universal={universal}
+              universalLockedReason={universalLockedReason}
+              destinationError={destinationError}
               claudeReadsShared={claudeReadsShared}
             />
           </TabsContent>
