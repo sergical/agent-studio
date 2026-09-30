@@ -5706,7 +5706,17 @@ fn set_harness_enabled_body(
             req.enabled,
         )?,
         AgentId::OPEN_CODE => {
-            set_opencode_switch(rt, &mut session, fs, &home, &skill, &id, kind, req.enabled)?
+            set_opencode_switch(
+                rt,
+                &mut session,
+                fs,
+                &home,
+                req.project_path.as_deref(),
+                &skill,
+                &id,
+                kind,
+                req.enabled,
+            )?
         }
         other => {
             return Err(CoreError::new(
@@ -6016,7 +6026,11 @@ fn is_codex_visible_root(kind: &RootKind) -> bool {
 
 /// One `SKILL.md` path per distinct file Codex loads for `skill`, sorted for
 /// a deterministic write order.
-fn codex_skill_md_paths(fs: &dyn ScopeFs, skill: &InstalledSkillDto) -> Vec<PathBuf> {
+fn codex_skill_md_paths(
+    fs: &dyn ScopeFs,
+    skill: &InstalledSkillDto,
+    project_path: Option<&Path>,
+) -> Vec<PathBuf> {
     // `scan` groups every harness's copy of a skill under one
     // `InstalledSkillDto`, so without the `is_codex_visible_root` filter
     // this also picked up deployments at roots Codex never reads - a Claude
@@ -6029,6 +6043,13 @@ fn codex_skill_md_paths(fs: &dyn ScopeFs, skill: &InstalledSkillDto) -> Vec<Path
         .deployments
         .iter()
         .filter(|d| is_codex_visible_root(&d.root.kind))
+        // A project row's switch stays with that project's copies: Codex
+        // keys rows by path, so the global and other projects' copies keep
+        // their own state.
+        .filter(|d| match (project_path, &d.root.scope) {
+            (Some(project), scope) => matches!(scope, RootScope::Project(p) if p.0 == project),
+            (None, _) => true,
+        })
         .map(|d| d.path.join("SKILL.md"))
         .collect();
     paths.sort();
@@ -6053,7 +6074,7 @@ fn set_codex_switch(
     (id, kind): (&EventId, crate::events::EventKind),
     enabled: bool,
 ) -> Result<(u32, u32), CoreError> {
-    let paths = codex_skill_md_paths(fs, skill);
+    let paths = codex_skill_md_paths(fs, skill, project_path);
     let total = u32::try_from(paths.len()).unwrap_or(u32::MAX);
     if paths.is_empty() {
         return Err(CoreError::new(
@@ -6261,11 +6282,18 @@ fn set_opencode_switch(
     session: &mut crate::ports::MutationSession,
     fs: &dyn ScopeFs,
     home: &Path,
+    project_path: Option<&Path>,
     skill: &InstalledSkillDto,
     id: &EventId,
     kind: crate::events::EventKind,
     enabled: bool,
 ) -> Result<(u32, u32), CoreError> {
+    if project_path.is_some() {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            "OpenCode's off switch is a rule in opencode.json, which every project reads; switch the skill from its Global row",
+        ));
+    }
     refuse_opencode_name_collision(skill)?;
     let config_dir = rt
         .scope
