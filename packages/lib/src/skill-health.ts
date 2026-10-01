@@ -5,8 +5,8 @@
 // isolation (Vitest, once a runner is wired up).
 // ============================================================================
 
-import { agentIdFromDeploymentLabel } from "./skill-coverage";
-import { ownDeployments } from "./skill-plugin-partition";
+import { agentIdFromDeploymentLabel, isUnresolvedDeployment } from "./skill-coverage";
+import { editableDeployments, ownDeployments } from "./skill-plugin-partition";
 import { homeRelativePath, parentDirectory } from "./skill-path-format";
 import type { Deployment, InstalledSkill } from "./skill-types";
 
@@ -215,6 +215,24 @@ const BLOCKING_SPEC_VIOLATION_PREFIXES = [
 /** True when `violation` is one of `BLOCKING_SPEC_VIOLATION_PREFIXES` - see there for why. */
 export function isBlockingSpecViolation(violation: string): boolean {
   return BLOCKING_SPEC_VIOLATION_PREFIXES.some((prefix) => violation.startsWith(prefix));
+}
+
+/**
+ * The copy of `skill` to open so its spec violations are visible: the first readable copy with a
+ * blocking violation, else the first readable copy with any violation, else `undefined`. Ties go
+ * to editable copies, then own copies, so a plugin copy only wins when it is the one with the
+ * problem. A broken symlink has no readable SKILL.md to show, so it never wins on violations alone.
+ */
+export function deploymentWithSpecViolations(skill: InstalledSkill): Deployment | undefined {
+  const readable = [
+    ...editableDeployments(skill),
+    ...ownDeployments(skill),
+    ...skill.deployments,
+  ].filter((d) => !isUnresolvedDeployment(d));
+  return (
+    readable.find((d) => d.spec_violations.some(isBlockingSpecViolation)) ??
+    readable.find((d) => d.spec_violations.length > 0)
+  );
 }
 
 /**

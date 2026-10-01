@@ -12,14 +12,15 @@ import { SkillListTable } from "./SkillListTable";
 import type { SortMode } from "../../lib/skill-list-sort";
 import { SkillListActiveFilters, SkillListFilterBar } from "./SkillListFilterBar";
 import { useProjectFolderActions } from "../../hooks/useProjectFolderActions";
-import { collectDashboardIssues } from "@skill-studio/lib";
+import { collectDashboardIssues, deploymentWithSpecViolations } from "@skill-studio/lib";
 import { applySkillListFilter, isProjectScope } from "@skill-studio/lib";
 import type { SkillListFilter } from "@skill-studio/lib";
 import { ownSkillsView } from "@skill-studio/lib";
 import type { InstalledSkill, SkillSnapshot } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
 
-/** The deployment the current scope shows for `skill`, so the detail drawer opens on that copy. */
+/** The deployment the current scope shows for `skill`, so the detail drawer opens on that copy.
+ * With no scope, the copy carrying spec violations, so the row's badge and the page agree. */
 function deploymentForScope(
   skill: InstalledSkill,
   scope: SkillListFilter["scope"],
@@ -31,7 +32,7 @@ function deploymentForScope(
   if (isProjectScope(scope)) {
     return skill.deployments.find((d) => d.project_path === scope.project)?.path;
   }
-  return undefined;
+  return deploymentWithSpecViolations(skill)?.path;
 }
 
 interface SkillsViewProps {
