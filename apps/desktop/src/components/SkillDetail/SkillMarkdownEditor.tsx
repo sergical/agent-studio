@@ -70,6 +70,15 @@ function measureGutterLayout(textarea: HTMLTextAreaElement, content: string): Gu
   };
 }
 
+function applyGutterLayout(
+  textarea: HTMLTextAreaElement,
+  content: string,
+  setLayout: (update: (prev: GutterLayout | null) => GutterLayout | null) => void,
+) {
+  const next = measureGutterLayout(textarea, content);
+  setLayout((prev) => (sameLayout(prev, next) ? prev : next));
+}
+
 function sameLayout(a: GutterLayout | null, b: GutterLayout): boolean {
   return (
     a !== null &&
@@ -109,13 +118,13 @@ export function SkillMarkdownEditor({
   saveLabel = "Save",
   highlightLine,
 }: SkillMarkdownEditorProps) {
-  const [content, setContent] = useState(initialContent);
+  const [content, setContent] = useState(() => normalizeLineEndings(initialContent));
   const isDirty = isContentDirty(content, initialContent);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
   const [showDiscardDialog, setShowDiscardDialog] = useState(false);
   const [layout, setLayout] = useState<GutterLayout | null>(null);
-  const lineCount = normalizeLineEndings(content).split("\n").length;
+  const lineCount = content.split("\n").length;
   const markedLine = isDirty ? undefined : highlightLine;
 
   // Notified from the change handler itself, not an effect syncing a derived
@@ -164,17 +173,13 @@ export function SkillMarkdownEditor({
 
   const measureLatest = useEffectEvent(() => {
     const textarea = textareaRef.current;
-    if (!textarea) return;
-    const next = measureGutterLayout(textarea, content);
-    setLayout((prev) => (sameLayout(prev, next) ? prev : next));
+    if (textarea) applyGutterLayout(textarea, content, setLayout);
   });
 
   // Before paint, so line numbers never trail an edit by a frame.
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
-    if (!textarea) return;
-    const next = measureGutterLayout(textarea, content);
-    setLayout((prev) => (sameLayout(prev, next) ? prev : next));
+    if (textarea) applyGutterLayout(textarea, content, setLayout);
   }, [content]);
 
   // Width changes (window or drag-resize) can re-wrap lines without a content change.

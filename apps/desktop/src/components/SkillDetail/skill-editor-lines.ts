@@ -22,7 +22,7 @@ export function lineRange(raw: string, line: number): { start: number; end: numb
 
 /** A textarea's value always uses LF, so offsets into a CRLF file only line up after this. */
 export function normalizeLineEndings(content: string): string {
-  return content.replace(/\r\n/g, "\n");
+  return content.replace(/\r\n?/g, "\n");
 }
 
 /** Whether the textarea's LF `content` differs from the file as it was read (raw, maybe CRLF). */
@@ -30,7 +30,10 @@ export function isContentDirty(content: string, initialRaw: string): boolean {
   return content !== normalizeLineEndings(initialRaw);
 }
 
-/** The text to write: `content` with CRLF restored when the original file used it. */
+/**
+ * The text to write: `content` with CRLF restored when the original file used it.
+ * A file that mixed CRLF and LF is written back as all CRLF.
+ */
 export function contentForSave(content: string, initialRaw: string): string {
-  return initialRaw.includes("\r\n") ? content.replace(/\n/g, "\r\n") : content;
+  return initialRaw.includes("\r\n") ? content.replace(/\r?\n/g, "\r\n") : content;
 }

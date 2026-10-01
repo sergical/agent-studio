@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { contentForSave, isContentDirty, lineRange } from "./skill-editor-lines";
+import {
+  contentForSave,
+  isContentDirty,
+  lineRange,
+  normalizeLineEndings,
+} from "./skill-editor-lines";
 
 describe("lineRange", () => {
   const content = "---\nname: a\n---\n";
@@ -37,11 +42,26 @@ describe("isContentDirty", () => {
     expect(isContentDirty("a\nb\n", crlf)).toBe(false);
     expect(isContentDirty("a\nb\nx", crlf)).toBe(true);
   });
+
+  it("dirty_compare_treats_a_crlf_file_as_clean_when_the_editor_opens_or_cmd_s_rewrites_it", () => {
+    const crlf = "a\r\nb\r\n";
+    expect(isContentDirty(normalizeLineEndings(crlf), crlf)).toBe(false);
+  });
+});
+
+describe("normalizeLineEndings", () => {
+  it("normalize_turns_a_lone_carriage_return_into_a_newline_or_line_numbers_drift", () => {
+    expect(normalizeLineEndings("a\rb\r\nc")).toBe("a\nb\nc");
+  });
 });
 
 describe("contentForSave", () => {
   it("save_content_restores_crlf_for_a_crlf_file_or_rewrites_it_as_lf", () => {
     expect(contentForSave("a\nb\n", "x\r\ny\r\n")).toBe("a\r\nb\r\n");
+  });
+
+  it("save_content_never_writes_a_doubled_carriage_return_or_corrupts_crlf_text", () => {
+    expect(contentForSave("a\r\nb\n", "x\r\ny\r\n")).toBe("a\r\nb\r\n");
   });
 
   it("save_content_leaves_an_lf_file_untouched_or_adds_carriage_returns", () => {
