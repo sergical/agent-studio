@@ -234,10 +234,10 @@ export async function runBulkUpdate(
     );
     const batchResult = bulkUpdateResult(batched, outcome);
     for (const skill of batchResult.succeeded) {
-      if (!forked.includes(skill)) result.succeeded.push(skill);
+      if (!forkedOthers.has(skill)) result.succeeded.push(skill);
     }
     for (const failure of batchResult.failed) {
-      if (!forked.includes(failure.skill)) {
+      if (!forkedOthers.has(failure.skill)) {
         result.failed.push(failure);
       } else {
         // The fork and pull went through; only another copy failed. Count it as failed, once, with that reason.

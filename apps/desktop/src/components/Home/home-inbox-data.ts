@@ -193,11 +193,12 @@ export async function updateAllOutdatedSkills(
 
   for (const [index, skill] of forks.entries()) {
     try {
-      // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
-      const pull =
+      const pullOne =
         skill.source_kind === "fork" || !forkEdited
-          ? await pullFork(lifecycleTargetForPark(skill))
-          : await forkThenPull(forkTargetForSkill(skill), forkEdited.fork, pullFork);
+          ? () => pullFork(lifecycleTargetForPark(skill))
+          : () => forkThenPull(forkTargetForSkill(skill), forkEdited.fork, pullFork);
+      // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
+      const pull = await pullOne();
       if (pull.conflicts.length > 0) (tally.conflicted ??= []).push(skill.name);
       tally.succeeded += 1;
     } catch (error) {

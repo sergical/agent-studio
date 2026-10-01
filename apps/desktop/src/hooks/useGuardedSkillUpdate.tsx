@@ -109,9 +109,8 @@ export function useGuardedSkillUpdate() {
         title,
         message: error instanceof Error ? error.message : "Unknown error",
       });
-    } finally {
-      setIsResolving(false);
     }
+    setIsResolving(false);
   };
 
   const overwrite = () => resolve("Update failed", (update) => update.overwrite());

@@ -425,6 +425,7 @@ export async function forkEditedAndUpdate(
   options: { updateOthers: boolean } = { updateOthers: true },
 ): Promise<{ pull: PullResult; others: SkillOwnerUpdateSummary }> {
   const pull = await forkThenPull(forkTargetForSkill(skill), deps.fork, deps.pullFork);
+  // react-doctor-disable-next-line react-doctor/server-sequential-independent-await -- a failed fork must leave the other copies untouched, and both steps write ~/.agents/.skill-lock.json
   const others = await updateOwnerTargets(
     options.updateOthers ? excludeForkedOwner(skill, skillUpdateOwnerTargets(skill)) : [],
     deps.updateOwner,

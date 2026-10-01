@@ -149,9 +149,8 @@ function useSkillLifecycleMutations(
         title: "Update failed",
         message: error instanceof Error ? error.message : "Unknown error",
       });
-    } finally {
-      setIsUpdating(false);
     }
+    setIsUpdating(false);
   };
 
   return {
