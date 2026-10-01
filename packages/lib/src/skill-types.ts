@@ -86,6 +86,7 @@ export type {
   DoctorReport,
   DoctorViolation,
   BulkTargetResult,
+  LocalEditsDto,
   InvocationTarget,
 } from "./skill-types.generated";
 

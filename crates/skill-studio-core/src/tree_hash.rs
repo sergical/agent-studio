@@ -43,7 +43,31 @@ const MODE_TREE: &[u8] = b"40000";
 /// subdirectories, recursively) hashes the same way git tracks it: as the
 /// well-known empty tree, `4b825dc642cb6eb9a060e54bf8d69288fbee4904`.
 pub fn tree_hash(fs: &dyn ScopeFs, dir: &Path) -> Result<String, CoreError> {
-    let sha = hash_dir(fs, dir)?.unwrap_or_else(|| hash_object(b"tree", &[]));
+    tree_hash_with(fs, dir, false)
+}
+
+/// [`tree_hash`] without the files the `skills` CLI never installs and the
+/// OS or Python litter into a skill folder (see [`is_install_junk`]), so
+/// that `.DS_Store` or `__pycache__` does not make an untouched install
+/// look edited.
+pub fn tree_hash_ignoring_junk(fs: &dyn ScopeFs, dir: &Path) -> Result<String, CoreError> {
+    tree_hash_with(fs, dir, true)
+}
+
+/// Names `npx skills` leaves out of an install (`EXCLUDE_DIRS` in the CLI:
+/// `.git`, `__pycache__`, `__pypackages__`) plus Finder's `.DS_Store`.
+/// `metadata.json` is also on the CLI's exclude list but is deliberately
+/// not skipped here: the GitHub tree hash includes it, and a user may edit
+/// one that exists locally.
+pub fn is_install_junk(name: &str, kind: FileKind) -> bool {
+    match kind {
+        FileKind::Dir => matches!(name, ".git" | "__pycache__" | "__pypackages__"),
+        _ => name == ".DS_Store",
+    }
+}
+
+fn tree_hash_with(fs: &dyn ScopeFs, dir: &Path, skip_junk: bool) -> Result<String, CoreError> {
+    let sha = hash_dir(fs, dir, skip_junk)?.unwrap_or_else(|| hash_object(b"tree", &[]));
     let mut hex = String::with_capacity(sha.len() * 2);
     for byte in sha {
         write!(hex, "{byte:02x}").ok();
@@ -67,14 +91,17 @@ struct Entry {
 /// contributes nothing trackable - the same case in which git leaves the
 /// directory out of its parent tree entirely, since git never records an
 /// empty directory.
-fn hash_dir(fs: &dyn ScopeFs, dir: &Path) -> Result<Option<[u8; 20]>, CoreError> {
+fn hash_dir(fs: &dyn ScopeFs, dir: &Path, skip_junk: bool) -> Result<Option<[u8; 20]>, CoreError> {
     let listing = fs.read_dir(dir).map_err(|e| CoreError::io(dir, e))?;
     let mut entries = Vec::new();
     for item in listing {
+        if skip_junk && is_install_junk(&item.name, item.kind) {
+            continue;
+        }
         let path = dir.join(&item.name);
         match item.kind {
             FileKind::Dir => {
-                if let Some(sha) = hash_dir(fs, &path)? {
+                if let Some(sha) = hash_dir(fs, &path, skip_junk)? {
                     entries.push(Entry {
                         sort_key: sort_key(&item.name, true),
                         mode: MODE_TREE,

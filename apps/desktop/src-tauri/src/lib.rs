@@ -420,6 +420,7 @@ pub fn run() {
             skills::skill_add_operation::confirm_add_skill_trust,
             skills::github_skill_listing::list_github_skills,
             // Park (disable globally) / per-harness disable / invocation policy
+            skills::skill_local_edits::skill_local_edits,
             skills::skill_park::park_skill,
             skills::skill_park::unpark_skill,
             skills::skill_park::park_skills,

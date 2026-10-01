@@ -251,6 +251,7 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
           onClose={actions.closePluginUninstallRequest}
         />
       )}
+      {actions.updateDialog}
     </div>
   );
 }

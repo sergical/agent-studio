@@ -9,19 +9,18 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } fr
 import { Button, Collapsible, CollapsiblePanel, Progress } from "@skill-studio/ui";
 import { formatRelativeTime, formatTokens, shortSha } from "@skill-studio/lib";
 import type { HealthIssue, InstalledSkill, RecentlyUsedSkill } from "@skill-studio/lib";
+import { parkSkill, pullForkUpstream, skillLocalEdits } from "../../lib/skill-api";
 import {
-  parkSkill,
-  pullForkUpstream,
-  updateAllSkillsWithProgress,
-  updateSkill,
-} from "../../lib/skill-api";
-import {
+  conflictedSkillsNote,
   lifecycleTargetForPark,
   skillCanPark,
-  skillUpdateToast,
-  updateSkillOwners,
+  forkableDeployment,
+  skillsWithLocalEdits,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
+import { runHomeUpdateAll } from "../../hooks/skillBatchUpdates";
+import { useGuardedSkillUpdate } from "../../hooks/useGuardedSkillUpdate";
+import { UpdateOverwritesEditsDialog } from "../SkillDetail/UpdateOverwritesEditsDialog";
 import { GroupHead } from "../SkillList/GroupHead";
 import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
 import type { RowState } from "../SkillList/skill-row-state";
@@ -38,7 +37,6 @@ import {
   rowAt,
   skillKey,
   updateAllFailureMessage,
-  updateAllOutdatedSkills,
 } from "./home-inbox-data";
 import type { GroupId, HomeFilter, HomeGroups, HomeRowPlan } from "./home-inbox-data";
 
@@ -148,11 +146,12 @@ function ShowAllLink({
 
 /**
  * "Pull latest" for one Updates row: a fork pulls upstream via
- * `pullForkUpstream`, any other managed skill re-syncs via `updateSkill`.
+ * `pullForkUpstream`, any other managed skill re-syncs through the guarded update.
  */
 function PullLatestButton({ skill }: { skill: InstalledSkill }) {
   const [isPulling, setIsPulling] = useState(false);
   const addToast = useAppStore((state) => state.addToast);
+  const guard = useGuardedSkillUpdate();
 
   const handlePull = async () => {
     setIsPulling(true);
@@ -165,8 +164,7 @@ function PullLatestButton({ skill }: { skill: InstalledSkill }) {
         if (!title) title = `Merged ${skill.name}`;
         addToast({ type: "success", title });
       } else {
-        const summary = await updateSkillOwners(skill, updateSkill);
-        addToast(skillUpdateToast(skill.name, summary));
+        await guard.requestUpdate(skill);
       }
       setIsPulling(false);
     } catch (err) {
@@ -178,13 +176,21 @@ function PullLatestButton({ skill }: { skill: InstalledSkill }) {
   };
 
   return (
-    <Button variant="ghost" className={ROW_ACTION_CLASS} onClick={handlePull} disabled={isPulling}>
-      {isPulling ? (
-        <span className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
-      ) : (
-        "Pull latest"
-      )}
-    </Button>
+    <>
+      <Button
+        variant="ghost"
+        className={ROW_ACTION_CLASS}
+        onClick={handlePull}
+        disabled={isPulling || guard.isResolving}
+      >
+        {isPulling || guard.isResolving ? (
+          <span className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+        ) : (
+          "Pull latest"
+        )}
+      </Button>
+      {guard.dialog}
+    </>
   );
 }
 
@@ -546,30 +552,45 @@ function UpdatesGroup({
 }) {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const addToast = useAppStore((state) => state.addToast);
+  const [editedSkills, setEditedSkills] = useState<InstalledSkill[]>([]);
   const isUpdatingAll = progress !== null;
 
-  const handleUpdateAll = async () => {
+  const runUpdateAll = async (forkNames?: ReadonlySet<string>) => {
     setProgress({ done: 0, total: 0 });
     // `updateAllOutdatedSkills` catches every `pullFork`/`updateAllOwners`
     // rejection itself and folds it into `failures`, so this await never
     // throws - a plain (React Compiler-friendly) sequence needs no
     // try/finally to still always clear the loading flag.
-    const tally = await updateAllOutdatedSkills(
+    const tally = await runHomeUpdateAll(
       updates,
-      pullForkUpstream,
-      (targets, onOwnerDone) =>
-        updateAllSkillsWithProgress(targets, ({ done }) => onOwnerDone(done)),
       (done, total) => setProgress({ done, total }),
+      forkNames,
     );
     const { skillsAttempted, skillsSucceeded, failures } = tally;
+    const conflictNote = conflictedSkillsNote(tally.conflicted ?? []);
     addToast({
-      type: failures > 0 ? "warning" : "success",
+      type: failures > 0 || conflictNote ? "warning" : "success",
       title: `Updated ${skillsSucceeded} of ${skillsAttempted} skill${skillsAttempted === 1 ? "" : "s"}`,
-      message: updateAllFailureMessage(tally),
+      message:
+        [updateAllFailureMessage(tally), conflictNote].filter(Boolean).join(". ") || undefined,
     });
     // react-doctor-disable-next-line react-doctor/no-loading-flag-reset-outside-finally -- the React Compiler rejects try/finally here (react-hooks-js/todo); `updateAllOutdatedSkills` never rejects, so this always runs
     setProgress(null);
   };
+
+  const handleUpdateAll = async () => {
+    setProgress({ done: 0, total: 0 });
+    // `skillsWithLocalEdits` treats a failed check as "no edits", so it never rejects.
+    const edited = await skillsWithLocalEdits(updates, skillLocalEdits);
+    if (edited.length > 0) {
+      setEditedSkills(edited);
+      setProgress(null);
+      return;
+    }
+    await runUpdateAll();
+  };
+
+  const closeEditsDialog = () => setEditedSkills([]);
 
   return (
     <Collapsible data-group="upd" role="rowgroup" open={isExpanded} onOpenChange={onToggle}>
@@ -647,6 +668,20 @@ function UpdatesGroup({
           )}
         </div>
       </CollapsiblePanel>
+      <UpdateOverwritesEditsDialog
+        skillNames={editedSkills.map((skill) => skill.name)}
+        isBulk
+        canFork={editedSkills.every((skill) => forkableDeployment(skill) !== undefined)}
+        onFork={() => {
+          closeEditsDialog();
+          void runUpdateAll(new Set(editedSkills.map((skill) => skill.name)));
+        }}
+        onOverwrite={() => {
+          closeEditsDialog();
+          void runUpdateAll();
+        }}
+        onCancel={closeEditsDialog}
+      />
     </Collapsible>
   );
 }

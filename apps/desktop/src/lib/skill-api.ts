@@ -24,6 +24,7 @@ import type {
   FrontmatterRepairKind,
   FrontmatterRepairPreview,
   InvocationConflictChoice,
+  LocalEditsDto,
   GithubSkillListing,
   InstalledSkill,
   HarnessReport,
@@ -595,6 +596,15 @@ export async function unparkSkill(target: LifecycleTarget): Promise<void> {
  */
 export async function parkSkills(targets: LifecycleTarget[]): Promise<BulkTargetResult[]> {
   return callCommand("park_skills", { targets });
+}
+
+/**
+ * Whether each update target's installed folder differs from what the install
+ * recorded, in the order sent. `checked: false` means the check could not run;
+ * treat it as not edited.
+ */
+export async function skillLocalEdits(targets: LifecycleTarget[]): Promise<LocalEditsDto[]> {
+  return callCommand("skill_local_edits", { targets });
 }
 
 /** `unparkSkill` for many targets in one call; results as in `parkSkills`. */

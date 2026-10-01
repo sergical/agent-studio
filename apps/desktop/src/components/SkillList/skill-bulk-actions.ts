@@ -6,8 +6,20 @@
 // disagrees with the skill page.
 // ============================================================================
 
-import type { InstalledSkill, InvocationPolicy, LifecycleTarget, Toast } from "@skill-studio/lib";
+import type {
+  ForkRecord,
+  InstalledSkill,
+  InvocationPolicy,
+  LifecycleTarget,
+  PullResult,
+  Toast,
+  UpdateAllOutcome,
+} from "@skill-studio/lib";
 import {
+  conflictedSkillsNote,
+  forkThenPull,
+  excludeForkedOwner,
+  forkTargetForSkill,
   skillMutableLifecycleScopes,
   skillParkVerb,
   skillRemovalAvailability,
@@ -32,7 +44,7 @@ interface BulkSkipped {
   reason: string;
 }
 
-interface BulkPlan {
+export interface BulkPlan {
   applicable: InstalledSkill[];
   skipped: BulkSkipped[];
 }
@@ -45,6 +57,8 @@ export interface BulkFailure {
 export interface BulkRunResult {
   succeeded: InstalledSkill[];
   failed: BulkFailure[];
+  /** Names of forked skills whose pull left conflict markers; set only for an update. */
+  conflicted?: string[];
 }
 
 /** Why `skill` cannot take `action`, or `null` when it can. */
@@ -133,7 +147,7 @@ export async function runBulkSequentially(
 }
 
 /**
- * Turns an `updateAllSkills` outcome into a run result: an item without an
+ * Turns an batched update outcome into a run result: an item without an
  * outcome failed, and a skill with several location items fails if any one did.
  */
 export function bulkUpdateResult(
@@ -152,6 +166,90 @@ export function bulkUpdateResult(
       result.failed.push({ skill, error: "The update returned no result for this skill." });
     }
   }
+  return result;
+}
+
+/**
+ * The list's bulk Update: each skill in `forkNames` is forked and pulled
+ * (keeping the user's edits), the rest go through one batched update call.
+ * One result covers both, with the skills whose pull left conflict markers.
+ */
+export async function runBulkUpdate(
+  skills: InstalledSkill[],
+  forkNames: ReadonlySet<string>,
+  deps: {
+    fork: (target: LifecycleTarget) => Promise<ForkRecord>;
+    pullFork: (target: LifecycleTarget) => Promise<PullResult>;
+    updateAll: (
+      targets: LifecycleTarget[],
+      onProgress: (done: number, total: number) => void,
+    ) => Promise<UpdateAllOutcome>;
+  },
+  onProgress: (done: number, total: number) => void,
+): Promise<BulkRunResult> {
+  const forked = skills.filter((skill) => forkNames.has(skill.name));
+  const rest = skills.filter((skill) => !forkNames.has(skill.name));
+  const result: BulkRunResult = { succeeded: [], failed: [] };
+  const conflicted: string[] = [];
+  // A forked skill's other owners still get the normal update.
+  const forkedOthers = new Map(
+    forked.map((skill) => [skill, excludeForkedOwner(skill, bulkUpdateTargets(skill))]),
+  );
+  let total =
+    forked.length +
+    rest.flatMap(bulkUpdateTargets).length +
+    [...forkedOthers.values()].reduce((sum, targets) => sum + targets.length, 0);
+  const forkFailed = new Set<InstalledSkill>();
+  for (const [index, skill] of forked.entries()) {
+    try {
+      // react-doctor-disable-next-line react-doctor/async-await-in-loop -- each fork and pull takes an exclusive lease, so the calls must not overlap
+      const pull = await forkThenPull(forkTargetForSkill(skill), deps.fork, deps.pullFork);
+      if (pull.conflicts.length > 0) conflicted.push(skill.name);
+      result.succeeded.push(skill);
+    } catch (error) {
+      forkFailed.add(skill);
+      result.failed.push({
+        skill,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+    onProgress(index + 1, total);
+  }
+  // A skill whose fork failed keeps all its owners untouched, so its other copies are not updated either.
+  const forkedToBatch = forked.filter(
+    (skill) => !forkFailed.has(skill) && (forkedOthers.get(skill) ?? []).length > 0,
+  );
+  const batched = [...rest, ...forkedToBatch];
+  const batchTargets = [
+    ...rest.flatMap(bulkUpdateTargets),
+    ...forkedToBatch.flatMap((skill) => forkedOthers.get(skill) ?? []),
+  ];
+  // A failed fork's other copies leave the total, so progress still reaches it.
+  const plannedTotal = total;
+  total = forked.length + batchTargets.length;
+  if (total !== plannedTotal) onProgress(forked.length, total);
+  if (batched.length > 0) {
+    const outcome = await deps.updateAll(batchTargets, (done) =>
+      onProgress(forked.length + done, total),
+    );
+    const batchResult = bulkUpdateResult(batched, outcome);
+    for (const skill of batchResult.succeeded) {
+      if (!forkedOthers.has(skill)) result.succeeded.push(skill);
+    }
+    for (const failure of batchResult.failed) {
+      if (!forkedOthers.has(failure.skill)) {
+        result.failed.push(failure);
+      } else {
+        // The fork and pull went through; only another copy failed. Count it as failed, once, with that reason.
+        result.succeeded = result.succeeded.filter((skill) => skill !== failure.skill);
+        result.failed.push({
+          skill: failure.skill,
+          error: `Forked and updated, but another copy failed: ${failure.error}`,
+        });
+      }
+    }
+  }
+  if (conflicted.length > 0) result.conflicted = conflicted;
   return result;
 }
 
@@ -237,10 +335,18 @@ export function bulkActionToast(
   if (result.failed.length > 0) parts.push(`${result.failed.length} failed`);
   const subject = changed === total ? skillCount(total) : `${changed} of ${skillCount(total)}`;
   const title = [`${pastTitle(action)} ${subject}`, ...parts].join(" · ");
-  if (result.failed.length === 0) return { type: "success", title };
+  const conflictNote = conflictedSkillsNote(result.conflicted ?? []);
+  if (result.failed.length === 0) {
+    return conflictNote
+      ? { type: "warning", title, message: conflictNote }
+      : { type: "success", title };
+  }
+  const failureMessage = result.failed
+    .map(({ skill, error }) => `${skill.name}: ${error}`)
+    .join("; ");
   return {
     type: changed === 0 ? "error" : "warning",
     title,
-    message: result.failed.map(({ skill, error }) => `${skill.name}: ${error}`).join("; "),
+    message: conflictNote ? `${failureMessage}. ${conflictNote}` : failureMessage,
   };
 }

@@ -5,7 +5,8 @@
 import { describe, expect, it } from "vitest";
 import type { PullResult } from "@skill-studio/lib";
 
-import { pullUpstreamToast, removeSuccessToast } from "./skill-page-actions";
+import { pullUpstreamToast } from "../../lib/skill-lifecycle-target";
+import { removeSuccessToast } from "./skill-page-actions";
 
 function fixtureResult(overrides: Partial<PullResult> = {}): PullResult {
   return {

@@ -8,6 +8,7 @@
 // ============================================================================
 
 import { useState } from "react";
+import type { ReactNode } from "react";
 import {
   agentIdFromDeploymentLabel,
   parseSkillSource,
@@ -33,16 +34,14 @@ import {
   setPluginEnabled,
   setSkillInvocation,
   unparkSkill,
-  updateSkill,
 } from "../../lib/skill-api";
 import {
   lifecycleTargetForDeployment,
   lifecycleTargetForPark,
   lifecycleTargetForSkill,
-  skillUpdateToast,
-  updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
+import { useGuardedSkillUpdate } from "../../hooks/useGuardedSkillUpdate";
 import { canOfferHarnessSwitch } from "./skill-location-helpers";
 import { hasUpstreamOwner } from "./skill-location-status";
 import type { InvocationFile, LocationAction } from "./skill-location-status";
@@ -68,6 +67,8 @@ interface UseLocationActionsResult {
   /** Set while a "Split into harness folders…" action is pending confirmation. */
   splitRequest: SplitLocationRequest | null;
   closeSplitRequest: () => void;
+  /** The "Update will replace your edits" dialog; render it once in the card. */
+  updateDialog: ReactNode;
 }
 
 type SplitLocationRequest = Omit<Extract<LocationAction, { kind: "split" }>, "kind">;
@@ -123,6 +124,7 @@ export function useLocationActions(
 ): UseLocationActionsResult {
   const addToast = useAppStore((state) => state.addToast);
   const [isBusy, setIsBusy] = useState(false);
+  const guard = useGuardedSkillUpdate();
   const [materializeRequest, setMaterializeRequest] = useState<MaterializeLocationRequest | null>(
     null,
   );
@@ -262,10 +264,7 @@ export function useLocationActions(
         });
         return;
       case "update":
-        runWithErrorToast("Update failed", async () => {
-          const summary = await updateSkillOwners(skill, updateSkill);
-          addToast(skillUpdateToast(skill.name, summary));
-        });
+        runWithErrorToast("Update failed", () => guard.requestUpdate(skill));
         return;
       case "install-again":
         runWithErrorToast("Couldn't reinstall", async () => {
@@ -310,6 +309,7 @@ export function useLocationActions(
     closePluginUninstallRequest: () => setPluginUninstallRequest(null),
     splitRequest,
     closeSplitRequest: () => setSplitRequest(null),
+    updateDialog: guard.dialog,
   };
 }
 

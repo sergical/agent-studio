@@ -510,6 +510,17 @@ pub struct LifecycleTarget {
     pub owner_id: Option<String>,
 }
 
+/// Whether one update target's installed folder differs from what the
+/// install recorded, so the UI can warn before Update overwrites the edit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LocalEditsDto {
+    /// True only when the check ran and the folder differs from the lock hash.
+    pub edited: bool,
+    /// False when the check could not run (no lock hash, project scope, a
+    /// dotagents or other owner, an unreadable folder); `edited` is then false.
+    pub checked: bool,
+}
+
 /// One target's outcome inside a batch command. Results come back in the
 /// order the targets were sent, so the caller pairs them by index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

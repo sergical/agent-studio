@@ -422,6 +422,8 @@ export function SkillPage({
         />
       )}
 
+      {pageActions.updateDialog}
+
       <DiscardChangesDialog
         open={pendingDiscard !== null}
         onOpenChange={(open) => {

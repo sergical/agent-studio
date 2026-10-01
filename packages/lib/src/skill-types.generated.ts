@@ -1520,6 +1520,21 @@ export interface BulkTargetResult {
   error: string | null;
 }
 /**
+ * Whether one update target's installed folder differs from what the
+ * install recorded, so the UI can warn before Update overwrites the edit.
+ */
+export interface LocalEditsDto {
+  /**
+   * True only when the check ran and the folder differs from the lock hash.
+   */
+  edited: boolean;
+  /**
+   * False when the check could not run (no lock hash, project scope, a
+   * dotagents or other owner, an unreadable folder); `edited` is then false.
+   */
+  checked: boolean;
+}
+/**
  * One SKILL.md a batch invocation change should write.
  */
 export interface InvocationTarget {
