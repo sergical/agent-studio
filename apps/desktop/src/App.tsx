@@ -29,6 +29,7 @@ import {
 } from "./lib/skill-api";
 import { clearLegacyProjectPaths, readLegacyProjectPaths } from "./lib/legacy-project-paths";
 import type { ActiveView } from "./store/appStore";
+import { resolveSkillPageDeployment } from "./components/SkillDetail/skill-page-deployment";
 import { useAppStore } from "./store/appStore";
 import "./App.css";
 
@@ -79,6 +80,7 @@ function App() {
   const openSkill = useAppStore((state) => state.openSkill);
   const closeSkill = useAppStore((state) => state.closeSkill);
   const setTrackedProjects = useAppStore((state) => state.setTrackedProjects);
+  const setKnownSkillNames = useAppStore((state) => state.setKnownSkillNames);
   const addToast = useAppStore((state) => state.addToast);
 
   const onSelectSkill = (name: string, deploymentPath?: string) => openSkill(name, deploymentPath);
@@ -110,6 +112,19 @@ function App() {
       }
     })();
   }, [setTrackedProjects, addToast]);
+
+  useEffect(() => {
+    if (!snapshot) {
+      setKnownSkillNames(null);
+      return;
+    }
+    const defaultPaths = new Map<string, string>();
+    for (const skill of snapshot.skills) {
+      const path = resolveSkillPageDeployment(skill, undefined).deployment?.path;
+      if (path) defaultPaths.set(skill.name, path);
+    }
+    setKnownSkillNames(new Set(snapshot.skills.map((skill) => skill.name)), defaultPaths);
+  }, [snapshot, setKnownSkillNames]);
 
   // This toast is the only place on screen that shows a failed load or refresh.
   useEffect(() => {

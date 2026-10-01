@@ -185,3 +185,102 @@ describe("compare intent", () => {
     expect(useAppStore.getState().activeView).toEqual({ kind: "home" });
   });
 });
+
+describe("back/forward history", () => {
+  const history = () => useAppStore.getState().navHistory;
+  const skillView = (name: string, deploymentPath?: string) => ({
+    kind: "skill" as const,
+    name,
+    deploymentPath,
+    from: { kind: "home" as const },
+  });
+
+  beforeEach(() => {
+    useAppStore.setState({
+      activeView: { kind: "home" },
+      navHistory: { back: [], forward: [] },
+      knownSkillNames: null,
+      defaultDeploymentPaths: null,
+      leaveGuard: null,
+      lastClosedSkillName: null,
+    });
+  });
+
+  it("setActiveView, openSkill, and closeSkill each record the place left, so Back can return to it", () => {
+    useAppStore.getState().setActiveView({ kind: "skills" });
+    useAppStore.getState().openSkill("a");
+    useAppStore.getState().closeSkill();
+    expect(history().back.map((view) => view.kind)).toEqual(["home", "skills", "skill"]);
+  });
+
+  it("clearSkillIntent adds no entry, because the intent only describes how the page opened", () => {
+    useAppStore.getState().openSkill("a", undefined, "compare");
+    const before = history().back.length;
+    useAppStore.getState().clearSkillIntent();
+    expect(history().back).toHaveLength(before);
+  });
+
+  it("goBack and goForward add no entries, so stepping back and forth does not grow the stacks", () => {
+    useAppStore.getState().setActiveView({ kind: "skills" });
+    useAppStore.getState().setActiveView({ kind: "settings" });
+    for (let i = 0; i < 3; i++) {
+      useAppStore.getState().goBack();
+      useAppStore.getState().goBack();
+      useAppStore.getState().goForward();
+      useAppStore.getState().goForward();
+    }
+    expect(history().back.length + history().forward.length).toBe(2);
+    expect(useAppStore.getState().activeView.kind).toBe("settings");
+  });
+
+  it("a leave guard defers the step; Cancel leaves state unchanged and confirm runs the step", () => {
+    useAppStore.getState().setActiveView({ kind: "skills" });
+    let proceed: (() => void) | null = null;
+    useAppStore.setState({
+      leaveGuard: (run) => {
+        proceed = run;
+        return true;
+      },
+    });
+    const before = useAppStore.getState();
+    useAppStore.getState().goBack();
+    expect(useAppStore.getState().activeView).toBe(before.activeView);
+    expect(useAppStore.getState().navHistory).toBe(before.navHistory);
+
+    // The user confirms: the step is recomputed from the state at that moment.
+    proceed!();
+    expect(useAppStore.getState().activeView).toEqual({ kind: "home" });
+    expect(history().forward.map((view) => view.kind)).toEqual(["skills"]);
+  });
+
+  it("counts every skill entry as present while knownSkillNames is null, so Back works before a snapshot loads", () => {
+    useAppStore.getState().openSkill("gone");
+    useAppStore.getState().setActiveView({ kind: "settings" });
+    useAppStore.getState().goBack();
+    expect(useAppStore.getState().activeView).toMatchObject({ kind: "skill", name: "gone" });
+  });
+
+  it("skips an entry for a skill missing from the snapshot once names are known", () => {
+    useAppStore.getState().openSkill("gone");
+    useAppStore.getState().setActiveView({ kind: "settings" });
+    useAppStore.getState().setKnownSkillNames(new Set(["other"]));
+    useAppStore.getState().goBack();
+    expect(useAppStore.getState().activeView).toEqual({ kind: "home" });
+  });
+
+  it("opening the default copy's page again records no duplicate entry, so Back never lands on the same SKILL.md", () => {
+    useAppStore.getState().setKnownSkillNames(new Set(["a"]), new Map([["a", "/d1"]]));
+    useAppStore.getState().setActiveView(skillView("a", "/d1"));
+    const before = history().back.length;
+    useAppStore.getState().openSkill("a");
+    expect(history().back).toHaveLength(before);
+  });
+
+  it("Back from a skill page to a list sets lastClosedSkillName, so the list restores its row cursor", () => {
+    useAppStore.getState().setActiveView({ kind: "skills" });
+    useAppStore.getState().openSkill("a");
+    useAppStore.getState().goBack();
+    expect(useAppStore.getState().activeView.kind).toBe("skills");
+    expect(useAppStore.getState().lastClosedSkillName).toBe("a");
+  });
+});
