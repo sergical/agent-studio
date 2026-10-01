@@ -1531,23 +1531,6 @@ struct ScanTarget {
     harness: Option<AgentId>,
 }
 
-/// A catalog global root under the scope's own Codex home and `OpenCode`
-/// config root, the same folders `split` writes to (see
-/// [`crate::ops_split::split_target_root`]); every other root sits under
-/// the home.
-fn global_root_path(rt: &Runtime, relative: &Path) -> PathBuf {
-    if let Ok(rest) = relative.strip_prefix(".codex") {
-        return rt.scope.codex_home.join(rest);
-    }
-    if let (Some(root), Ok(rest)) = (
-        &rt.scope.raw.opencode_config_root,
-        relative.strip_prefix(".config/opencode"),
-    ) {
-        return root.join(rest);
-    }
-    rt.scope.home.lexical.join(relative)
-}
-
 /// Every harness's own skills directory in `scope`, resolved to a concrete
 /// path (the same paths [`scan_targets`] walks for `RootRole::Own`).
 pub(crate) fn harness_own_skill_roots(rt: &Runtime, scope: &RootScope) -> Vec<PathBuf> {
@@ -1561,9 +1544,9 @@ pub(crate) fn harness_own_skill_roots(rt: &Runtime, scope: &RootScope) -> Vec<Pa
         .filter(|root_spec| root_spec.role == RootRole::Own)
     {
         let path = match (root_spec.level, scope) {
-            (ScopeLevel::Global, RootScope::Global) => {
-                global_root_path(rt, Path::new(&root_spec.relative_path))
-            }
+            (ScopeLevel::Global, RootScope::Global) => rt
+                .scope
+                .global_root_path(Path::new(&root_spec.relative_path)),
             (ScopeLevel::Project, RootScope::Project(project)) => {
                 project.0.join(&root_spec.relative_path)
             }
@@ -1602,7 +1585,8 @@ fn scan_targets(rt: &Runtime) -> Vec<ScanTarget> {
                 ScopeLevel::Global => {
                     push_target(
                         RootScope::Global,
-                        global_root_path(rt, Path::new(&root_spec.relative_path)),
+                        rt.scope
+                            .global_root_path(Path::new(&root_spec.relative_path)),
                     );
                 }
                 ScopeLevel::Project => {

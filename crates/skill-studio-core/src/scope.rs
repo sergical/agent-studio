@@ -334,15 +334,38 @@ impl NormalizedScope {
         keys
     }
 
-    /// True when `path` lies under the home, a project, or Codex's own
-    /// directory ([`Self::codex_home`]), by canonical or lexical prefix.
-    /// `codex_home` has no canonical form of its own (see its doc comment),
-    /// so it is checked lexically only.
+    /// A global root `relative` to the home, moved under the scope's own
+    /// Codex home or `OpenCode` config root when `relative` lies in one of
+    /// them. Scan, install, and `split` all resolve global roots here, so
+    /// they agree on where a harness reads.
+    pub fn global_root_path(&self, relative: &Path) -> PathBuf {
+        if let Ok(rest) = relative.strip_prefix(".codex") {
+            return self.codex_home.join(rest);
+        }
+        if let (Some(root), Ok(rest)) = (
+            &self.raw.opencode_config_root,
+            relative.strip_prefix(".config/opencode"),
+        ) {
+            return root.join(rest);
+        }
+        self.home.lexical.join(relative)
+    }
+
+    /// True when `path` lies under the home, a project, Codex's own
+    /// directory ([`Self::codex_home`]), or the `OpenCode` config root, by
+    /// canonical or lexical prefix. The last two have no canonical form of
+    /// their own (see the `codex_home` doc comment), so they are checked
+    /// lexically only.
     pub fn contains(&self, path: &Path) -> bool {
         std::iter::once(&self.home)
             .chain(self.projects.iter())
             .any(|root| path.starts_with(&root.canonical) || path.starts_with(&root.lexical))
             || path.starts_with(&self.codex_home)
+            || self
+                .raw
+                .opencode_config_root
+                .as_ref()
+                .is_some_and(|root| path.starts_with(root))
     }
 
     /// Rewrites a path for display: `~/...` under the home, absolute

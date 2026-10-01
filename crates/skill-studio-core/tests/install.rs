@@ -1999,6 +1999,186 @@ fn per_harness_install_at_global_scope_copies_into_each_own_folder_and_not_the_s
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// A runtime whose Codex home and `OpenCode` config root are set to the given
+/// paths in place of `~/.codex` and `~/.config/opencode`.
+fn runtime_with_roots(
+    home: &std::path::Path,
+    codex_home: Option<PathBuf>,
+    opencode_root: Option<PathBuf>,
+) -> Runtime {
+    let mut scope = RuntimeScope::fixture(home);
+    scope.codex_home = codex_home;
+    scope.opencode_config_root = opencode_root;
+    runtime_in(
+        &scope,
+        home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(FakeNpxSpawner::new(home.to_path_buf()))),
+    )
+}
+
+fn scanned_paths(rt: &Runtime, skill: &str) -> Vec<PathBuf> {
+    let inventory = ops::scan(rt, &ctx(), &skill_studio_core::dto::ScanRequest::default()).unwrap();
+    inventory
+        .skills
+        .iter()
+        .filter(|s| s.name.0 == skill)
+        .flat_map(|s| s.deployments.iter().map(|d| d.path.clone()))
+        .collect()
+}
+
+/// `per_harness_install_with_a_configured_codex_home_copies_under_it_and_scan_lists_it_or_names_the_default_path_used`:
+/// with `codex_home` set to `home/custom-codex`, a per-harness Codex install
+/// writes a real folder at `custom-codex/skills/tau`, none at
+/// `~/.codex/skills/tau`, and a scan lists the copy. Fails when install
+/// writes the default path, which Codex never reads.
+#[test]
+fn per_harness_install_with_a_configured_codex_home_copies_under_it_and_scan_lists_it_or_names_the_default_path_used(
+) {
+    let home = unique_temp_dir("install_per_harness_codex_home");
+    std::fs::create_dir_all(&home).unwrap();
+    let custom = home.join("custom-codex");
+    let rt = runtime_with_roots(&home, Some(custom.clone()), None);
+
+    ops::install(&rt, &ctx(), &per_harness_request("tau", &["codex"])).unwrap();
+
+    let copy = custom.join("skills").join("tau");
+    assert!(is_real_folder(&copy), "a real copy under the Codex home");
+    assert!(
+        std::fs::symlink_metadata(home.join(".codex/skills/tau")).is_err(),
+        "no copy under the default ~/.codex"
+    );
+    assert!(
+        scanned_paths(&rt, "tau").contains(&copy),
+        "the scan must list the copy under the Codex home"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `per_harness_install_with_a_configured_opencode_root_inside_or_outside_home_copies_under_it_and_scan_lists_it_or_names_the_failure`:
+/// with `opencode_config_root` set inside the home and again outside it, a
+/// per-harness `OpenCode` install writes `<root>/skills/tau`, none under
+/// `~/.config/opencode`, and a scan lists it. Fails when install writes the
+/// default path or refuses a root outside the home.
+#[test]
+fn per_harness_install_with_a_configured_opencode_root_inside_or_outside_home_copies_under_it_and_scan_lists_it_or_names_the_failure(
+) {
+    // `contains` checks the OpenCode root lexically, so the outside root must
+    // not sit behind a symlink such as macOS's /var -> /private/var.
+    let outside = unique_temp_dir("install_per_harness_opencode_outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let outside = outside.canonicalize().unwrap();
+    // Install makes `skills` under the root, not the root: a config root is
+    // the user's own directory and exists before any install.
+    std::fs::create_dir_all(outside.join("opencode")).unwrap();
+    for (label, outside_home) in [("inside", false), ("outside", true)] {
+        let home = unique_temp_dir(&format!("install_per_harness_opencode_{label}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let custom = if outside_home {
+            outside.join("opencode")
+        } else {
+            home.join("custom-opencode")
+        };
+        let rt = runtime_with_roots(&home, None, Some(custom.clone()));
+
+        ops::install(&rt, &ctx(), &per_harness_request("tau", &["open-code"])).unwrap();
+
+        let copy = custom.join("skills").join("tau");
+        assert!(is_real_folder(&copy), "a real copy in the {label} root");
+        assert!(
+            std::fs::symlink_metadata(home.join(".config/opencode/skills/tau")).is_err(),
+            "no copy under the default ~/.config/opencode"
+        );
+        assert!(
+            scanned_paths(&rt, "tau").contains(&copy),
+            "the scan must list the copy in the {label} root"
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    std::fs::remove_dir_all(&outside).ok();
+}
+
+/// `per_harness_install_with_both_roots_configured_writes_where_split_writes_for_every_harness_or_names_the_harness_that_differs`:
+/// with `codex_home` and `opencode_config_root` both set, each harness's
+/// per-harness copy lands in the folder `split_target_root` names. Fails
+/// when install and split resolve a harness to different folders, which
+/// leaves a split copy and an install copy in two places.
+#[test]
+fn per_harness_install_with_both_roots_configured_writes_where_split_writes_for_every_harness_or_names_the_harness_that_differs(
+) {
+    let home = unique_temp_dir("install_per_harness_both_roots");
+    std::fs::create_dir_all(&home).unwrap();
+    let rt = runtime_with_roots(
+        &home,
+        Some(home.join("custom-codex")),
+        Some(home.join("custom-opencode")),
+    );
+
+    let (_, results) = harness_results(
+        ops::install(&rt, &ctx(), &per_harness_request("tau", &PER_HARNESS_ALL)).unwrap(),
+    );
+
+    assert_eq!(results.len(), PER_HARNESS_ALL.len());
+    for result in results {
+        let InstallHarnessResult::Copied { harness, path, .. } = result else {
+            panic!("expected Copied, got {result:?}");
+        };
+        let expected =
+            skill_studio_core::ops_split::split_target_root(&rt, &RootScope::Global, &harness)
+                .unwrap()
+                .join("tau");
+        assert_eq!(path, expected, "install path for {harness}");
+    }
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `undo_of_a_per_harness_install_under_configured_roots_removes_the_copies_or_names_the_one_left_behind`:
+/// undoing a per-harness Codex and `OpenCode` install made under custom roots
+/// removes both copies. Fails when undo looks in the default folders and
+/// leaves a copy under a custom root.
+#[test]
+fn undo_of_a_per_harness_install_under_configured_roots_removes_the_copies_or_names_the_one_left_behind(
+) {
+    let home = unique_temp_dir("install_per_harness_undo_roots");
+    std::fs::create_dir_all(&home).unwrap();
+    let codex = home.join("custom-codex");
+    let opencode = home.join("custom-opencode");
+    let rt = runtime_with_roots(&home, Some(codex.clone()), Some(opencode.clone()));
+    let InstallOutcome::Installed { event_id, .. } = ops::install(
+        &rt,
+        &ctx(),
+        &per_harness_request("tau", &["codex", "open-code"]),
+    )
+    .unwrap() else {
+        panic!("expected Installed");
+    };
+    assert!(is_real_folder(&codex.join("skills/tau")));
+    assert!(is_real_folder(&opencode.join("skills/tau")));
+
+    ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id,
+            force: false,
+        },
+    )
+    .unwrap();
+
+    for copy in [codex.join("skills/tau"), opencode.join("skills/tau")] {
+        assert!(
+            std::fs::symlink_metadata(&copy).is_err(),
+            "undo must remove {}",
+            copy.display()
+        );
+    }
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// `per_harness_install_at_project_scope_creates_pi_and_grok_folders_and_uses_each_project_folder_or_names_the_skip`:
 /// in a project with no `.pi` or `.grok` folder, a per-harness install still
 /// copies for pi and Grok Build (the Universal-mode install skips them), and
