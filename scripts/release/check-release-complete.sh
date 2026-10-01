@@ -7,7 +7,7 @@
 # draft and is published only from a final job that runs this script first, so
 # a leg that failed (or any step that failed after an upload) can never leave a
 # public release that only carries one architecture. This asserts, from the
-# release's own uploaded assets, that both legs landed: two DMGs, two updater
+# release's own uploaded assets, that both legs landed: four DMGs (versioned and fixed-name), two updater
 # archives with their signatures, the two dSYM archives, the two signed CLI
 # archives that the npm-publish job repackages, and a latest.json
 # that names both darwin-aarch64 and darwin-x86_64. A single-target
@@ -28,9 +28,16 @@ count() { printf '%s\n' "$assets" | grep -cE "$1" || true; }
 
 problems=()
 
-if [[ "$(count '\.dmg$')" -ne 2 ]]; then
-  problems+=("expected 2 .dmg assets (one per architecture), found $(count '\.dmg$')")
+# Each architecture ships its versioned DMG and a fixed-name copy that the
+# website links to.
+if [[ "$(count '\.dmg$')" -ne 4 ]]; then
+  problems+=("expected 4 .dmg assets (versioned and fixed-name, per architecture), found $(count '\.dmg$')")
 fi
+for dmg in Skill-Studio-arm64.dmg Skill-Studio-intel.dmg; do
+  if ! printf '%s\n' "$assets" | grep -qx "$dmg"; then
+    problems+=("missing fixed-name DMG $dmg")
+  fi
+done
 if [[ "$(count '\.app\.tar\.gz$')" -ne 2 ]]; then
   problems+=("expected 2 .app.tar.gz updater archives, found $(count '\.app\.tar\.gz$')")
 fi
@@ -71,4 +78,4 @@ if [[ ${#problems[@]} -ne 0 ]]; then
   exit 1
 fi
 
-echo "Release $tag is complete: 2 DMGs, 2 updater archives with signatures, 2 dSYM archives, 2 CLI archives, and a latest.json covering darwin-aarch64 and darwin-x86_64."
+echo "Release $tag is complete: 4 DMGs, 2 updater archives with signatures, 2 dSYM archives, 2 CLI archives, and a latest.json covering darwin-aarch64 and darwin-x86_64."

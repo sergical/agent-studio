@@ -4,7 +4,10 @@ Skill Studio shows every agent skill on your Mac in one list. Use it to find bro
 
 ## Install
 
-1. Download the latest release from [GitHub](https://github.com/sergical/skill-studio/releases).
+1. Download Skill Studio for your Mac:
+   - [Apple Silicon](https://github.com/sergical/skill-studio/releases/latest/download/Skill-Studio-arm64.dmg) (most Macs sold since 2020)
+   - [Intel](https://github.com/sergical/skill-studio/releases/latest/download/Skill-Studio-intel.dmg)
+   - Or see [all releases](https://github.com/sergical/skill-studio/releases) for older versions.
 2. Move Skill Studio to your Applications folder.
 3. Open Skill Studio.
 

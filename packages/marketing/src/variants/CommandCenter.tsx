@@ -11,7 +11,7 @@ import { FaqSection } from "../home/FaqSection";
 import { homeSectionStyles } from "../home/HomeSection.stylex";
 import { ProblemSection } from "../home/ProblemSection";
 import { UsageSection } from "../home/UsageSection";
-import { DOCS_URL, DOWNLOAD_URL, TRUST_LINE } from "../site-links";
+import { DOCS_URL, DOWNLOAD_INTEL_URL, DOWNLOAD_URL, TRUST_LINE } from "../site-links";
 
 interface CommandCenterProps {
   theme: SiteTheme;
@@ -42,6 +42,19 @@ function DownloadButton({ theme }: { theme: SiteTheme }) {
   );
 }
 
+function TrustLine() {
+  return (
+    <p {...stylex.props(styles.fineprint)}>
+      {TRUST_LINE}
+      <br />
+      Intel Mac?{" "}
+      <a href={DOWNLOAD_INTEL_URL} {...stylex.props(homeSectionStyles.textLink, styles.intelLink)}>
+        Download for Intel
+      </a>
+    </p>
+  );
+}
+
 export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
   return (
     <div id="top" {...stylex.props(siteLayout.page, theme === "light" && lightSiteTheme)}>
@@ -67,7 +80,7 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
                 <span>Read the docs</span>
               </a>
             </div>
-            <p {...stylex.props(styles.fineprint)}>{TRUST_LINE}</p>
+            <TrustLine />
           </div>
 
           <div id="product" {...stylex.props(styles.productWrap)}>
@@ -127,7 +140,7 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
             Keep the ones your agents use and park the rest.
           </p>
           <DownloadButton theme={theme} />
-          <p {...stylex.props(styles.fineprint)}>{TRUST_LINE}</p>
+          <TrustLine />
           <p {...stylex.props(styles.trust)}>
             Runs on your Mac. It sends anonymous crash reports, which you can turn off. They never
             include skill names, files or paths.
@@ -192,6 +205,7 @@ const styles = stylex.create({
     margin: "14px 0 0",
     textWrap: "balance",
   },
+  intelLink: { fontSize: "inherit", minHeight: "auto" },
   trust: {
     color: siteTokens.muted,
     fontSize: 13,
