@@ -21,7 +21,9 @@ import type {
   FixSkillOutcome,
   ForkRecord,
   FrontmatterRepairApplyMode,
+  FrontmatterRepairKind,
   FrontmatterRepairPreview,
+  InvocationConflictChoice,
   GithubSkillListing,
   InstalledSkill,
   HarnessReport,
@@ -91,8 +93,10 @@ export function invokeErrorMessage(cause: unknown): string {
 
 export async function previewSkillFrontmatterRepair(
   target: LifecycleTarget,
+  kind: FrontmatterRepairKind = "colon-scalar",
+  choice: InvocationConflictChoice | null = null,
 ): Promise<FrontmatterRepairPreview> {
-  return callCommand("preview_skill_frontmatter_repair", { target });
+  return callCommand("preview_skill_frontmatter_repair", { target, kind, choice });
 }
 
 export async function applySkillFrontmatterRepair(
@@ -106,6 +110,8 @@ export async function applySkillFrontmatterRepair(
       proposal_id: preview.proposal_id,
       expected_content_fingerprint: preview.expected_content_fingerprint,
       mode,
+      kind: preview.kind,
+      choice: preview.choice,
     },
   });
 }
