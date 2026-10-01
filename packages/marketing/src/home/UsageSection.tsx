@@ -3,7 +3,7 @@
 // One window, three ways in. Picking a tab plays that surface's short script;
 // nothing moves until the visitor asks.
 // ============================================================================
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { AppWindow, Check, Copy, Plug, RotateCcw, Terminal, type LucideIcon } from "lucide-react";
 
@@ -164,9 +164,17 @@ const appRows = [
 ];
 const unusedCount = appRows.filter((r) => r.unused).length;
 
-function AppView({ runId }: { runId: number }) {
+interface AppViewProps {
+  runId: number;
+  announce: (message: string) => void;
+  undoFocusRef: RefObject<HTMLButtonElement | null>;
+}
+
+function AppView({ runId, announce, undoFocusRef }: AppViewProps) {
   const [parked, setParked] = useState(0);
   const [toast, setToast] = useState(false);
+
+  useEffect(() => announce(toast ? `Parked ${unusedCount} skills` : ""), [toast, announce]);
 
   useEffect(() => {
     if (runId === 0) return;
@@ -208,9 +216,6 @@ function AppView({ runId }: { runId: number }) {
           );
         })}
       </ul>
-      <p role="status" {...stylex.props(styles.visuallyHidden)}>
-        {toast ? `Parked ${unusedCount} skills` : ""}
-      </p>
       <div
         aria-hidden={!toast}
         inert={!toast}
@@ -222,6 +227,8 @@ function AppView({ runId }: { runId: number }) {
           onClick={() => {
             setParked(0);
             setToast(false);
+            // The toast turns inert, so focus would otherwise fall back to the page body.
+            undoFocusRef.current?.focus();
           }}
           {...stylex.props(styles.toastUndo)}
         >
@@ -243,10 +250,14 @@ function CopyCommand({ text }: { text: string }) {
         type="button"
         aria-label={copied ? "Copied" : "Copy command"}
         onClick={() => {
-          void navigator.clipboard?.writeText(text);
-          setCopied(true);
-          window.clearTimeout(timer.current);
-          timer.current = window.setTimeout(() => setCopied(false), 1500);
+          void navigator.clipboard?.writeText(text).then(
+            () => {
+              setCopied(true);
+              window.clearTimeout(timer.current);
+              timer.current = window.setTimeout(() => setCopied(false), 1500);
+            },
+            () => setCopied(false),
+          );
         }}
         {...stylex.props(styles.copyButton)}
       >
@@ -266,11 +277,16 @@ const TAB_STEPS = new Map([
 export function UsageSection() {
   const [mode, setMode] = useState<Mode>("cli");
   const [runId, setRunId] = useState(0);
+  // Lives outside the per-run app view so screen readers already know the region when
+  // its text arrives.
+  const [status, setStatus] = useState("");
+  const replayRef = useRef<HTMLButtonElement>(null);
   const active = modes.find((m) => m.id === mode)!;
 
   const pick = (next: Mode) => {
     setMode(next);
     setRunId((r) => r + 1);
+    setStatus("");
   };
 
   const onTabKey = (event: KeyboardEvent) => {
@@ -331,6 +347,7 @@ export function UsageSection() {
               </span>
               <span {...stylex.props(styles.windowTitle)}>{active.title}</span>
               <button
+                ref={replayRef}
                 type="button"
                 onClick={() => setRunId((r) => r + 1)}
                 {...stylex.props(styles.replay)}
@@ -340,11 +357,19 @@ export function UsageSection() {
               </button>
             </div>
             {mode === "app" ? (
-              <AppView key={`app-${runId}`} runId={runId} />
+              <AppView
+                key={`app-${runId}`}
+                runId={runId}
+                announce={setStatus}
+                undoFocusRef={replayRef}
+              />
             ) : (
               <ScriptView key={mode} lines={scripts[mode]} runId={runId} />
             )}
           </div>
+          <p role="status" {...stylex.props(styles.visuallyHidden)}>
+            {status}
+          </p>
 
           <div {...stylex.props(styles.footer)}>
             {mode === "app" ? (
@@ -354,7 +379,7 @@ export function UsageSection() {
               </a>
             ) : (
               <>
-                <CopyCommand text={commands[mode].text} />
+                <CopyCommand key={mode} text={commands[mode].text} />
                 <a href={commands[mode].docs} {...stylex.props(homeSectionStyles.textLink)}>
                   {mode === "cli" ? "CLI docs" : "MCP docs"}
                   <span aria-hidden="true">→</span>

@@ -204,10 +204,17 @@ export function MascotStage() {
       });
       return () => cancelAnimationFrame(frame);
     }
-    markIntroSeen();
     setAnimate(true);
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const timer = window.setTimeout(() => setTidy(true), reduceMotion ? 0 : 900);
+    // Marked when the intro plays, not on mount: StrictMode's second effect run in dev
+    // would otherwise take the return-visit path.
+    const timer = window.setTimeout(
+      () => {
+        markIntroSeen();
+        setTidy(true);
+      },
+      reduceMotion ? 0 : 900,
+    );
     return () => window.clearTimeout(timer);
   }, []);
 
