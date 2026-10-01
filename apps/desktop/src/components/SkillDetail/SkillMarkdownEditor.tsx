@@ -2,18 +2,20 @@
 // SkillMarkdownEditor - Raw SKILL.md textarea with a line-number gutter and Save/Cancel
 // ============================================================================
 
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { Save, X } from "lucide-react";
 import { Button, Textarea } from "@skill-studio/ui";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
-import { lineRange } from "./skill-editor-lines";
+import { lineRange, normalizeLineEndings } from "./skill-editor-lines";
 
 interface GutterLayout {
   /** Rendered height of each logical line, wrapped rows included. */
   heights: number[];
   fontSize: string;
   lineHeight: string;
-  paddingTop: string;
+  /** Textarea padding plus border on each side: where its first and last rows sit inside the scroll area. */
+  paddingTopPx: number;
+  paddingBottomPx: number;
 }
 
 /**
@@ -23,6 +25,10 @@ interface GutterLayout {
  */
 function measureGutterLayout(textarea: HTMLTextAreaElement, content: string): GutterLayout {
   const style = getComputedStyle(textarea);
+  const borderX =
+    Number.parseFloat(style.borderLeftWidth) + Number.parseFloat(style.borderRightWidth);
+  // Whatever of offsetWidth is neither border nor content is the vertical scrollbar.
+  const scrollbarWidth = textarea.offsetWidth - textarea.clientWidth - borderX;
   const mirror = document.createElement("div");
   Object.assign(mirror.style, {
     position: "absolute",
@@ -30,7 +36,7 @@ function measureGutterLayout(textarea: HTMLTextAreaElement, content: string): Gu
     top: "0",
     left: "-9999px",
     boxSizing: "border-box",
-    width: `${textarea.clientWidth}px`,
+    width: `${textarea.getBoundingClientRect().width - borderX - scrollbarWidth}px`,
     border: "0",
     padding: `0 ${style.paddingRight} 0 ${style.paddingLeft}`,
     font: style.font,
@@ -40,7 +46,7 @@ function measureGutterLayout(textarea: HTMLTextAreaElement, content: string): Gu
     wordBreak: style.wordBreak,
     overflowWrap: style.overflowWrap,
   });
-  for (const line of content.split("\n")) {
+  for (const line of normalizeLineEndings(content).split("\n")) {
     const row = document.createElement("div");
     // An empty line collapses to zero height; a zero-width space keeps one row.
     row.textContent = line === "" ? "\u200b" : line;
@@ -53,7 +59,9 @@ function measureGutterLayout(textarea: HTMLTextAreaElement, content: string): Gu
     heights,
     fontSize: style.fontSize,
     lineHeight: style.lineHeight,
-    paddingTop: `calc(${style.paddingTop} + ${style.borderTopWidth})`,
+    paddingTopPx: Number.parseFloat(style.paddingTop) + Number.parseFloat(style.borderTopWidth),
+    paddingBottomPx:
+      Number.parseFloat(style.paddingBottom) + Number.parseFloat(style.borderBottomWidth),
   };
 }
 
@@ -62,7 +70,8 @@ function sameLayout(a: GutterLayout | null, b: GutterLayout): boolean {
     a !== null &&
     a.fontSize === b.fontSize &&
     a.lineHeight === b.lineHeight &&
-    a.paddingTop === b.paddingTop &&
+    a.paddingTopPx === b.paddingTopPx &&
+    a.paddingBottomPx === b.paddingBottomPx &&
     a.heights.length === b.heights.length &&
     a.heights.every((height, i) => height === b.heights[i])
   );
@@ -101,7 +110,8 @@ export function SkillMarkdownEditor({
   const gutterRef = useRef<HTMLDivElement>(null);
   const [showDiscardDialog, setShowDiscardDialog] = useState(false);
   const [layout, setLayout] = useState<GutterLayout | null>(null);
-  const lineCount = content.split("\n").length;
+  const lineCount = normalizeLineEndings(content).split("\n").length;
+  const markedLine = isDirty ? undefined : highlightLine;
 
   // Notified from the change handler itself, not an effect syncing a derived
   // value up to the parent - it only needs to fire on an actual dirty-state
@@ -152,27 +162,51 @@ export function SkillMarkdownEditor({
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
+    let frame = 0;
     const measure = () => {
       const next = measureGutterLayout(textarea, content);
       setLayout((prev) => (sameLayout(prev, next) ? prev : next));
     };
-    const observer = new ResizeObserver(measure);
+    // One measure per frame: a drag-resize fires the observer many times per frame.
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    });
     observer.observe(textarea);
-    return () => observer.disconnect();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
   }, [content]);
+
+  // Every render: a new layout or line count changes the gutter's height and
+  // padding, which can leave its scroll offset behind the textarea's until the
+  // next scroll event. Assigning an unchanged scrollTop is a no-op.
+  useLayoutEffect(() => {
+    if (gutterRef.current && textareaRef.current) {
+      gutterRef.current.scrollTop = textareaRef.current.scrollTop;
+    }
+  });
 
   // Opens on the requested line: selects it and scrolls it into the viewport.
   // Runs only when the target changes, so typing never yanks the view back.
   useEffect(() => {
     const textarea = textareaRef.current;
-    const range = highlightLine === undefined ? null : lineRange(initialContent, highlightLine);
+    const range =
+      highlightLine === undefined
+        ? null
+        : lineRange(normalizeLineEndings(initialContent), highlightLine);
     if (!textarea || !range || highlightLine === undefined) return;
-    const { heights, paddingTop } = measureGutterLayout(textarea, initialContent);
+    const { heights, paddingTopPx } = measureGutterLayout(textarea, initialContent);
     const lineTop = heights.slice(0, highlightLine - 1).reduce((sum, height) => sum + height, 0);
     textarea.focus();
     textarea.setSelectionRange(range.start, range.end);
-    textarea.scrollTop = Math.max(0, lineTop + Number.parseFloat(paddingTop) - 40);
+    textarea.scrollTop = Math.max(0, lineTop + paddingTopPx - 40);
   }, [highlightLine, initialContent]);
+
+  // `contain: size` stops the gutter's full-length content from stretching the
+  // row, so its width can't come from content: px-2 (1rem) + border-r (1px) + digits.
+  const gutterWidth = `calc(${String(lineCount).length}ch + 1rem + 1px)`;
 
   return (
     <div className="select-text flex flex-col gap-2 p-4">
@@ -193,22 +227,24 @@ export function SkillMarkdownEditor({
         <div
           ref={gutterRef}
           aria-hidden="true"
-          className="shrink-0 select-none overflow-hidden border-r border-border-subtle px-2 text-right font-mono text-body leading-[1.5] tabular-nums text-text-tertiary"
+          className="shrink-0 select-none overflow-hidden [contain:size] border-r border-border-subtle px-2 text-right font-mono text-body leading-[1.5] tabular-nums text-text-tertiary"
           style={
             layout
               ? {
                   fontSize: layout.fontSize,
                   lineHeight: layout.lineHeight,
-                  paddingTop: layout.paddingTop,
+                  paddingTop: layout.paddingTopPx,
+                  paddingBottom: layout.paddingBottomPx,
+                  width: gutterWidth,
                 }
-              : { paddingTop: "0.625rem" }
+              : { paddingTop: "0.625rem", paddingBottom: "0.625rem", width: gutterWidth }
           }
         >
           {Array.from({ length: lineCount }, (_, i) => (
             <div
               key={i}
               style={{ height: layout?.heights[i] }}
-              className={i + 1 === highlightLine ? "font-semibold text-warning" : undefined}
+              className={i + 1 === markedLine ? "font-semibold text-warning" : undefined}
             >
               {i + 1}
             </div>

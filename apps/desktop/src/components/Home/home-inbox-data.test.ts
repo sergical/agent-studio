@@ -417,4 +417,28 @@ describe("updateAllFailureMessage", () => {
     expect(long.length).toBeLessThan(170);
     expect(long.endsWith("…")).toBe(true);
   });
+
+  it("update_all_toast_counts_skills_not_copies_so_it_agrees_with_its_title", () => {
+    const base = { attempted: 2, firstError: "read-only" };
+    // One skill, both copies failed: title "Updated 0 of 1 skill", so one failed.
+    expect(
+      updateAllFailureMessage({
+        ...base,
+        succeeded: 0,
+        failures: 2,
+        skillsAttempted: 1,
+        skillsSucceeded: 0,
+      }),
+    ).toBe("1 failed: read-only");
+    // One copy failed, one succeeded: the skill is not fully updated, so it counts as failed.
+    expect(
+      updateAllFailureMessage({
+        ...base,
+        succeeded: 1,
+        failures: 1,
+        skillsAttempted: 1,
+        skillsSucceeded: 0,
+      }),
+    ).toBe("1 failed: read-only");
+  });
 });

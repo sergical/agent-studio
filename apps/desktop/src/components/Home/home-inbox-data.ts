@@ -104,15 +104,16 @@ interface UpdateAllTally {
 
 const MAX_ERROR_LENGTH = 140;
 
-/** "3 failed: <first error>" for the toast, or `undefined` when nothing failed. */
+/** "1 failed: <first error>" for the toast, or `undefined` when nothing failed. Counts skills, matching the toast title; a skill with any failed copy counts once. */
 export function updateAllFailureMessage(tally: UpdateAllTally): string | undefined {
   if (tally.failures === 0) return undefined;
-  if (!tally.firstError) return `${tally.failures} failed`;
+  const failedSkills = tally.skillsAttempted - tally.skillsSucceeded;
+  if (!tally.firstError) return `${failedSkills} failed`;
   const reason =
     tally.firstError.length > MAX_ERROR_LENGTH
       ? `${tally.firstError.slice(0, MAX_ERROR_LENGTH - 1)}…`
       : tally.firstError;
-  return `${tally.failures} failed: ${reason}`;
+  return `${failedSkills} failed: ${reason}`;
 }
 
 /**

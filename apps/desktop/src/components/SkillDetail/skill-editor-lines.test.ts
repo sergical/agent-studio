@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lineRange } from "./skill-editor-lines";
+import { lineRange, normalizeLineEndings } from "./skill-editor-lines";
 
 describe("lineRange", () => {
   const content = "---\nname: a\n---\n";
@@ -22,5 +22,14 @@ describe("lineRange", () => {
 
   it("line_range_gives_an_empty_range_for_a_trailing_blank_line_or_overshoots", () => {
     expect(lineRange("a\n", 2)).toEqual({ start: 2, end: 2 });
+  });
+
+  it("line_range_selects_the_right_text_in_a_crlf_file_once_normalized_or_drifts_one_char_per_line", () => {
+    const crlf = "---\r\nname: a\r\n---\r\n";
+    const lf = normalizeLineEndings(crlf);
+    expect(lf).toBe(content);
+    const range = lineRange(lf, 2);
+    expect(range).toEqual({ start: 4, end: 11 });
+    expect(lf.slice(range?.start, range?.end)).toBe("name: a");
   });
 });

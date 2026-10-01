@@ -17,3 +17,8 @@ export function lineRange(content: string, line: number): { start: number; end: 
   const newline = content.indexOf("\n", start);
   return { start, end: newline === -1 ? content.length : newline };
 }
+
+/** A textarea's value always uses LF, so offsets into a CRLF file only line up after this. */
+export function normalizeLineEndings(content: string): string {
+  return content.replace(/\r\n/g, "\n");
+}
