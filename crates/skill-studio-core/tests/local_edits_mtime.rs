@@ -119,3 +119,15 @@ fn a_file_added_in_a_subfolder_reads_as_edited_or_only_the_top_folder_is_watched
         LocalEdits::Edited
     );
 }
+
+#[test]
+fn an_untouched_install_seen_through_a_new_agent_link_reads_as_unknown_or_relinking_warns() {
+    let dir = installed_dir(&["SKILL.md"]);
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("s");
+    std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+    assert_eq!(
+        local_edits(&RealFs::new(), &lock(&an_hour_ago()), "s", &link),
+        LocalEdits::Unknown
+    );
+}

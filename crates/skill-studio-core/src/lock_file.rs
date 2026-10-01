@@ -267,7 +267,12 @@ pub fn local_edits(
         Ok(hash) if hash == entry.skill_folder_hash => LocalEdits::Unedited,
         Ok(_) => {
             let installed = chrono::DateTime::parse_from_rfc3339(&entry.updated_at).ok();
-            match (installed, newest_modified(fs, folder)) {
+            // A per-agent link's own mtime is when it was linked, not when
+            // the skill changed; walk the folder it points to.
+            let real = fs
+                .canonicalize(folder)
+                .unwrap_or_else(|_| folder.to_path_buf());
+            match (installed, newest_modified(fs, &real)) {
                 (Some(installed), Some(newest)) if newest <= installed => LocalEdits::Unknown,
                 _ => LocalEdits::Edited,
             }
