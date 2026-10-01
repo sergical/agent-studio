@@ -2017,6 +2017,16 @@ fn runtime_with_roots(
     )
 }
 
+/// A real directory and a symlink to it, both outside any test home. The
+/// link is the form a user configures, like macOS's `/tmp` -> `/private/tmp`.
+fn symlinked_outside_root(label: &str) -> (PathBuf, PathBuf) {
+    let real = unique_temp_dir(label);
+    std::fs::create_dir_all(real.join("opencode")).unwrap();
+    let link = real.with_extension("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    (real, link)
+}
+
 fn scanned_paths(rt: &Runtime, skill: &str) -> Vec<PathBuf> {
     let inventory = ops::scan(rt, &ctx(), &skill_studio_core::dto::ScanRequest::default()).unwrap();
     inventory
@@ -2064,14 +2074,9 @@ fn per_harness_install_with_a_configured_codex_home_copies_under_it_and_scan_lis
 #[test]
 fn per_harness_install_with_a_configured_opencode_root_inside_or_outside_home_copies_under_it_and_scan_lists_it_or_names_the_failure(
 ) {
-    // `contains` checks the OpenCode root lexically, so the outside root must
-    // not sit behind a symlink such as macOS's /var -> /private/var.
-    let outside = unique_temp_dir("install_per_harness_opencode_outside");
-    std::fs::create_dir_all(&outside).unwrap();
-    let outside = outside.canonicalize().unwrap();
+    let (outside_real, outside) = symlinked_outside_root("install_per_harness_opencode_outside");
     // Install makes `skills` under the root, not the root: a config root is
     // the user's own directory and exists before any install.
-    std::fs::create_dir_all(outside.join("opencode")).unwrap();
     for (label, outside_home) in [("inside", false), ("outside", true)] {
         let home = unique_temp_dir(&format!("install_per_harness_opencode_{label}"));
         std::fs::create_dir_all(&home).unwrap();
@@ -2097,7 +2102,8 @@ fn per_harness_install_with_a_configured_opencode_root_inside_or_outside_home_co
         std::fs::remove_dir_all(&home).ok();
     }
 
-    std::fs::remove_dir_all(&outside).ok();
+    std::fs::remove_dir_all(&outside_real).ok();
+    std::fs::remove_file(&outside).ok();
 }
 
 /// `per_harness_install_with_both_roots_configured_writes_where_split_writes_for_every_harness_or_names_the_harness_that_differs`:
@@ -2137,15 +2143,17 @@ fn per_harness_install_with_both_roots_configured_writes_where_split_writes_for_
 
 /// `undo_of_a_per_harness_install_under_configured_roots_removes_the_copies_or_names_the_one_left_behind`:
 /// undoing a per-harness Codex and `OpenCode` install made under custom roots
-/// removes both copies. Fails when undo looks in the default folders and
-/// leaves a copy under a custom root.
+/// removes both copies, with the `OpenCode` root outside the home behind a
+/// symlink. Fails when undo looks in the default folders or refuses the
+/// outside root and leaves a copy under a custom root.
 #[test]
 fn undo_of_a_per_harness_install_under_configured_roots_removes_the_copies_or_names_the_one_left_behind(
 ) {
     let home = unique_temp_dir("install_per_harness_undo_roots");
     std::fs::create_dir_all(&home).unwrap();
+    let (outside_real, outside) = symlinked_outside_root("install_per_harness_undo_outside");
     let codex = home.join("custom-codex");
-    let opencode = home.join("custom-opencode");
+    let opencode = outside.join("opencode");
     let rt = runtime_with_roots(&home, Some(codex.clone()), Some(opencode.clone()));
     let InstallOutcome::Installed { event_id, .. } = ops::install(
         &rt,
@@ -2176,6 +2184,8 @@ fn undo_of_a_per_harness_install_under_configured_roots_removes_the_copies_or_na
         );
     }
 
+    std::fs::remove_dir_all(&outside_real).ok();
+    std::fs::remove_file(&outside).ok();
     std::fs::remove_dir_all(&home).ok();
 }
 

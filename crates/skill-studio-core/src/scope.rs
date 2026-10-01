@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, ErrorCode};
 use crate::identity::sha256_hex;
+use crate::ops::codex_path_form;
 use crate::ports::{LeaseKey, ProjectDiscovery, ScopeFs};
 use crate::tracked_projects::TrackedProjects;
 
@@ -227,10 +228,19 @@ pub struct NormalizedScope {
     /// Durable app data directory, when the adapter supplies one.
     pub data_root: Option<PathBuf>,
     /// Codex's own directory (the resolved `CODEX_HOME`, or
-    /// `home_root/.codex`). Lexical only: unlike `home` and `projects` it is
-    /// not required to exist yet, since a config write is often what first
-    /// creates it.
+    /// `home_root/.codex`). Unlike `home` and `projects` it is not required
+    /// to exist yet, since a config write is often what first creates it. A
+    /// relative or filesystem-root override is ignored for the default.
     pub codex_home: PathBuf,
+    /// [`Self::codex_home`] with its deepest existing ancestor canonicalized,
+    /// so a root behind a symlink is still contained.
+    pub codex_home_canonical: PathBuf,
+    /// `RuntimeScope::opencode_config_root` when it is absolute and not a
+    /// filesystem root; otherwise `None`, meaning `~/.config/opencode`.
+    pub opencode_config_root: Option<PathBuf>,
+    /// [`Self::opencode_config_root`] canonicalized like
+    /// [`Self::codex_home_canonical`].
+    pub opencode_config_root_canonical: Option<PathBuf>,
     /// The scope as the adapter gave it.
     pub raw: RuntimeScope,
 }
@@ -307,6 +317,10 @@ impl NormalizedScope {
             )
             .at(&clash.lexical));
         }
+        let codex_home = usable_root(raw.codex_home.as_deref())
+            .map_or_else(|| raw.home_root.join(".codex"), Path::to_path_buf);
+        let opencode_config_root =
+            usable_root(raw.opencode_config_root.as_deref()).map(Path::to_path_buf);
         Ok(NormalizedScope {
             id: ScopeId::for_canonical_home(&home.canonical),
             home,
@@ -314,7 +328,12 @@ impl NormalizedScope {
             history_root: raw.history_root.clone(),
             cache_root: raw.cache_root.clone(),
             data_root: raw.data_root.clone(),
-            codex_home: raw.codex_home_or_default(),
+            codex_home_canonical: codex_path_form(fs, &codex_home),
+            codex_home,
+            opencode_config_root_canonical: opencode_config_root
+                .as_deref()
+                .map(|root| codex_path_form(fs, root)),
+            opencode_config_root,
             raw: raw.clone(),
         })
     }
@@ -343,7 +362,7 @@ impl NormalizedScope {
             return self.codex_home.join(rest);
         }
         if let (Some(root), Ok(rest)) = (
-            &self.raw.opencode_config_root,
+            &self.opencode_config_root,
             relative.strip_prefix(".config/opencode"),
         ) {
             return root.join(rest);
@@ -353,19 +372,20 @@ impl NormalizedScope {
 
     /// True when `path` lies under the home, a project, Codex's own
     /// directory ([`Self::codex_home`]), or the `OpenCode` config root, by
-    /// canonical or lexical prefix. The last two have no canonical form of
-    /// their own (see the `codex_home` doc comment), so they are checked
-    /// lexically only.
+    /// canonical or lexical prefix.
     pub fn contains(&self, path: &Path) -> bool {
         std::iter::once(&self.home)
             .chain(self.projects.iter())
             .any(|root| path.starts_with(&root.canonical) || path.starts_with(&root.lexical))
             || path.starts_with(&self.codex_home)
-            || self
-                .raw
-                .opencode_config_root
-                .as_ref()
-                .is_some_and(|root| path.starts_with(root))
+            || path.starts_with(&self.codex_home_canonical)
+            || [
+                &self.opencode_config_root,
+                &self.opencode_config_root_canonical,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|root| path.starts_with(root))
     }
 
     /// Rewrites a path for display: `~/...` under the home, absolute
@@ -404,6 +424,12 @@ pub struct EffectiveScope {
     pub projects: Vec<PathBuf>,
     /// History directory.
     pub history_root: PathBuf,
+}
+
+/// A configured Codex or `OpenCode` root, or `None` when it is unset,
+/// relative, or a filesystem root (which would contain every path).
+fn usable_root(root: Option<&Path>) -> Option<&Path> {
+    root.filter(|r| r.is_absolute() && r.parent().is_some())
 }
 
 fn physical(fs: &dyn ScopeFs, lexical: &Path) -> Result<PhysicalRoot, CoreError> {
@@ -558,5 +584,63 @@ mod tests {
         scope.history_binding = HistoryBinding::Override;
         let err = NormalizedScope::normalize(&scope, &fs).unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidScope);
+    }
+
+    /// A configured Codex home or `OpenCode` root that is `/` or relative is
+    /// ignored for the default, so `contains` stays confined and scan and
+    /// install agree on the root.
+    #[test]
+    fn unusable_configured_roots_fall_back_to_the_defaults_or_widen_the_scope() {
+        let fs = FixtureBuilder::new().dir("/home/alice").build_fs();
+        for bad in ["/", "relative/dir"] {
+            let mut raw = RuntimeScope::fixture("/home/alice");
+            raw.codex_home = Some(PathBuf::from(bad));
+            raw.opencode_config_root = Some(PathBuf::from(bad));
+
+            let scope = NormalizedScope::normalize(&raw, &fs).unwrap();
+
+            assert!(
+                !scope.contains(Path::new("/etc/passwd")),
+                "root {bad:?} must not make every path inside the scope"
+            );
+            assert_eq!(
+                scope.global_root_path(Path::new(".codex/skills")),
+                PathBuf::from("/home/alice/.codex/skills"),
+                "codex_home {bad:?} falls back to the default"
+            );
+            assert_eq!(
+                scope.global_root_path(Path::new(".config/opencode/skills")),
+                PathBuf::from("/home/alice/.config/opencode/skills"),
+                "opencode root {bad:?} falls back to the default"
+            );
+        }
+    }
+
+    /// A configured root behind a symlink is contained by both its given and
+    /// its canonical name.
+    #[test]
+    fn configured_roots_behind_a_symlink_are_contained_by_either_name_or_refused() {
+        let fs = FixtureBuilder::new()
+            .dir("/home/alice")
+            .dir("/private/tmp/oc")
+            .dir("/private/tmp/cx")
+            .alias("/tmp/oc", "/private/tmp/oc")
+            .alias("/tmp/cx", "/private/tmp/cx")
+            .build_fs();
+        let mut raw = RuntimeScope::fixture("/home/alice");
+        raw.codex_home = Some(PathBuf::from("/tmp/cx"));
+        raw.opencode_config_root = Some(PathBuf::from("/tmp/oc"));
+
+        let scope = NormalizedScope::normalize(&raw, &fs).unwrap();
+
+        for path in [
+            "/tmp/oc/skills/x",
+            "/private/tmp/oc/skills/x",
+            "/tmp/cx/skills/x",
+            "/private/tmp/cx/skills/x",
+        ] {
+            assert!(scope.contains(Path::new(path)), "{path} must be contained");
+        }
+        assert!(!scope.contains(Path::new("/private/tmp/other")));
     }
 }

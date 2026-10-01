@@ -425,7 +425,7 @@ pub(crate) fn scan_inner(
     let disable_sources = DisableSources::read(
         fs,
         home,
-        rt.scope.raw.opencode_config_root.as_deref(),
+        rt.scope.opencode_config_root.as_deref(),
         &rt.scope.codex_home,
     );
 
@@ -6369,7 +6369,6 @@ fn set_opencode_switch(
     refuse_opencode_name_collision(skill)?;
     let config_dir = rt
         .scope
-        .raw
         .opencode_config_root
         .clone()
         .unwrap_or_else(|| home.join(".config").join("opencode"));
