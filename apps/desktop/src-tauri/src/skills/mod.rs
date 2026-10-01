@@ -34,6 +34,7 @@ pub mod skill_independent_copy;
 pub mod skill_install;
 pub mod skill_invocation;
 pub mod skill_lifecycle;
+pub mod skill_local_edits;
 pub mod skill_materialize;
 pub mod skill_md_write;
 pub mod skill_ownership;

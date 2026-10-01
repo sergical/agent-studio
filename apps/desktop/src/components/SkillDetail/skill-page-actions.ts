@@ -14,6 +14,7 @@ import {
   parkSkill,
   pullForkUpstream,
   removeSkill,
+  skillLocalEdits,
   unforkSkill,
   unparkSkill,
   updateSkill,
@@ -26,6 +27,7 @@ import {
   skillRemovalBlockedReason,
   skillRemovalChoices,
   skillRemovalEmptiesSkill,
+  skillsWithLocalEdits,
   skillUpdateToast,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
@@ -116,6 +118,14 @@ export interface SkillPageAction {
   title?: string;
 }
 
+/** The "Update will replace your edits" prompt: shown while `skillNames` is not empty. */
+export interface SkillPageUpdatePrompt {
+  skillNames: string[];
+  fork: () => void;
+  overwrite: () => void;
+  cancel: () => void;
+}
+
 export interface SkillPageActions {
   path: string | undefined;
   copied: boolean;
@@ -132,6 +142,8 @@ export interface SkillPageActions {
   removeActions: (SkillPageAction & { key: string })[];
   /** Why there is no Remove, for a skill whose files the app must not delete. */
   removeBlockedReason: string | null;
+  /** Confirm step before Update replaces local edits; `null` while none is pending. */
+  updatePrompt: SkillPageUpdatePrompt | null;
 }
 
 /**
@@ -158,6 +170,7 @@ export function useSkillPageActions(
   const [isUnforking, setIsUnforking] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
+  const [isConfirmingOverwrite, setIsConfirmingOverwrite] = useState(false);
 
   if (!skill) {
     return {
@@ -171,6 +184,7 @@ export function useSkillPageActions(
       forkAction: null,
       removeActions: [],
       removeBlockedReason: null,
+      updatePrompt: null,
     };
   }
 
@@ -259,11 +273,39 @@ export function useSkillPageActions(
       addToast(pullUpstreamToast(result));
     });
 
+  const overwriteWithUpdate = async () => {
+    const summary = await updateSkillOwners(skill, updateSkill);
+    addToast(skillUpdateToast(skill.name, summary));
+  };
+
   const doUpdate = () =>
     runAction(addToast, setIsUpdating, "Update failed", async () => {
-      const summary = await updateSkillOwners(skill, updateSkill);
-      addToast(skillUpdateToast(skill.name, summary));
+      const edited = await skillsWithLocalEdits([skill], skillLocalEdits);
+      if (edited.length > 0) {
+        setIsConfirmingOverwrite(true);
+        return;
+      }
+      await overwriteWithUpdate();
     });
+
+  const doOverwriteEdits = () => {
+    setIsConfirmingOverwrite(false);
+    return runAction(addToast, setIsUpdating, "Update failed", overwriteWithUpdate);
+  };
+
+  const doForkAndUpdate = () => {
+    setIsConfirmingOverwrite(false);
+    return runAction(addToast, setIsUpdating, "Fork and update failed", async () => {
+      if (!forkDeployment)
+        throw new Error("Fork is only available for the Global Universal folder.");
+      const target = lifecycleTargetForDeployment(forkDeployment);
+      const record = await forkSkill(target);
+      const result = await pullForkUpstream({
+        deployment_id: record.deployment_id ?? target.deployment_id,
+      });
+      addToast(pullUpstreamToast(result));
+    });
+  };
 
   const doRemove = async (choice: SkillRemovalChoice) => {
     const confirmed = await ask(choice.confirmMessage, {
@@ -316,5 +358,13 @@ export function useSkillPageActions(
     forkAction,
     removeActions,
     removeBlockedReason: skillRemovalBlockedReason(skill),
+    updatePrompt: isConfirmingOverwrite
+      ? {
+          skillNames: [skill.name],
+          fork: doForkAndUpdate,
+          overwrite: doOverwriteEdits,
+          cancel: () => setIsConfirmingOverwrite(false),
+        }
+      : null,
   };
 }

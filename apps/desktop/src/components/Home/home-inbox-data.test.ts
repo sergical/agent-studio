@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { ownSkillsView } from "@skill-studio/lib";
 import type {
   Deployment,
+  ForkRecord,
   HealthIssue,
   InstalledSkill,
   UpdateAllItem,
@@ -487,5 +488,89 @@ describe("issueDeploymentPath", () => {
     const [own] = ownSkillsView([skill]);
     const issue: HealthIssue = { kind: "spec-violation", skill: own, detail: ERROR };
     expect(issueDeploymentPath(issue)).toBe("/own/warned");
+  });
+});
+
+describe("updateAllOutdatedSkills with edited skills", () => {
+  const edited = {
+    ...ownerSkill("edited", "owner:v1/global/edited"),
+    deployments: [
+      { ...canonicalDeployment, id: "dep:v1/edited", owner_kind: "skills-sh" as const },
+    ],
+  };
+  const plain = ownerSkill("plain", "owner:v1/global/plain");
+
+  it("update_all_forks_then_pulls_an_edited_skill_and_updates_the_rest_or_overwrites_the_edit", async () => {
+    const calls: string[] = [];
+    const tally = await updateAllOutdatedSkills(
+      [edited, plain],
+      async (target) => {
+        calls.push(`pull ${target.deployment_id}`);
+        return {
+          from_commit: "a",
+          to_commit: "b",
+          merged: [],
+          added: [],
+          removed: [],
+          conflicts: [],
+          unchanged: 0,
+          message: null,
+        };
+      },
+      async (targets) => {
+        const owners = targets.map((target) => target.owner_id ?? "");
+        calls.push(`update ${owners.join(",")}`);
+        return succeedAll(owners);
+      },
+      undefined,
+      {
+        names: new Set(["edited"]),
+        fork: async (target) => {
+          calls.push(`fork ${target.deployment_id}`);
+          const record: ForkRecord = {
+            deployment_id: "dep:v1/forked",
+            forked_at: "2026-10-01T00:00:00Z",
+            origin_tool: "skills-sh",
+            origin_source: "owner/repo",
+            repo: "owner/repo",
+            path: "skills/edited",
+            declared_ref: null,
+            base_commit: "a",
+          };
+          return record;
+        },
+      },
+    );
+
+    expect(calls).toEqual([
+      "fork dep:v1/edited",
+      "pull dep:v1/forked",
+      "update owner:v1/global/plain",
+    ]);
+    expect(tally.skillsAttempted).toBe(2);
+    expect(tally.skillsSucceeded).toBe(2);
+  });
+
+  it("update_all_counts_an_edited_skill_whose_fork_fails_as_failed_and_never_updates_it_or_loses_the_edit", async () => {
+    const tally = await updateAllOutdatedSkills(
+      [edited],
+      async () => {
+        throw new Error("pull must not run after a failed fork");
+      },
+      async () => {
+        throw new Error("the edited skill must not be overwritten");
+      },
+      undefined,
+      {
+        names: new Set(["edited"]),
+        fork: async () => {
+          throw new Error("fork refused");
+        },
+      },
+    );
+
+    expect(tally.failures).toBe(1);
+    expect(tally.skillsSucceeded).toBe(0);
+    expect(tally.firstError).toBe("fork refused");
   });
 });

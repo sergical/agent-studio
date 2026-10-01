@@ -4,6 +4,7 @@ import type {
   InstalledSkill,
   InstallScope,
   LifecycleTarget,
+  LocalEditsDto,
   Toast,
 } from "@skill-studio/lib";
 
@@ -305,6 +306,36 @@ export function skillUpdateAvailability(
     return { available: false, reason: "The selected deployment is up to date." };
   }
   return { available: true, target: { owner_id: ownerId } };
+}
+
+/**
+ * The skills among `skills` whose update would replace local edits: a skills.sh
+ * skill that is not a fork and whose installed folder no longer matches what
+ * the install recorded. A check that cannot run (`checked: false`) or throws
+ * counts as not edited, so Update keeps working exactly as before.
+ */
+export async function skillsWithLocalEdits<
+  T extends Pick<InstalledSkill, "source_kind" | "update_owner_ids" | "update_owners"> &
+    Partial<Pick<InstalledSkill, "deployments">>,
+>(skills: T[], checkEdits: (targets: LifecycleTarget[]) => Promise<LocalEditsDto[]>): Promise<T[]> {
+  const entries = skills.flatMap((skill) =>
+    skill.source_kind === "skills-sh"
+      ? skillUpdateOwnerTargets(skill).map((target) => ({ skill, target }))
+      : [],
+  );
+  if (entries.length === 0) return [];
+  let verdicts: LocalEditsDto[];
+  try {
+    verdicts = await checkEdits(entries.map((entry) => entry.target));
+  } catch {
+    return [];
+  }
+  const edited = new Set<T>();
+  for (const [index, entry] of entries.entries()) {
+    const verdict = verdicts[index];
+    if (verdict?.checked && verdict.edited) edited.add(entry.skill);
+  }
+  return skills.filter((skill) => edited.has(skill));
 }
 
 /** Run each owner update and return every failure for the UI. */

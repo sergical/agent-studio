@@ -13,6 +13,7 @@ import {
   skillRemovalEmptiesSkill,
   skillRemovalDescription,
   skillRemovalPreview,
+  skillsWithLocalEdits,
   skillUpdateOwnerTargets,
   skillUpdateToast,
   updateSkillOwners,
@@ -491,5 +492,44 @@ describe("skill page header removal and park choices", () => {
     ).toBeNull();
     expect(skillParkVerb(menuView([global]))).toBe("Park");
     expect(skillParkVerb(menuView([parked], true))).toBe("Unpark");
+  });
+});
+
+describe("skillsWithLocalEdits", () => {
+  const skill = (name: string, sourceKind: InstalledSkill["source_kind"] = "skills-sh") => ({
+    name,
+    source_kind: sourceKind,
+    update_owner_ids: [`owner:v1/global/${name}`],
+    update_owners: [
+      { owner_id: `owner:v1/global/${name}`, latest_commit: "next", latest_commit_at: null },
+    ],
+  });
+
+  it("only_a_checked_edited_skill_is_returned_or_a_clean_update_gets_a_dialog", async () => {
+    const skills = [skill("clean"), skill("edited"), skill("unchecked")];
+    const verdicts = [
+      { edited: false, checked: true },
+      { edited: true, checked: true },
+      { edited: true, checked: false },
+    ];
+    const result = await skillsWithLocalEdits(skills, async () => verdicts);
+    expect(result.map((s) => s.name)).toEqual(["edited"]);
+  });
+
+  it("a_fork_is_never_checked_or_it_would_warn_about_edits_that_are_the_point_of_a_fork", async () => {
+    let asked = 0;
+    const result = await skillsWithLocalEdits([skill("forked", "fork")], async () => {
+      asked += 1;
+      return [{ edited: true, checked: true }];
+    });
+    expect(asked).toBe(0);
+    expect(result).toEqual([]);
+  });
+
+  it("a_failed_check_reads_as_no_edits_or_a_backend_error_blocks_every_update", async () => {
+    const result = await skillsWithLocalEdits([skill("edited")], async () => {
+      throw new Error("ipc down");
+    });
+    expect(result).toEqual([]);
   });
 });

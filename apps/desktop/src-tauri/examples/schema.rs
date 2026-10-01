@@ -22,8 +22,8 @@ use skill_studio_lib::skills::github_skill_listing::GithubSkillListing;
 use skill_studio_lib::skills::harness_first_run::HarnessesChoice;
 use skill_studio_lib::skills::skill_dto::{
     AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, BulkTargetResult,
-    HarnessVisibilityTarget, InstallResult, LifecycleTarget, PaginatedSkillsResponse, SkillDetails,
-    SkillEventDto, SkillsShAccessInfo,
+    HarnessVisibilityTarget, InstallResult, LifecycleTarget, LocalEditsDto,
+    PaginatedSkillsResponse, SkillDetails, SkillEventDto, SkillsShAccessInfo,
 };
 use skill_studio_lib::skills::skill_fork::PullResult;
 use skill_studio_lib::skills::skill_fork_registry::{ForkRecord, PackMember};
@@ -83,6 +83,7 @@ struct WireTypes {
     update_all_outcome: UpdateAllOutcome,
     doctor_report: DoctorReport,
     bulk_target_result: BulkTargetResult,
+    local_edits: LocalEditsDto,
     invocation_target: InvocationTarget,
 }
 

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{CoreError, ErrorCode};
 use crate::ports::{confine, ExclusiveGuard, ScopeFs};
 use crate::scope::NormalizedScope;
+use crate::tree_hash::tree_hash;
 
 /// Largest lock file the core will read. Larger is treated as corrupt
 /// rather than silently truncated.
@@ -224,6 +225,40 @@ pub fn read_project_lock_skill_names(fs: &dyn ScopeFs, path: &Path) -> HashSet<S
         .unwrap_or_default()
 }
 
+/// Whether an installed skills.sh folder still matches what `npx skills`
+/// installed, as [`local_edits`] decides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalEdits {
+    /// The folder's tree hash equals the lock entry's `skillFolderHash`.
+    Unedited,
+    /// The folder's tree hash differs from the lock entry's hash.
+    Edited,
+    /// The check could not run: no lock entry, an empty hash, or a folder
+    /// that could not be hashed. Callers treat this as "not edited".
+    Unknown,
+}
+
+/// Compares the git tree hash of `folder` - the installed copy an update
+/// would replace - with `skill_name`'s `skillFolderHash` in `lock`.
+pub fn local_edits(
+    fs: &dyn ScopeFs,
+    lock: &SkillLockFile,
+    skill_name: &str,
+    folder: &Path,
+) -> LocalEdits {
+    let Some(entry) = lock.skills.get(skill_name) else {
+        return LocalEdits::Unknown;
+    };
+    if entry.skill_folder_hash.is_empty() {
+        return LocalEdits::Unknown;
+    }
+    match tree_hash(fs, folder) {
+        Ok(hash) if hash == entry.skill_folder_hash => LocalEdits::Unedited,
+        Ok(_) => LocalEdits::Edited,
+        Err(_) => LocalEdits::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +395,84 @@ mod tests {
         assert!(
             names.is_empty(),
             "a file over the size cap must yield no names, not a truncated parse"
+        );
+    }
+
+    const SKILL_MD: &[u8] = b"---\nname: write-tests\n---\nBody\n";
+
+    /// A lock file recording `hash` for `write-tests`.
+    fn lock_with_hash(hash: &str) -> SkillLockFile {
+        let mut skills = HashMap::new();
+        skills.insert(
+            "write-tests".to_string(),
+            InstalledSkillEntry {
+                source: "owner/repo".into(),
+                source_type: "github".into(),
+                source_url: "https://github.com/owner/repo".into(),
+                skill_path: None,
+                skill_folder_hash: hash.into(),
+                installed_at: String::new(),
+                updated_at: String::new(),
+                extra: serde_json::Map::new(),
+            },
+        );
+        SkillLockFile { version: 3, skills }
+    }
+
+    /// The hash `npx skills` would have recorded for an untouched install.
+    fn installed_hash() -> String {
+        let fs = FixtureBuilder::new()
+            .file("/skill/SKILL.md", SKILL_MD)
+            .build_fs();
+        tree_hash(&fs, Path::new("/skill")).unwrap()
+    }
+
+    #[test]
+    fn an_unedited_install_reads_as_unedited_or_every_update_warns() {
+        let fs = FixtureBuilder::new()
+            .file("/skill/SKILL.md", SKILL_MD)
+            .build_fs();
+        let lock = lock_with_hash(&installed_hash());
+        assert_eq!(
+            local_edits(&fs, &lock, "write-tests", Path::new("/skill")),
+            LocalEdits::Unedited
+        );
+    }
+
+    #[test]
+    fn one_changed_byte_reads_as_edited_or_update_overwrites_silently() {
+        let fs = FixtureBuilder::new()
+            .file("/skill/SKILL.md", b"---\nname: write-tests\n---\nBody!\n")
+            .build_fs();
+        let lock = lock_with_hash(&installed_hash());
+        assert_eq!(
+            local_edits(&fs, &lock, "write-tests", Path::new("/skill")),
+            LocalEdits::Edited
+        );
+    }
+
+    #[test]
+    fn an_added_file_reads_as_edited_or_update_deletes_it_silently() {
+        let fs = FixtureBuilder::new()
+            .file("/skill/SKILL.md", SKILL_MD)
+            .file("/skill/notes.md", b"mine\n")
+            .build_fs();
+        let lock = lock_with_hash(&installed_hash());
+        assert_eq!(
+            local_edits(&fs, &lock, "write-tests", Path::new("/skill")),
+            LocalEdits::Edited
+        );
+    }
+
+    #[test]
+    fn a_skill_without_a_lock_entry_reads_as_unknown_or_it_is_wrongly_called_edited() {
+        let fs = FixtureBuilder::new()
+            .file("/skill/SKILL.md", b"anything\n")
+            .build_fs();
+        let lock = lock_with_hash(&installed_hash());
+        assert_eq!(
+            local_edits(&fs, &lock, "other-skill", Path::new("/skill")),
+            LocalEdits::Unknown
         );
     }
 }

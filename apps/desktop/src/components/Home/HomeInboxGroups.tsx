@@ -10,18 +10,22 @@ import { Button, Collapsible, CollapsiblePanel, Progress } from "@skill-studio/u
 import { formatRelativeTime, formatTokens, shortSha } from "@skill-studio/lib";
 import type { HealthIssue, InstalledSkill, RecentlyUsedSkill } from "@skill-studio/lib";
 import {
+  forkSkill,
   parkSkill,
   pullForkUpstream,
+  skillLocalEdits,
   updateAllSkillsWithProgress,
   updateSkill,
 } from "../../lib/skill-api";
 import {
   lifecycleTargetForPark,
   skillCanPark,
+  skillsWithLocalEdits,
   skillUpdateToast,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
+import { UpdateOverwritesEditsDialog } from "../SkillDetail/UpdateOverwritesEditsDialog";
 import { GroupHead } from "../SkillList/GroupHead";
 import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
 import type { RowState } from "../SkillList/skill-row-state";
@@ -546,9 +550,10 @@ function UpdatesGroup({
 }) {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const addToast = useAppStore((state) => state.addToast);
+  const [editedSkills, setEditedSkills] = useState<InstalledSkill[]>([]);
   const isUpdatingAll = progress !== null;
 
-  const handleUpdateAll = async () => {
+  const runUpdateAll = async (forkNames?: ReadonlySet<string>) => {
     setProgress({ done: 0, total: 0 });
     // `updateAllOutdatedSkills` catches every `pullFork`/`updateAllOwners`
     // rejection itself and folds it into `failures`, so this await never
@@ -560,6 +565,7 @@ function UpdatesGroup({
       (targets, onOwnerDone) =>
         updateAllSkillsWithProgress(targets, ({ done }) => onOwnerDone(done)),
       (done, total) => setProgress({ done, total }),
+      forkNames && { names: forkNames, fork: forkSkill },
     );
     const { skillsAttempted, skillsSucceeded, failures } = tally;
     addToast({
@@ -570,6 +576,20 @@ function UpdatesGroup({
     // react-doctor-disable-next-line react-doctor/no-loading-flag-reset-outside-finally -- the React Compiler rejects try/finally here (react-hooks-js/todo); `updateAllOutdatedSkills` never rejects, so this always runs
     setProgress(null);
   };
+
+  const handleUpdateAll = async () => {
+    setProgress({ done: 0, total: 0 });
+    // `skillsWithLocalEdits` treats a failed check as "no edits", so it never rejects.
+    const edited = await skillsWithLocalEdits(updates, skillLocalEdits);
+    if (edited.length > 0) {
+      setEditedSkills(edited);
+      setProgress(null);
+      return;
+    }
+    await runUpdateAll();
+  };
+
+  const closeEditsDialog = () => setEditedSkills([]);
 
   return (
     <Collapsible data-group="upd" role="rowgroup" open={isExpanded} onOpenChange={onToggle}>
@@ -647,6 +667,19 @@ function UpdatesGroup({
           )}
         </div>
       </CollapsiblePanel>
+      <UpdateOverwritesEditsDialog
+        skillNames={editedSkills.map((skill) => skill.name)}
+        isBulk
+        onFork={() => {
+          closeEditsDialog();
+          void runUpdateAll(new Set(editedSkills.map((skill) => skill.name)));
+        }}
+        onOverwrite={() => {
+          closeEditsDialog();
+          void runUpdateAll();
+        }}
+        onCancel={closeEditsDialog}
+      />
     </Collapsible>
   );
 }

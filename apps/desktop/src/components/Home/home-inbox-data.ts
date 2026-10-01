@@ -19,6 +19,7 @@ import type {
   HealthIssue,
   HealthIssueKind,
   InstalledSkill,
+  ForkRecord,
   LifecycleTarget,
   PullResult,
   RecentlyUsedSkill,
@@ -131,7 +132,9 @@ export function updateAllFailureMessage(tally: UpdateAllTally): string | undefin
  * `updateAllOwners` call - one IPC round trip and one rescan for the whole
  * batch, instead of one `updateSkill` round trip and rescan per skill.
  * `onProgress(done, total)` counts forks and owner targets in one sequence;
- * `updateAllOwners` reports how many of its own targets finished.
+ * `updateAllOwners` reports how many of its own targets finished. A skill named
+ * in `forkEdited.names` is forked first and then pulled like a fork, so its
+ * local edits survive instead of being overwritten by the batch.
  */
 export async function updateAllOutdatedSkills(
   skills: Pick<
@@ -144,15 +147,21 @@ export async function updateAllOutdatedSkills(
     onOwnerDone: (done: number) => void,
   ) => Promise<UpdateAllOutcome>,
   onProgress?: (done: number, total: number) => void,
+  forkEdited?: {
+    names: ReadonlySet<string>;
+    fork: (target: LifecycleTarget) => Promise<ForkRecord>;
+  },
 ): Promise<UpdateAllTally> {
-  const forks = skills.filter((skill) => skill.source_kind === "fork");
+  const pullsUpstream = (skill: (typeof skills)[number]) =>
+    skill.source_kind === "fork" || forkEdited?.names.has(skill.name) === true;
+  const forks = skills.filter(pullsUpstream);
   const ownerTargets = skills.flatMap((skill) =>
-    skill.source_kind === "fork" ? [] : skillUpdateOwnerTargets(skill),
+    pullsUpstream(skill) ? [] : skillUpdateOwnerTargets(skill),
   );
   const total = forks.length + ownerTargets.length;
   const ownerSkillNames = new Set(
     skills.flatMap((skill) =>
-      skill.source_kind !== "fork" && skillUpdateOwnerTargets(skill).length > 0 ? [skill.name] : [],
+      !pullsUpstream(skill) && skillUpdateOwnerTargets(skill).length > 0 ? [skill.name] : [],
     ),
   );
   const failedSkillNames = new Set<string>();
@@ -173,7 +182,13 @@ export async function updateAllOutdatedSkills(
   for (const [index, skill] of forks.entries()) {
     try {
       // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
-      await pullFork(lifecycleTargetForPark(skill));
+      const target = lifecycleTargetForPark(skill);
+      if (skill.source_kind === "fork" || !forkEdited) {
+        await pullFork(target);
+      } else {
+        const record = await forkEdited.fork(target);
+        await pullFork({ deployment_id: record.deployment_id ?? target.deployment_id });
+      }
       tally.succeeded += 1;
     } catch (error) {
       failedSkillNames.add(skill.name);

@@ -678,6 +678,10 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           }
           return targets.map(() => ({ error: null }));
         }
+        case "skill_local_edits": {
+          const targets = z.array(z.unknown()).parse(payload.targets);
+          return targets.map(() => ({ edited: false, checked: true }));
+        }
         case "park_skills":
         case "unpark_skills": {
           const parked = command === "park_skills";

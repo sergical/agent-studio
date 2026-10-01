@@ -211,6 +211,11 @@ const EXPECTED_WRAPPER_COMMANDS = {
     registeredInLibRs: true,
   },
   parkSkills: { kind: "command", command: "park_skills", registeredInLibRs: true },
+  skillLocalEdits: {
+    kind: "command",
+    command: "skill_local_edits",
+    registeredInLibRs: true,
+  },
   unparkSkills: { kind: "command", command: "unpark_skills", registeredInLibRs: true },
   setPluginEnabled: { kind: "command", command: "set_plugin_enabled", registeredInLibRs: true },
   uninstallPlugin: { kind: "command", command: "uninstall_plugin", registeredInLibRs: true },
