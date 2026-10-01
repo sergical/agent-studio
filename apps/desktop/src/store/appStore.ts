@@ -11,7 +11,12 @@ import type { ActivityFilter, UsageWindow } from "@skill-studio/lib";
 import type { Toast, TrackedProjects } from "@skill-studio/lib";
 import { addToast } from "../lib/toast";
 import { EMPTY_NAV_HISTORY, recordNavigation, stepBack, stepForward } from "../lib/nav-history";
-import type { DefaultDeploymentPaths, NavHistory, NavStep } from "../lib/nav-history";
+import type {
+  DefaultDeploymentPaths,
+  NavHistory,
+  NavStep,
+  PinnedDeployment,
+} from "../lib/nav-history";
 import {
   loadStoredTheme,
   resolveTheme,
@@ -93,6 +98,10 @@ interface AppState {
   /** Default deployment path per skill in the latest snapshot; lets history treat "no path" and
    * the default copy's path as one page. */
   defaultDeploymentPaths: DefaultDeploymentPaths | null;
+  /** The copy the open skill page settled on when it opened with no requested path. History
+   * dedupe prefers it over the snapshot default, so both agree on which SKILL.md the page shows. */
+  pinnedDeployment: PinnedDeployment;
+  setPinnedDeployment: (pinned: PinnedDeployment) => void;
   setKnownSkillNames: (
     names: ReadonlySet<string> | null,
     defaultPaths?: DefaultDeploymentPaths | null,
@@ -257,6 +266,14 @@ function navigateHistory(
   run();
 }
 
+/** Default copy per skill for history dedupe: the snapshot default, except the pinned copy for the
+ * skill whose page is pinned. */
+function historyDefaults(state: AppState): DefaultDeploymentPaths | null {
+  const { pinnedDeployment, defaultDeploymentPaths } = state;
+  if (!pinnedDeployment.skillName || !pinnedDeployment.path) return defaultDeploymentPaths;
+  return new Map(defaultDeploymentPaths).set(pinnedDeployment.skillName, pinnedDeployment.path);
+}
+
 /** Cleans up the previous `watchSystemTheme` listener - re-set on every `setTheme` call, so only one is ever live. */
 let systemThemeCleanup: (() => void) | null = null;
 
@@ -279,7 +296,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         state.navHistory,
         state.activeView,
         view,
-        state.defaultDeploymentPaths,
+        historyDefaults(state),
       ),
       selectedSkillPaths: new Set(),
       selectionMode: false,
@@ -295,7 +312,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         state.navHistory,
         state.activeView,
         next,
-        state.defaultDeploymentPaths,
+        historyDefaults(state),
       ),
       selectedSkillPaths: new Set(),
       selectionMode: false,
@@ -310,7 +327,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           state.navHistory,
           current,
           current.from,
-          state.defaultDeploymentPaths,
+          historyDefaults(state),
         ),
         lastClosedSkillName: current.name,
       }));
@@ -327,6 +344,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   navHistory: EMPTY_NAV_HISTORY,
   knownSkillNames: null,
   defaultDeploymentPaths: null,
+  pinnedDeployment: { skillName: undefined, path: undefined },
+  setPinnedDeployment: (pinned) => set({ pinnedDeployment: pinned }),
   setKnownSkillNames: (names, defaultPaths = null) =>
     set({ knownSkillNames: names, defaultDeploymentPaths: defaultPaths }),
   leaveGuard: null,

@@ -335,6 +335,16 @@ describe("deploymentWithSpecViolations", () => {
     expect(deploymentWithSpecViolations(skill)?.path).toBe("/physical");
   });
 
+  it("a_skill_whose_only_own_copy_is_a_broken_symlink_returns_undefined_instead_of_a_plugin_copy", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/plugin", spec_violations: [ERROR], plugin }),
+        fixtureDeployment({ path: "/broken", symlink_is_broken: true }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)).toBeUndefined();
+  });
+
   it("a_broken_symlink_never_wins_on_its_violations_alone", () => {
     const skill = fixtureSkill({
       deployments: [

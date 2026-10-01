@@ -19,6 +19,13 @@ export const EMPTY_NAV_HISTORY: NavHistory = { back: [], forward: [] };
 /** Default deployment path per skill name: the copy a skill page shows when none was requested. */
 export type DefaultDeploymentPaths = ReadonlyMap<string, string>;
 
+/** The default copy a skill page settled on when it opened, kept so a rescan that changes which
+ * copy carries warnings never moves the page (and its open editor) to another copy. */
+export interface PinnedDeployment {
+  skillName: string | undefined;
+  path: string | undefined;
+}
+
 /** Whether two views are the same place. A skill page's `from` and one-shot `intent` don't
  * count: they describe how it was opened, not where it is. With `defaults`, "no path" and the
  * path of the default copy count as the same page, since both show the same SKILL.md. */

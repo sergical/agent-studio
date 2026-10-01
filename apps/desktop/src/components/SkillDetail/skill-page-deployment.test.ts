@@ -202,8 +202,18 @@ describe("repinDeployment", () => {
     expect(repinDeployment(pinned, skill, undefined).skillName).toBe("find-bugs");
   });
 
-  it("a_caller_requested_path_leaves_the_pin_alone_because_that_path_wins_anyway", () => {
+  it("a_caller_requested_path_leaves_the_same_skills_pin_alone_because_that_path_wins_anyway", () => {
     const skill = fixtureSkill([fixtureDeployment({ path: "/a/clean" })]);
-    expect(repinDeployment(empty, skill, "/a/clean")).toBe(empty);
+    const pinned = { skillName: "find-bugs", path: "/b/warned" };
+    expect(repinDeployment(pinned, skill, "/a/clean")).toBe(pinned);
+  });
+
+  it("a_visit_to_another_skill_with_a_requested_path_clears_the_old_pin_or_it_returns_on_the_next_default_open", () => {
+    const skill = fixtureSkill([fixtureDeployment({ path: "/a/clean" })]);
+    const pinned = { skillName: "other", path: "/x" };
+    expect(repinDeployment(pinned, skill, "/a/clean")).toEqual({
+      skillName: "find-bugs",
+      path: undefined,
+    });
   });
 });

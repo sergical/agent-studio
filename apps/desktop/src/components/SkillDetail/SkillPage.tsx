@@ -39,7 +39,6 @@ import { SkillRepairCard } from "./SkillRepairCard";
 import { saveSkillEditorDraft } from "./skill-editor-save";
 import { useSkillPageActions } from "./skill-page-actions";
 import { repinDeployment, resolveSkillPageDeployment } from "./skill-page-deployment";
-import type { PinnedDeployment } from "./skill-page-deployment";
 import { useSkillCompareDialog } from "./useSkillCompareDialog";
 import { useSkillEscapeGuard } from "./useSkillEscapeGuard";
 import { useSkillFrontmatterRepair } from "./useSkillFrontmatterRepair";
@@ -233,12 +232,12 @@ export function SkillPage({
     }
   }, [activeView, clearSkillIntent, setIsCompareOpen]);
 
-  const [pinned, setPinned] = useState<PinnedDeployment>({
-    skillName: undefined,
-    path: undefined,
-  });
+  const pinned = useAppStore((state) => state.pinnedDeployment);
+  const setPinnedDeployment = useAppStore((state) => state.setPinnedDeployment);
   const currentPinned = repinDeployment(pinned, skill, deploymentPath);
-  if (currentPinned !== pinned) setPinned(currentPinned);
+  useEffect(() => {
+    if (currentPinned !== pinned) setPinnedDeployment(currentPinned);
+  }, [currentPinned, pinned, setPinnedDeployment]);
 
   const { deployment, deploymentUnresolved, isDeploymentBroken, skillMdPath, isPluginManaged } =
     resolveSkillPageDeployment(skill, deploymentPath ?? currentPinned.path);

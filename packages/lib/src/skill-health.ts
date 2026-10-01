@@ -226,13 +226,9 @@ export function isBlockingSpecViolation(violation: string): boolean {
  * SKILL.md to show, so it never wins on violations alone.
  */
 export function deploymentWithSpecViolations(skill: InstalledSkill): Deployment | undefined {
-  const ownReadable = [...editableDeployments(skill), ...ownDeployments(skill)].filter(
-    (d) => !isUnresolvedDeployment(d),
-  );
-  const readable =
-    ownReadable.length > 0
-      ? ownReadable
-      : skill.deployments.filter((d) => !isUnresolvedDeployment(d));
+  const own = [...editableDeployments(skill), ...ownDeployments(skill)];
+  const pool = ownDeployments(skill).length > 0 ? own : skill.deployments;
+  const readable = pool.filter((d) => !isUnresolvedDeployment(d));
   return (
     readable.find((d) => d.spec_violations.some(isBlockingSpecViolation)) ??
     readable.find((d) => d.spec_violations.length > 0)
