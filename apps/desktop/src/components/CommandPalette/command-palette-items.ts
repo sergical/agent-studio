@@ -34,11 +34,14 @@ const EMPTY_QUERY_SKILL_COUNT = 8;
 
 /** One item's match tier for a query - lower sorts first. `undefined` means no match. */
 function matchTier(label: string, query: string): number | undefined {
-  const haystack = label.toLowerCase();
-  if (haystack.startsWith(query)) return 0;
-  const wordStart = haystack.split(/[\s/_-]+/).some((word) => word.startsWith(query));
+  // Spaces, slashes, underscores, and hyphens are one word break, so "i have" finds `i-have-adhd`.
+  const haystack = label.toLowerCase().replace(/[\s/_-]+/g, " ");
+  const normalized = query.replace(/[\s/_-]+/g, " ");
+  if (haystack.startsWith(normalized)) return 0;
+  const wordStart = haystack.split(" ").some((word) => word.startsWith(normalized));
   if (wordStart) return 1;
-  if (haystack.includes(query)) return 2;
+  if (haystack.includes(normalized)) return 2;
+  if (normalized.split(" ").every((word) => haystack.includes(word))) return 3;
   return undefined;
 }
 

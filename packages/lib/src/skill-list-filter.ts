@@ -57,15 +57,25 @@ function matchesHarness(skill: InstalledSkill, harness: string): boolean {
   );
 }
 
-/** Whether `skill` matches `query` in its name, description, or source repo, case-insensitive. */
+/** Hyphens, underscores, slashes, dots, and spaces all count as one word break. */
+const WORD_BREAK = /[\s\-_/.]+/;
+
+/**
+ * Whether `skill` matches `query`, case-insensitive. Every query word must appear somewhere in the
+ * name, description, or source repo, in any order, so "i have" finds `i-have-adhd`. A query with
+ * its breaks removed also matches the name with its breaks removed, so "ihave" finds it too.
+ */
 function matchesQuery(skill: InstalledSkill, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  return (
-    skill.name.toLowerCase().includes(q) ||
-    (skill.description ?? "").toLowerCase().includes(q) ||
-    skill.source.toLowerCase().includes(q)
-  );
+  const words = query.toLowerCase().split(WORD_BREAK).filter(Boolean);
+  if (words.length === 0) return true;
+  const name = skill.name.toLowerCase();
+  if (name.split(WORD_BREAK).join("").includes(words.join(""))) return true;
+  const haystack = [name, skill.description ?? "", skill.source]
+    .join(" ")
+    .toLowerCase()
+    .split(WORD_BREAK)
+    .join(" ");
+  return words.every((word) => haystack.includes(word));
 }
 
 /**
