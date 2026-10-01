@@ -21,6 +21,8 @@ export type {
   ParsedSkillSourceKind,
   OriginTool,
   FrontmatterRepairApplyMode,
+  FrontmatterRepairKind,
+  InvocationConflictChoice,
   PackImportPreflightResult,
   HarnessId,
   OpencodeConfigKind,

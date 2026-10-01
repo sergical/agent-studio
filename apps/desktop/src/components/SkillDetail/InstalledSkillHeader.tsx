@@ -21,7 +21,7 @@ import type {
   InstalledSkill,
 } from "@skill-studio/lib";
 import { TooltipControl } from "../ui/TooltipControl";
-import { canOfferLocalQuote } from "./skill-frontmatter-repair-policy";
+import { canOfferLocalQuote, frontmatterRepairKindFor } from "./skill-frontmatter-repair-policy";
 
 interface InstalledSkillHeaderProps {
   skill: InstalledSkill;
@@ -90,6 +90,9 @@ export function InstalledSkillHeader({
     yamlLocation && skillMdContent && canQuote
       ? describeFrontmatterErrorLine(skillMdContent, yamlLocation.line)
       : null;
+  // Conflicting invocation keys are a non-blocking note, so they get their own line.
+  const hasInvocationConflict =
+    frontmatterRepairKindFor(renderedDeployment) === "invocation-conflict";
   const violationText = quoteRepair
     ? describeFrontmatterRepair(quoteRepair, yamlLocation?.column)
     : (lineHint ?? blockingViolations.join("; "));
@@ -138,7 +141,7 @@ export function InstalledSkillHeader({
               Quote the {quoteRepair.key}
             </Button>
           )}
-          {hasMalformedYaml && (
+          {(hasMalformedYaml || (frontmatterRepair && !hasInvocationConflict)) && (
             <Button
               size="sm"
               variant="outline"
@@ -147,6 +150,15 @@ export function InstalledSkillHeader({
               {frontmatterRepair ? "Fix" : "Edit manually"}
             </Button>
           )}
+        </div>
+      )}
+      {hasInvocationConflict && frontmatterRepair && (
+        <div className="flex items-center gap-2 text-small text-error">
+          <AlertTriangle size={13} />
+          <span>Both invocation keys are set, so nothing can run this skill.</span>
+          <Button size="sm" variant="outline" onClick={onFixYaml}>
+            Fix
+          </Button>
         </div>
       )}
     </header>

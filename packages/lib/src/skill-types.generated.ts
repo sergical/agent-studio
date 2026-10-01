@@ -94,6 +94,18 @@ export type SkillDestination = "universal" | "per-harness";
  * Scope for skill installation
  */
 export type InstallScope = "global" | "project";
+/**
+ * Which deterministic fix to propose.
+ */
+export type FrontmatterRepairKind =
+  | "colon-scalar"
+  | "name-mismatch"
+  | "name-format"
+  | "invocation-conflict";
+/**
+ * Which side of the invocation conflict survives.
+ */
+export type InvocationConflictChoice = "user-only" | "model-only";
 export type FrontmatterRepairApplyMode = "apply-fix" | "fix-installed-copy" | "fork-and-fix";
 /**
  * Pack import either completes immediately or pauses for explicit trust.
@@ -888,6 +900,11 @@ export interface FrontmatterRepairPreview {
   path: string;
   scope: string;
   reason: string;
+  kind: FrontmatterRepairKind;
+  /**
+   * Set once the user picked a side of an invocation conflict.
+   */
+  choice: InvocationConflictChoice | null;
   expected_content_fingerprint: string;
   proposal_id: string;
   original_content: string;

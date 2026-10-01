@@ -2,7 +2,12 @@
 // Skill Studio - malformed frontmatter repair presentation policy
 // ============================================================================
 
-import type { Deployment, FrontmatterRepairPreview } from "@skill-studio/lib";
+import type {
+  Deployment,
+  FrontmatterRepairKind,
+  FrontmatterRepairPreview,
+  InvocationConflictChoice,
+} from "@skill-studio/lib";
 
 export function hasMalformedYamlWarning(
   deployment: Pick<Deployment, "spec_violations"> | undefined,
@@ -12,6 +17,64 @@ export function hasMalformedYamlWarning(
       violation.startsWith("invalid YAML frontmatter at line "),
     ),
   );
+}
+
+const NAME_FORMAT_PREFIX = 'name "';
+
+/**
+ * Which backend repair, if any, targets the deployment's spec violations.
+ * A broken YAML block hides the other checks, so it wins; name fixes come
+ * before the invocation conflict because the user picks a side only once.
+ */
+export function frontmatterRepairKindFor(
+  deployment: Pick<Deployment, "spec_violations"> | undefined,
+): FrontmatterRepairKind | null {
+  const violations = deployment?.spec_violations ?? [];
+  if (hasMalformedYamlWarning(deployment)) return "colon-scalar";
+  const nameViolation = (fragment: string) =>
+    violations.some((v) => v.startsWith(NAME_FORMAT_PREFIX) && v.includes(fragment));
+  if (nameViolation("must be 1-64 lowercase")) return "name-format";
+  if (nameViolation("does not match its directory name")) return "name-mismatch";
+  if (violations.includes("conflicting invocation keys")) return "invocation-conflict";
+  return null;
+}
+
+export const INVOCATION_CONFLICT_OPTIONS: ReadonlyArray<{
+  choice: InvocationConflictChoice;
+  label: string;
+}> = [
+  { choice: "user-only", label: "Only you can run it" },
+  { choice: "model-only", label: "Only the agent runs it" },
+];
+
+const REPAIR_COPY = {
+  "colon-scalar": {
+    dialogTitle: "Preview YAML fix",
+    success: "YAML fixed",
+    failure: "Couldn't fix YAML",
+  },
+  "name-mismatch": {
+    dialogTitle: "Preview name fix",
+    success: "Name fixed",
+    failure: "Couldn't fix name",
+  },
+  "name-format": {
+    dialogTitle: "Preview name fix",
+    success: "Name fixed",
+    failure: "Couldn't fix name",
+  },
+  "invocation-conflict": {
+    dialogTitle: "Choose who can run this skill",
+    success: "Invocation fixed",
+    failure: "Couldn't fix invocation",
+  },
+} satisfies Record<
+  FrontmatterRepairKind,
+  { dialogTitle: string; success: string; failure: string }
+>;
+
+export function frontmatterRepairCopy(kind: FrontmatterRepairKind) {
+  return REPAIR_COPY[kind];
 }
 
 /** One backend preview per file state: the deployment plus the bytes last scanned for it. */

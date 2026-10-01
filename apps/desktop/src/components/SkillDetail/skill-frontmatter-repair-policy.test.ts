@@ -7,6 +7,8 @@ import type { Deployment, FrontmatterRepairPreview } from "@skill-studio/lib";
 import {
   canOfferLocalQuote,
   frontmatterPreviewKey,
+  frontmatterRepairCopy,
+  frontmatterRepairKindFor,
   frontmatterRepairActionLabels,
   hasMalformedYamlWarning,
 } from "./skill-frontmatter-repair-policy";
@@ -84,5 +86,58 @@ describe("canOfferLocalQuote", () => {
    */
   it("offers Quote once the backend preview settled empty", () => {
     expect(canOfferLocalQuote({ isPreviewSettled: true, hasPreview: false })).toBe(true);
+  });
+});
+
+describe("frontmatterRepairKindFor", () => {
+  const kindFor = (...spec_violations: string[]) => frontmatterRepairKindFor({ spec_violations });
+
+  /**
+   * Flow: the scanner reports each fixable violation.
+   * Expect: the matching repair kind.
+   * Failure: a Fix button asks the backend for the wrong repair, which refuses it.
+   */
+  it("maps each fixable violation to its repair kind", () => {
+    expect(kindFor("invalid YAML frontmatter at line 3, column 1: x")).toBe("colon-scalar");
+    expect(kindFor('name "Foo" does not match its directory name "foo"')).toBe("name-mismatch");
+    expect(
+      kindFor('name "Foo" must be 1-64 lowercase a-z0-9 characters and hyphens, with no leading'),
+    ).toBe("name-format");
+    expect(kindFor("conflicting invocation keys")).toBe("invocation-conflict");
+  });
+
+  /**
+   * Flow: a skill has a name problem and the invocation conflict.
+   * Expect: the name fix first.
+   * Failure: the conflict dialog opens while the name stays wrong.
+   */
+  it("offers the name fix before the invocation conflict", () => {
+    expect(
+      kindFor("conflicting invocation keys", 'name "a" does not match its directory name "b"'),
+    ).toBe("name-mismatch");
+  });
+
+  /**
+   * Flow: the skill has only violations no repair handles.
+   * Expect: no kind, so no preview is requested.
+   * Failure: every skill with a spec note triggers a backend preview.
+   */
+  it("returns null when no repair applies", () => {
+    expect(kindFor("description exceeds 1024 characters")).toBeNull();
+    expect(frontmatterRepairKindFor(undefined)).toBeNull();
+  });
+});
+
+describe("frontmatterRepairCopy", () => {
+  /**
+   * Flow: a repair succeeds.
+   * Expect: the toast names the thing fixed.
+   * Failure: every kind says "YAML fixed".
+   */
+  it("names the fixed thing per kind", () => {
+    expect(frontmatterRepairCopy("colon-scalar").success).toBe("YAML fixed");
+    expect(frontmatterRepairCopy("name-mismatch").success).toBe("Name fixed");
+    expect(frontmatterRepairCopy("name-format").success).toBe("Name fixed");
+    expect(frontmatterRepairCopy("invocation-conflict").success).toBe("Invocation fixed");
   });
 });
