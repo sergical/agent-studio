@@ -139,9 +139,10 @@ fn apply_modes(deployment: &Deployment) -> Vec<FrontmatterRepairApplyMode> {
     }
 }
 
-/// The folder name the scanner validates `name` against. The scanner checks
-/// the canonical folder, so a link under another name must not write its own
-/// name into the shared file.
+/// The real folder name a name fix writes into `SKILL.md`. The scanner checks
+/// each deployment against its own folder name, so a link under another name
+/// must not write its own name into the shared file. Other deployments of the
+/// same file are guarded by `refuse_name_fix_with_differently_named_peer`.
 fn repair_folder_name(
     deployment_path: &Path,
     kind: FrontmatterRepairKind,
@@ -167,6 +168,39 @@ fn repair_folder_name(
         ));
     }
     Ok(resolved_name.to_string())
+}
+
+/// A name fix on a real folder moves the mismatch to any other deployment
+/// that reaches the same `SKILL.md` under a different folder name, so it is
+/// refused while one exists.
+fn refuse_name_fix_with_differently_named_peer(
+    snapshot: &skill_refresh::SkillSnapshot,
+    deployment: &Deployment,
+    kind: FrontmatterRepairKind,
+) -> Result<(), String> {
+    if !matches!(
+        kind,
+        FrontmatterRepairKind::NameMismatch | FrontmatterRepairKind::NameFormat
+    ) {
+        return Ok(());
+    }
+    let Ok(real) = fs::canonicalize(&deployment.path) else {
+        return Ok(());
+    };
+    let real_name = real.file_name();
+    for other in snapshot.skills.iter().flat_map(|skill| &skill.deployments) {
+        if other.id == deployment.id {
+            continue;
+        }
+        let same_real = fs::canonicalize(&other.path).is_ok_and(|resolved| resolved == real);
+        if same_real && Path::new(&other.path).file_name() != real_name {
+            return Err(format!(
+                "Another deployment at {} reaches this SKILL.md under a different folder name, so fixing the name here would break it. Rename or remove that link first.",
+                other.path
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn preview_from_deployment(
@@ -269,7 +303,9 @@ fn preview_from_cached_snapshot(
         let snapshot = guard
             .as_ref()
             .ok_or("Skills are still loading; no snapshot to preview from")?;
-        exact_target(snapshot, target)?.clone()
+        let deployment = exact_target(snapshot, target)?;
+        refuse_name_fix_with_differently_named_peer(snapshot, deployment, kind)?;
+        deployment.clone()
     };
     preview_from_deployment(&deployment, kind, choice)
 }
@@ -448,6 +484,7 @@ pub async fn apply_skill_frontmatter_repair(
             let snapshot =
                 super::skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
             let deployment = exact_target(&snapshot, &target)?.clone();
+            refuse_name_fix_with_differently_named_peer(&snapshot, &deployment, kind)?;
             let skill_md = PathBuf::from(&deployment.path).join("SKILL.md");
             let name = super::skill_deployment::parse_deployment_id(&deployment.id)
                 .map(|id| id.name)
@@ -706,33 +743,77 @@ mod tests {
         );
     }
 
-    /// Flow: a link with the same basename as its real folder gets a name fix.
-    /// Expect: the proposal uses the resolved folder name. Failure: the fix
-    /// reads the link path wrongly or writes a different name.
+    /// Flow: a link named `sample` points at the real folder `sample-real`.
+    /// Expect: the folder name used is the resolved `sample-real`. Failure: the
+    /// code takes the link's own basename and writes the wrong name.
     #[cfg(unix)]
     #[test]
-    fn name_fix_through_a_same_named_symlink_uses_the_resolved_folder_name() {
+    fn repair_folder_name_uses_the_resolved_folder_not_the_link_path() {
         let temp = tempfile::tempdir().unwrap();
-        let real = temp.path().join("real/sample");
-        let link_parent = temp.path().join("links");
+        let real = temp.path().join("sample-real");
         fs::create_dir_all(&real).unwrap();
-        fs::create_dir_all(&link_parent).unwrap();
+        let link = temp.path().join("sample");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let name = repair_folder_name(&link, FrontmatterRepairKind::ColonScalar).unwrap();
+
+        assert_eq!(name, "sample-real");
+    }
+
+    fn real_folder_with_link(link_name: &str) -> (tempfile::TempDir, Deployment, Deployment) {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("foo");
+        fs::create_dir_all(&real).unwrap();
         fs::write(
             real.join("SKILL.md"),
-            "---\nname: other\ndescription: d\n---\n",
+            "---\nname: bar\ndescription: d\n---\n",
         )
         .unwrap();
-        let link = link_parent.join("sample");
+        let links = temp.path().join("links");
+        fs::create_dir_all(&links).unwrap();
+        let link = links.join(link_name);
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        let dep = deployment(&link, LifecycleOwnerKind::Manual);
+        let real_dep = deployment(&real, LifecycleOwnerKind::Manual);
+        let link_dep = deployment(&link, LifecycleOwnerKind::Manual);
+        (temp, real_dep, link_dep)
+    }
 
-        let preview =
-            preview_from_deployment(&dep, FrontmatterRepairKind::NameMismatch, None).unwrap();
+    /// Flow: real folder `foo` is also linked as `bar`, and the user fixes the
+    /// name on `foo`. Expect: refused, naming the `bar` link. Failure: `foo`
+    /// is written and the mismatch moves to the `bar` link.
+    #[cfg(unix)]
+    #[test]
+    fn name_fix_is_refused_when_another_deployment_links_the_folder_under_a_different_name() {
+        let (_temp, real_dep, link_dep) = real_folder_with_link("bar");
+        let mut snapshot = snapshot_with(real_dep.clone());
+        snapshot.skills[0].deployments.push(link_dep.clone());
 
-        assert_eq!(
-            preview.proposed_content,
-            "---\nname: sample\ndescription: d\n---\n"
-        );
+        let error = refuse_name_fix_with_differently_named_peer(
+            &snapshot,
+            &real_dep,
+            FrontmatterRepairKind::NameMismatch,
+        )
+        .unwrap_err();
+
+        assert!(error.contains(&link_dep.path), "{error}");
+    }
+
+    /// Flow: real folder `foo` is also linked under the same name `foo`.
+    /// Expect: the name fix is allowed. Failure: harmless same-named links
+    /// block the fix.
+    #[cfg(unix)]
+    #[test]
+    fn name_fix_is_allowed_when_another_deployment_links_the_folder_under_the_same_name() {
+        let (_temp, real_dep, link_dep) = real_folder_with_link("foo");
+        let mut snapshot = snapshot_with(real_dep.clone());
+        snapshot.skills[0].deployments.push(link_dep);
+
+        refuse_name_fix_with_differently_named_peer(
+            &snapshot,
+            &real_dep,
+            FrontmatterRepairKind::NameMismatch,
+        )
+        .unwrap();
     }
 
     /// Flow: a link whose basename differs from its real folder gets a name

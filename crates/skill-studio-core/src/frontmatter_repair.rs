@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::frontmatter::{
     is_valid_skill_name, parse_frontmatter, validate_skill, FrontmatterParseResult,
+    SkillFrontmatter,
 };
 
 /// Which deterministic fix to propose.
@@ -239,6 +240,20 @@ fn rebuild(lines: &[&str], index: usize, replacement: Option<&str>) -> String {
     out
 }
 
+/// Parsed frontmatter with the field behind `key` cleared, so two versions of
+/// a file can be compared on everything except the key a repair targets.
+fn parsed_without(content: &str, key: &str) -> Option<SkillFrontmatter> {
+    let FrontmatterParseResult::Valid(mut parsed) = parse_frontmatter(content) else {
+        return None;
+    };
+    match key {
+        "name" => parsed.name = None,
+        "user-invocable" => parsed.user_invocable = None,
+        _ => parsed.disable_model_invocation = None,
+    }
+    Some(parsed)
+}
+
 fn propose_name_repair(
     content: &str,
     dir_name: &str,
@@ -274,6 +289,16 @@ fn propose_conflict_repair(
     };
     let lines = lines_with_endings(content);
     let index = find_key_line(&lines, key).ok_or_else(|| format!("No top-level {key} line"))?;
+    let inline_value = body_of(lines[index])[key.len() + 1..].trim();
+    let continues = lines.get(index + 1).is_some_and(|next| {
+        let body = body_of(next);
+        body.starts_with([' ', '\t']) && !body.trim().is_empty()
+    });
+    if inline_value.is_empty() || inline_value.starts_with('#') || continues {
+        return Err(format!(
+            "The {key} value is not a single-line scalar, so removing it would corrupt the key above"
+        ));
+    }
     Ok(rebuild(&lines, index, None))
 }
 
@@ -291,17 +316,19 @@ pub fn propose_repair(
     dir_name: &str,
     choice: Option<InvocationConflictChoice>,
 ) -> Result<(String, String), String> {
-    let (proposed, reason, targets): (String, String, fn(&str) -> bool) = match kind {
+    let (proposed, reason, targets, key): (String, String, fn(&str) -> bool, &str) = match kind {
         FrontmatterRepairKind::ColonScalar => return propose_colon_scalar_repair(content),
         FrontmatterRepairKind::NameMismatch => (
             propose_name_repair(content, dir_name, violation_is_name_mismatch)?,
             format!("Set name to the folder name \"{dir_name}\"."),
             violation_is_name_mismatch,
+            "name",
         ),
         FrontmatterRepairKind::NameFormat => (
             propose_name_repair(content, dir_name, violation_is_name_format)?,
             format!("Set name to the folder name \"{dir_name}\"."),
             violation_is_name_format,
+            "name",
         ),
         FrontmatterRepairKind::InvocationConflict => {
             for option in [
@@ -325,6 +352,10 @@ pub fn propose_repair(
                 propose_conflict_repair(content, dir_name, choice)?,
                 reason.to_string(),
                 violation_is_invocation_conflict,
+                match choice {
+                    InvocationConflictChoice::UserOnly => "user-invocable",
+                    InvocationConflictChoice::ModelOnly => "disable-model-invocation",
+                },
             )
         }
     };
@@ -332,6 +363,9 @@ pub fn propose_repair(
     let after = violations_of(dir_name, &proposed);
     if after.iter().any(|v| targets(v)) || after.iter().any(|v| !before.contains(v)) {
         return Err("The proposed repair would still leave a violation".to_string());
+    }
+    if parsed_without(content, key) != parsed_without(&proposed, key) {
+        return Err("The proposed repair would change another key's value".to_string());
     }
     Ok((proposed, reason))
 }
@@ -501,6 +535,41 @@ mod tests {
             CONFLICT.replace("disable-model-invocation: true\n", "")
         );
         assert!(violations_of("sample", &proposed).is_empty());
+    }
+
+    /// Flow: the conflict key has no inline value and an indented `true`
+    /// below it. Expect: refused. Failure: the orphaned `  true` folds into
+    /// `description` and the repair is offered.
+    #[test]
+    fn conflict_repair_is_refused_when_the_key_value_continues_on_an_indented_line() {
+        let content = "---\nname: sample\ndescription: d\ndisable-model-invocation:\n  true\nuser-invocable: false\n---\nBody.\n";
+        let error = propose_repair(
+            FrontmatterRepairKind::InvocationConflict,
+            content,
+            "sample",
+            Some(InvocationConflictChoice::ModelOnly),
+        )
+        .unwrap_err();
+        assert!(error.contains("disable-model-invocation"), "{error}");
+    }
+
+    /// Flow: a block `description: |` sits above the removed key. Expect: its
+    /// parsed value is unchanged after the fix. Failure: the rewrite alters
+    /// another key.
+    #[test]
+    fn conflict_repair_keeps_a_block_description_value_exactly() {
+        let content = "---\nname: sample\ndescription: |\n  line one\n  line two\ndisable-model-invocation: true\nuser-invocable: false\n---\nBody.\n";
+        let (proposed, _) = propose_repair(
+            FrontmatterRepairKind::InvocationConflict,
+            content,
+            "sample",
+            Some(InvocationConflictChoice::ModelOnly),
+        )
+        .unwrap();
+        let FrontmatterParseResult::Valid(parsed) = parse_frontmatter(&proposed) else {
+            panic!("proposal must parse");
+        };
+        assert_eq!(parsed.description.as_deref(), Some("line one\nline two\n"));
     }
 
     /// Flow: the dialog opens before the user picks. Expect: unchanged

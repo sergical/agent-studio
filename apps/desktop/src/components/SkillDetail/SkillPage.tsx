@@ -398,6 +398,7 @@ export function SkillPage({
 
       {openRepair && deployment && (
         <SkillFrontmatterRepairDialog
+          key={openRepair.proposal_id}
           target={lifecycleTargetForDeployment(deployment)}
           preview={openRepair}
           onClose={() => setOpenRepairKind(null)}
