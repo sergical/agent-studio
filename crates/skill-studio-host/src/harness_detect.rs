@@ -17,6 +17,11 @@ use crate::tools::is_executable_file;
 /// while waiting for `ProcessSpec::timeout_ms`'s deadline.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// How long [`broken_node_reason`] lets `node --version` run. It runs on every
+/// failed npx run, so a hanging `node` must not extend `ProcessSpec::timeout_ms`
+/// by much.
+const NODE_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// How long the timeout path waits for a reader thread to see EOF after
 /// killing the child's whole process group, before giving up on it and
 /// returning whatever was collected so far (possibly nothing). Bounded so a
@@ -163,16 +168,34 @@ impl RealProcessSpawner {
 /// `node` fails to start for that reason. `None` for a working Node or any
 /// other failure.
 fn broken_node_reason(node: &Path, path: &OsString) -> Option<String> {
-    let result = std::process::Command::new(node)
+    let mut child = std::process::Command::new(node)
         .arg("--version")
         .env("PATH", path)
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
         .ok()?;
-    if result.status.success() {
+    let stderr_reader = child.stderr.take().map(spawn_drain::<ChildStderr>);
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if start.elapsed() < NODE_VERSION_TIMEOUT => {
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if status.success() {
         return None;
     }
-    String::from_utf8_lossy(&result.stderr)
+    let stderr = stderr_reader.and_then(|h| h.join().ok())?;
+    String::from_utf8_lossy(&stderr)
         .lines()
         .find(|line| line.contains("Library not loaded"))
         .map(|line| line.trim().to_string())

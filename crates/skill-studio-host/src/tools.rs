@@ -219,9 +219,11 @@ fn default_fallback_dirs() -> Vec<PathBuf> {
     )
 }
 
-/// Version-manager directories come before the system ones: a Node the user
-/// chose through mise, fnm, volta, or nvm wins over Homebrew's, whose `node`
-/// breaks when Homebrew upgrades one of its shared libraries. fnm's
+/// Order: mise shims, Homebrew and `/usr/local`, then version-manager
+/// installs. A shim with no version set falls through to the next `node` on
+/// `PATH`, so it is safe first. Real installs come after Homebrew so that a
+/// stale nvm Node does not beat a working system Node; the login-shell probe,
+/// not this list, handles users whose Homebrew `node` is broken. fnm's
 /// `fnm_multishells` symlinks are per shell session, so only its installed
 /// versions are listed.
 fn fallback_dirs(
@@ -230,9 +232,14 @@ fn fallback_dirs(
     fnm_dir: Option<PathBuf>,
 ) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(mise) = mise_data_dir.or_else(|| home.map(|h| h.join(".local/share/mise"))) {
+    let mise = mise_data_dir.or_else(|| home.map(|h| h.join(".local/share/mise")));
+    if let Some(mise) = &mise {
         dirs.push(mise.join("shims"));
-        dirs.extend(versioned_bin_dirs(&mise.join("installs/node"), "bin"));
+    }
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    if let Some(home) = home {
+        dirs.push(home.join(".volta/bin"));
     }
     let fnm_roots = match (fnm_dir, home) {
         (Some(fnm), _) => vec![fnm],
@@ -249,11 +256,11 @@ fn fallback_dirs(
         ));
     }
     if let Some(home) = home {
-        dirs.push(home.join(".volta/bin"));
         dirs.extend(nvm_node_bin_dirs(&home.join(".nvm/versions/node")));
     }
-    dirs.push(PathBuf::from("/opt/homebrew/bin"));
-    dirs.push(PathBuf::from("/usr/local/bin"));
+    if let Some(mise) = &mise {
+        dirs.extend(versioned_bin_dirs(&mise.join("installs/node"), "bin"));
+    }
     if let Some(home) = home {
         dirs.push(home.join(".local/bin"));
         dirs.push(home.join(".npm-global/bin"));
@@ -575,11 +582,11 @@ mod tests {
         );
     }
 
-    /// `a_shell_that_never_prints_path_falls_back_or_names_the_dirs_it_returned`:
-    /// a shell that prints nothing must yield the fallback list, not an
-    /// empty `PATH`.
+    /// `a_shell_that_cannot_be_started_falls_back_or_names_the_dirs_it_returned`:
+    /// a shell binary that does not exist must yield the fallback list, not
+    /// an empty `PATH`.
     #[test]
-    fn a_shell_that_never_prints_path_falls_back_or_names_the_dirs_it_returned() {
+    fn a_shell_that_cannot_be_started_falls_back_or_names_the_dirs_it_returned() {
         let dirs = probe_login_shell_path(
             "/definitely/not/a/shell",
             Duration::from_secs(1),
@@ -589,12 +596,32 @@ mod tests {
         assert_eq!(dirs, vec![PathBuf::from("/fallback")]);
     }
 
-    /// `fallback_dirs_list_version_manager_node_before_homebrew_or_name_the_misordered_dir`:
-    /// Homebrew's `node` can be broken by its own library upgrades, so the
-    /// Node a version manager installed must come first. Fails on the old
-    /// order, which listed `/opt/homebrew/bin` before every manager dir.
+    /// `a_shell_that_exits_without_printing_path_falls_back_or_returns_an_empty_path`:
+    /// a shell that starts, exits 0 and prints nothing must also yield the
+    /// fallback list.
+    #[cfg(unix)]
     #[test]
-    fn fallback_dirs_list_version_manager_node_before_homebrew_or_name_the_misordered_dir() {
+    fn a_shell_that_exits_without_printing_path_falls_back_or_returns_an_empty_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("silent-shell");
+        fs::write(&shell, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let dirs = probe_login_shell_path(
+            shell.to_str().unwrap(),
+            Duration::from_secs(5),
+            &[PathBuf::from("/fallback")],
+        );
+
+        assert_eq!(dirs, vec![PathBuf::from("/fallback")]);
+    }
+
+    /// `fallback_puts_mise_shims_then_homebrew_before_version_installs_or_an_old_nvm_node_wins`:
+    /// with the probe failed, an old nvm Node must not beat a working
+    /// Homebrew Node. Fails on the order that listed manager installs first.
+    #[test]
+    fn fallback_puts_mise_shims_then_homebrew_before_version_installs_or_an_old_nvm_node_wins() {
         let home = tempfile::tempdir().unwrap();
         let mise_bin = home
             .path()
@@ -602,27 +629,30 @@ mod tests {
         let fnm_bin = home
             .path()
             .join(".local/share/fnm/node-versions/v22.1.0/installation/bin");
-        let nvm_bin = home.path().join(".nvm/versions/node/v22.1.0/bin");
+        let nvm_bin = home.path().join(".nvm/versions/node/v16.0.0/bin");
         for dir in [&mise_bin, &fnm_bin, &nvm_bin] {
             fs::create_dir_all(dir).unwrap();
         }
 
         let dirs = fallback_dirs(Some(home.path()), None, None);
-        let position = |dir: &Path| dirs.iter().position(|d| d == dir);
-        let homebrew = position(Path::new("/opt/homebrew/bin")).unwrap();
-        let volta = position(&home.path().join(".volta/bin")).unwrap();
-        let shims = position(&home.path().join(".local/share/mise/shims")).unwrap();
+        let position = |dir: &Path| dirs.iter().position(|d| d == dir).unwrap();
+        let shims = position(&home.path().join(".local/share/mise/shims"));
+        let homebrew = position(Path::new("/opt/homebrew/bin"));
+        let usr_local = position(Path::new("/usr/local/bin"));
 
+        assert!(
+            shims < homebrew,
+            "mise shims must come before Homebrew: {dirs:?}"
+        );
         for (name, dir) in [
-            ("mise install", position(&mise_bin)),
-            ("mise shims", Some(shims)),
-            ("fnm", position(&fnm_bin)),
-            ("nvm", position(&nvm_bin)),
-            ("volta", Some(volta)),
+            ("volta", home.path().join(".volta/bin")),
+            ("mise install", mise_bin),
+            ("fnm", fnm_bin),
+            ("nvm", nvm_bin),
         ] {
             assert!(
-                dir.is_some_and(|index| index < homebrew),
-                "{name} dir is missing or listed after /opt/homebrew/bin: {dirs:?}"
+                position(&dir) > homebrew.max(usr_local),
+                "{name} dir must be listed after Homebrew and /usr/local/bin: {dirs:?}"
             );
         }
     }
