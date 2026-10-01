@@ -172,7 +172,11 @@ function useReducedMotion() {
 function WelcomeArt() {
   const reduceMotion = useReducedMotion();
   return (
-    <div data-tauri-drag-region className="relative w-[44%] shrink-0 overflow-hidden bg-[#150b2e]">
+    <div
+      aria-hidden="true"
+      data-tauri-drag-region
+      className="relative w-[44%] shrink-0 overflow-hidden bg-[#150b2e]"
+    >
       <div className="pointer-events-none absolute inset-0">
         <Dithering
           width="100%"
