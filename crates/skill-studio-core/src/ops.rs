@@ -5098,8 +5098,10 @@ fn restore_event_body(
     // registry.json backup, next to its deployment tree - restores
     // best-effort alongside the primary path below, keyed by its own
     // original location rather than folded into `plan`: `path`'s restore is
-    // the one drift-checked and claimed against above, so a problem with a
-    // secondary entry must not block or fail it.
+    // the one drift-checked and claimed against above. A secondary entry
+    // whose current state cannot be read fails the restore closed, before
+    // anything is written, because the restore backs it up first; one that
+    // cannot be written back later does not fail it.
     let mut extra_plans: Vec<(PathBuf, RestorePlan)> = Vec::new();
     let plan = match &pre {
         None => {
@@ -5383,7 +5385,10 @@ fn restore_event_body(
         {
             match crate::ports::confine(&rt.scope, fs, other_path) {
                 Ok(scoped) => {
-                    let _ = fs.remove_file(&session.guard, &scoped);
+                    if let Err(e) = fs.remove_file(&session.guard, &scoped) {
+                        copy_errors.push(CoreError::io(other_path, e).message);
+                        continue;
+                    }
                 }
                 Err(_) => continue,
             }

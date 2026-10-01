@@ -121,7 +121,10 @@ struct DotagentsPlan {
     /// `agents.toml`, or the file its link resolves to, so undo restores the
     /// real file and the link survives.
     config: PathBuf,
+    /// `agents.lock`, or the file its link resolves to.
     lock: PathBuf,
+    /// The folder holding `agents.toml` and `agents.lock`, before link resolution.
+    dir: PathBuf,
     /// Names of the non-wildcard `[[skills]]` entries, which `install`
     /// refreshes along with the one being updated.
     declared: Vec<String>,
@@ -208,7 +211,8 @@ fn plan_dotagents_update(
     });
     Ok(DotagentsPlan {
         config,
-        lock: dir.join("agents.lock"),
+        lock: crate::ports::resolve_config_link(fs, &dir.join("agents.lock"))?,
+        dir,
         declared,
         original_config: text,
         edited_config: pinned.map(|()| doc.to_string()),
@@ -225,10 +229,8 @@ fn other_declared_folders(
     universal_root: &Path,
     destination: &Path,
 ) -> Vec<PathBuf> {
-    let locked = plan
-        .lock
-        .parent()
-        .and_then(|dir| crate::dotagents_ledger::read_dotagents_ledger(fs, dir).ok())
+    let locked = crate::dotagents_ledger::read_dotagents_ledger(fs, &plan.dir)
+        .ok()
         .into_iter()
         .flatten()
         .map(|skill| skill.name);
@@ -274,13 +276,15 @@ fn record_dotagents_side_effects(
         .iter()
         .map(|path| (path.clone(), fingerprint_path(fs, path)))
         .collect::<Vec<_>>();
+    // A folder that cannot be listed or read is left out of `created`, never
+    // allowed to drop the `secondary_post` part above.
     let mut created = Vec::new();
-    for name in skill_folder_names(fs, universal_root)? {
+    for name in skill_folder_names(fs, universal_root).unwrap_or_default() {
         let folder = universal_root.join(&name);
         if folders_before.contains(&name) || secondary.contains(&folder) {
             continue;
         }
-        if let Some(fingerprint) = fingerprint_path(fs, &folder)? {
+        if let Ok(Some(fingerprint)) = fingerprint_path(fs, &folder) {
             created.push((folder, fingerprint));
         }
     }

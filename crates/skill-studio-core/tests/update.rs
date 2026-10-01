@@ -1913,3 +1913,147 @@ fn update_that_cannot_list_the_skills_root_fails_before_any_backup() {
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// Flow: the install creates `gamma`, which cannot be read when the row's
+/// side-effect patch runs. The user then edits `beta`. A plain undo must
+/// refuse and leave the edit. Fails when the unreadable folder drops the
+/// whole patch, so the row has no vouched post-state for `beta` and undo
+/// overwrites the edit without `force`.
+#[cfg(unix)]
+#[test]
+fn plain_undo_refuses_over_an_edited_sibling_when_a_created_folder_was_unreadable() {
+    let home = siblings_home("update_unreadable_created");
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(UnreadableAfterInstall {
+            inner: FakeNpxUpdateSpawner::new(home.clone(), "v2").installing_new(&["gamma"]),
+            unreadable: home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma/SKILL.md"),
+        })),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    let beta_md = home.join(UNIVERSAL_ROOT_RELATIVE).join("beta/SKILL.md");
+    std::fs::write(&beta_md, "my edit to beta\n").unwrap();
+
+    let err = undo(&rt, outcome.event_id, false).unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::DriftConflict);
+    assert_eq!(
+        std::fs::read_to_string(&beta_md).unwrap(),
+        "my edit to beta\n"
+    );
+
+    make_readable(&home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma/SKILL.md"));
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: a dotfiles repo links `agents.lock`; the install writes through the
+/// link; undo must restore the lock's v1 bytes in the link's target and keep
+/// the link. Fails when undo deletes the link and writes a plain file, or
+/// leaves the target at the install's bytes.
+#[cfg(unix)]
+#[test]
+fn undoing_an_update_keeps_a_symlinked_agents_lock_and_restores_its_target_bytes() {
+    let home = siblings_home("update_symlinked_lock");
+    let real = home.join("dotfiles/agents.lock");
+    let link = home.join(".agents/agents.lock");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::rename(&link, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"))),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    assert_eq!(
+        std::fs::read_to_string(&real).unwrap(),
+        "# rewritten by install\n"
+    );
+
+    undo(&rt, outcome.event_id, false).unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "undo replaced the symlinked agents.lock with a plain file"
+    );
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), LOCK_BEFORE);
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the install creates the declared `beta`; the user then replaces it
+/// with a link to a folder outside the scope holding their own files; a
+/// forced undo must take the link down and leave that folder alone. Fails
+/// when removing the created extra path follows the link and deletes the
+/// user's data.
+#[cfg(unix)]
+#[test]
+fn forced_undo_leaves_a_link_target_outside_scope_alone_or_deletes_user_data() {
+    let home = unique_temp_dir("update_remove_extra_link");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "alpha", "v1");
+    seed_dotagents_files(&home, SIBLINGS_TOML);
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(
+            FakeNpxUpdateSpawner::new(home.clone(), "v2").installing_new(&["beta"]),
+        )),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    let outside = unique_temp_dir("update_remove_extra_outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("SKILL.md"), "outside beta\n").unwrap();
+    let beta = home.join(UNIVERSAL_ROOT_RELATIVE).join("beta");
+    std::fs::remove_dir_all(&beta).unwrap();
+    std::os::unix::fs::symlink(&outside, &beta).unwrap();
+
+    undo(&rt, outcome.event_id, true).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(outside.join("SKILL.md")).unwrap(),
+        "outside beta\n"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&outside).ok();
+}
+
+/// Flow: after the update, `agents.toml` becomes a link to another file in
+/// the scope; a forced undo must replace the link with a plain file holding
+/// the v1 bytes and leave the link's target as the user wrote it. Fails when
+/// undo writes through the link into the target, or keeps the link.
+#[cfg(unix)]
+#[test]
+fn forced_undo_replaces_a_linked_extra_file_with_a_plain_file_or_writes_into_the_target() {
+    let home = siblings_home("update_extra_became_link");
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"))),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    let toml = home.join(".agents/agents.toml");
+    let target = home.join("user-target.toml");
+    std::fs::write(&target, "user bytes\n").unwrap();
+    std::fs::remove_file(&toml).unwrap();
+    std::os::unix::fs::symlink(&target, &toml).unwrap();
+
+    undo(&rt, outcome.event_id, true).unwrap();
+
+    assert!(
+        !std::fs::symlink_metadata(&toml)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link must be replaced by a plain file"
+    );
+    assert_eq!(std::fs::read_to_string(&toml).unwrap(), SIBLINGS_TOML);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "user bytes\n");
+
+    std::fs::remove_dir_all(&home).ok();
+}
