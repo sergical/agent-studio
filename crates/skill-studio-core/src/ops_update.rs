@@ -245,13 +245,17 @@ fn other_declared_folders(
 }
 
 /// Names of the skill-shaped entries directly under `universal_root`.
-fn skill_folder_names(fs: &dyn ScopeFs, universal_root: &Path) -> Vec<String> {
-    fs.read_dir(universal_root)
-        .unwrap_or_default()
+fn skill_folder_names(fs: &dyn ScopeFs, universal_root: &Path) -> Result<Vec<String>, CoreError> {
+    let entries = match fs.read_dir(universal_root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(CoreError::io(universal_root, e)),
+    };
+    Ok(entries
         .into_iter()
         .filter(crate::ports::is_skill_shaped_entry)
         .map(|entry| entry.name)
-        .collect()
+        .collect())
 }
 
 /// Patches the update row's inverse with what only the finished install can
@@ -271,7 +275,7 @@ fn record_dotagents_side_effects(
         .map(|path| Ok((path.clone(), fingerprint_path(fs, path)?)))
         .collect::<Result<Vec<_>, CoreError>>()?;
     let mut created = Vec::new();
-    for name in skill_folder_names(fs, universal_root) {
+    for name in skill_folder_names(fs, universal_root)? {
         let folder = universal_root.join(&name);
         if folders_before.contains(&name) || secondary.contains(&folder) {
             continue;
@@ -729,7 +733,7 @@ fn update_body(
             &universal_root,
             &destination,
         ));
-        folders_before = skill_folder_names(fs, &universal_root);
+        folders_before = skill_folder_names(fs, &universal_root)?;
     }
     let manifest = session
         .store
@@ -799,14 +803,16 @@ fn update_body(
         );
     }
     if dotagents.is_some() {
-        record_dotagents_side_effects(
+        // Best-effort like the registry patch above: the install already
+        // wrote, so the row must still finish for undo to find it.
+        let _ = record_dotagents_side_effects(
             &mut session,
             fs,
             &id,
             &universal_root,
             &backup_targets[1..],
             &folders_before,
-        )?;
+        );
     }
     let tree_hash_after = crate::tree_hash::tree_hash(fs, &destination)?;
     // The post-fingerprint the row records, not `None`: `restore_event`

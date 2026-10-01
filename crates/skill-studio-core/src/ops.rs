@@ -5108,6 +5108,9 @@ fn restore_event_body(
             .iter()
             .map(|(secondary, _)| secondary.clone()),
     );
+    // A forced write over a real folder quarantines it; the backup keeps it
+    // restorable.
+    restore_backup_targets.extend(write_back.iter().cloned());
     let manifest =
         session
             .store
@@ -5211,7 +5214,8 @@ fn restore_event_body(
                 RestorePlan::Write(bytes)
             };
             for other in &original_manifest.entries {
-                if other.original == path {
+                // A write-back path is written once, by `write_back_plans`.
+                if other.original == path || write_back.contains(&other.original) {
                     continue;
                 }
                 // A secondary path the event recorded as absent before and
@@ -5338,18 +5342,20 @@ fn restore_event_body(
     // reporting only `path`, rather than failing a restore that otherwise
     // succeeded. See `extra_plans`' own comment above.
     for (other_path, other_plan) in &extra_plans {
+        // Removing takes down the path itself, never what a link there points at.
+        if matches!(other_plan, RestorePlan::RemoveIfPresent) {
+            if let Ok(facts) = fs.symlink_metadata(other_path) {
+                if facts.kind == FileKind::Dir {
+                    crate::ops_remove::remove_tree_best_effort(fs, other_path);
+                } else if let Ok(scoped) = crate::ports::confine(&rt.scope, fs, other_path) {
+                    let _ = fs.remove_file(&session.guard, &scoped);
+                }
+            }
+            continue;
+        }
         if let Ok(other_scoped) = crate::ports::confine_write_through(&rt.scope, fs, other_path) {
             let result: Result<(), CoreError> = match other_plan {
-                RestorePlan::RemoveIfPresent => match fs.symlink_metadata(other_path) {
-                    Ok(facts) if facts.kind == FileKind::Dir => {
-                        crate::ops_remove::remove_tree_best_effort(fs, other_path);
-                        Ok(())
-                    }
-                    Ok(_) => fs
-                        .remove_file(&session.guard, &other_scoped)
-                        .map_err(|e| CoreError::io(other_path, e)),
-                    Err(_) => Ok(()),
-                },
+                RestorePlan::RemoveIfPresent => Ok(()),
                 RestorePlan::Write(bytes) => fs
                     .write_atomic(&session.guard, &other_scoped, bytes)
                     .map_err(|e| CoreError::io(other_path, e)),
@@ -5423,12 +5429,24 @@ fn restore_event_body(
             Some((copy.clone(), fingerprint))
         })
         .collect();
-    let mirror_patch = crate::events::with_remove_copies(
-        crate::events::with_add_codex_rows(
-            crate::events::with_remove_links(serde_json::json!({}), &recreated_links),
-            &removed_rows,
+    // The extra paths as this restore left them: its own undo refuses when
+    // one was edited since, like any other undo.
+    let extra_post: Vec<(PathBuf, Option<Fingerprint>)> = extra_plans
+        .iter()
+        .filter_map(|(extra, _)| {
+            let fingerprint = crate::events::fingerprint_path(fs, extra).ok()?;
+            Some((extra.clone(), fingerprint))
+        })
+        .collect();
+    let mirror_patch = crate::events::with_secondary_post(
+        crate::events::with_remove_copies(
+            crate::events::with_add_codex_rows(
+                crate::events::with_remove_links(serde_json::json!({}), &recreated_links),
+                &removed_rows,
+            ),
+            &written_back,
         ),
-        &written_back,
+        &extra_post,
     );
     let _ = session
         .store
