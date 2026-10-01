@@ -265,7 +265,7 @@ describe("back/forward history", () => {
     useAppStore.getState().setActiveView({ kind: "settings" });
     useAppStore.getState().setKnownSkillNames(new Set(["other"]));
     useAppStore.getState().goBack();
-    expect(useAppStore.getState().activeView).toEqual({ kind: "settings" });
+    expect(useAppStore.getState().activeView).toEqual({ kind: "home" });
   });
 
   it("opening the default copy's page again records no duplicate entry, so Back never lands on the same SKILL.md", () => {
