@@ -264,6 +264,8 @@ export function SkillPage({
     isEditing,
     isEditorDirty,
     setIsEditorDirty,
+    editorHighlightLine,
+    setEditorHighlightLine,
   } = useSkillMdEditorState(skill?.name, skillMdPath);
 
   const { pendingDiscard, setPendingDiscard } = useSkillEscapeGuard(
@@ -296,11 +298,13 @@ export function SkillPage({
       });
   };
 
-  const startEditing = () => {
+  const openEditor = (line?: number) => {
     if (rawContent === null) return;
     setEditorOpenedContent(rawContent);
+    setEditorHighlightLine(line);
     setIsEditorDirty(false);
   };
+  const startEditing = () => openEditor();
 
   if (!skill) {
     const name = activeView.kind === "skill" ? activeView.name : "";
@@ -335,7 +339,7 @@ export function SkillPage({
             skillMdContent={rawContent}
             onQuoteRepair={isPluginManaged ? undefined : handleQuoteRepair}
             onFixRepair={setOpenRepairKind}
-            onEditManually={startEditing}
+            onEditManually={openEditor}
           />
 
           <SkillLocationsCard skill={skill} onCompareCopies={() => setIsCompareOpen(true)} />
@@ -372,6 +376,7 @@ export function SkillPage({
                 setIsEditorDirty(false);
               }}
               onDirtyChange={setIsEditorDirty}
+              highlightLine={editorHighlightLine}
             />
           )}
         </div>

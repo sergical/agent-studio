@@ -49,7 +49,7 @@ const HOME_GLYPH_SIZE = 14;
 /** Text link style shared by every "Show all"/"Show everything"/"Learn more" affordance on Home. */
 const LINK_CLASS = "h-auto gap-1 p-0 text-small";
 
-/** One inbox row's trailing action - a text button or, on the "Recently used" rows, a plain count. */
+/** One inbox row's trailing text-button action. */
 const ROW_ACTION_CLASS =
   "h-9 max-w-full justify-end truncate p-0 text-right text-small text-text-tertiary hover:bg-transparent hover:text-accent";
 
@@ -511,7 +511,9 @@ function RecentGroup({
                   </span>
                 }
                 action={
-                  <span className={`${ROW_ACTION_CLASS} tabular-nums`}>{usesIn30Days} uses</span>
+                  <span className="w-full truncate text-right text-small tabular-nums text-text-tertiary">
+                    {usesIn30Days} uses
+                  </span>
                 }
               />
             );
@@ -559,10 +561,10 @@ function UpdatesGroup({
         updateAllSkillsWithProgress(targets, ({ done }) => onOwnerDone(done)),
       (done, total) => setProgress({ done, total }),
     );
-    const { attempted, succeeded, failures } = tally;
+    const { skillsAttempted, skillsSucceeded, failures } = tally;
     addToast({
       type: failures > 0 ? "warning" : "success",
-      title: `Updated ${succeeded} of ${attempted} deployment${attempted === 1 ? "" : "s"}`,
+      title: `Updated ${skillsSucceeded} of ${skillsAttempted} skill${skillsAttempted === 1 ? "" : "s"}`,
       message: updateAllFailureMessage(tally),
     });
     // react-doctor-disable-next-line react-doctor/no-loading-flag-reset-outside-finally -- the React Compiler rejects try/finally here (react-hooks-js/todo); `updateAllOutdatedSkills` never rejects, so this always runs

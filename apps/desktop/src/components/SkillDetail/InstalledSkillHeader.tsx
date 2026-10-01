@@ -38,7 +38,8 @@ interface InstalledSkillHeaderProps {
   /** Omitted when the rendered copy cannot be edited in place (plugin-managed). */
   onQuoteRepair?: (repair: FrontmatterQuoteRepair) => void;
   onFixRepair: (kind: FrontmatterRepairKind) => void;
-  onEditManually: () => void;
+  /** Opens the editor; `line` is the YAML error's line in SKILL.md, when the message names one. */
+  onEditManually: (line?: number) => void;
 }
 
 /** "Parked · Aug 25, 2026" / "Parked" when the timestamp is missing or unparseable. */
@@ -155,7 +156,11 @@ export function InstalledSkillHeader({
             <Button
               size="sm"
               variant="outline"
-              onClick={lineRepair ? () => onFixRepair(lineRepair.kind) : onEditManually}
+              onClick={
+                lineRepair
+                  ? () => onFixRepair(lineRepair.kind)
+                  : () => onEditManually(yamlLocation?.line)
+              }
             >
               {lineRepair ? "Fix" : "Edit manually"}
             </Button>

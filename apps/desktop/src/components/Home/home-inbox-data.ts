@@ -104,21 +104,25 @@ interface UpdateAllTally {
   attempted: number;
   succeeded: number;
   failures: number;
+  /** `attempted`/`succeeded` count update targets (one per copy); these count distinct skills, which is what the toast names. */
+  skillsAttempted: number;
+  skillsSucceeded: number;
   /** The first failed target's message, so the toast can say why. */
   firstError: string | null;
 }
 
 const MAX_ERROR_LENGTH = 140;
 
-/** "3 failed: <first error>" for the toast, or `undefined` when nothing failed. */
+/** "1 failed: <first error>" for the toast, or `undefined` when nothing failed. Counts skills, matching the toast title; a skill with any failed copy counts once. */
 export function updateAllFailureMessage(tally: UpdateAllTally): string | undefined {
   if (tally.failures === 0) return undefined;
-  if (!tally.firstError) return `${tally.failures} failed`;
+  const failedSkills = tally.skillsAttempted - tally.skillsSucceeded;
+  if (!tally.firstError) return `${failedSkills} failed`;
   const reason =
     tally.firstError.length > MAX_ERROR_LENGTH
       ? `${tally.firstError.slice(0, MAX_ERROR_LENGTH - 1)}…`
       : tally.firstError;
-  return `${tally.failures} failed: ${reason}`;
+  return `${failedSkills} failed: ${reason}`;
 }
 
 /**
@@ -146,7 +150,20 @@ export async function updateAllOutdatedSkills(
     skill.source_kind === "fork" ? [] : skillUpdateOwnerTargets(skill),
   );
   const total = forks.length + ownerTargets.length;
-  const tally: UpdateAllTally = { attempted: total, succeeded: 0, failures: 0, firstError: null };
+  const ownerSkillNames = new Set(
+    skills.flatMap((skill) =>
+      skill.source_kind !== "fork" && skillUpdateOwnerTargets(skill).length > 0 ? [skill.name] : [],
+    ),
+  );
+  const failedSkillNames = new Set<string>();
+  const tally: UpdateAllTally = {
+    attempted: total,
+    succeeded: 0,
+    failures: 0,
+    skillsAttempted: forks.length + ownerSkillNames.size,
+    skillsSucceeded: 0,
+    firstError: null,
+  };
   const fail = (count: number, message: string) => {
     tally.failures += count;
     tally.firstError ??= message;
@@ -159,6 +176,7 @@ export async function updateAllOutdatedSkills(
       await pullFork(lifecycleTargetForPark(skill));
       tally.succeeded += 1;
     } catch (error) {
+      failedSkillNames.add(skill.name);
       fail(1, error instanceof Error ? error.message : String(error));
     }
     onProgress?.(index + 1, total);
@@ -175,15 +193,19 @@ export async function updateAllOutdatedSkills(
       // instead (N1, review round 3).
       const failedItems = outcome.items.filter((item) => item.outcome === null);
       tally.succeeded += outcome.items.length - failedItems.length;
+      for (const item of failedItems) failedSkillNames.add(item.skill);
       if (failedItems.length > 0) {
         const first = failedItems[0];
         fail(failedItems.length, outcome.errors[first.skill] ?? `${first.skill} failed`);
       }
     } catch (error) {
+      for (const name of ownerSkillNames) failedSkillNames.add(name);
       fail(ownerTargets.length, error instanceof Error ? error.message : String(error));
     }
   }
 
+  // Core can report one requested skill under two names, so the difference can go below zero.
+  tally.skillsSucceeded = Math.max(0, tally.skillsAttempted - failedSkillNames.size);
   return tally;
 }
 

@@ -42,6 +42,8 @@ interface SkillMarkdownCardProps {
   onSave: (content: string) => void;
   onCancelEdit: () => void;
   onDirtyChange: (isDirty: boolean) => void;
+  /** Line of SKILL.md to mark in the editor's gutter, e.g. a YAML error's line. */
+  highlightLine?: number;
 }
 
 /** Strips a leading `---\n...\n---\n` YAML frontmatter block, if present. */
@@ -136,6 +138,7 @@ interface CardBodyProps {
   onSave: (content: string) => void;
   onCancelEdit: () => void;
   onDirtyChange: (isDirty: boolean) => void;
+  highlightLine?: number;
   isLoadingContent: boolean;
   loadError: string | null;
   onRetry: () => void;
@@ -154,6 +157,7 @@ function CardBody({
   onSave,
   onCancelEdit,
   onDirtyChange,
+  highlightLine,
   isLoadingContent,
   loadError,
   onRetry,
@@ -195,6 +199,7 @@ function CardBody({
         onSave={onSave}
         onCancel={onCancelEdit}
         onDirtyChange={onDirtyChange}
+        highlightLine={highlightLine}
       />
     );
   }
@@ -232,6 +237,7 @@ export function SkillMarkdownCard({
   onSave,
   onCancelEdit,
   onDirtyChange,
+  highlightLine,
 }: SkillMarkdownCardProps) {
   const isEditing = editState.kind === "editing";
   const canEdit = !isEditing && !isPluginManaged && !deploymentUnresolved && rawContent !== null;
@@ -264,6 +270,7 @@ export function SkillMarkdownCard({
         onSave={onSave}
         onCancelEdit={onCancelEdit}
         onDirtyChange={onDirtyChange}
+        highlightLine={highlightLine}
         isLoadingContent={isLoadingContent}
         loadError={loadError}
         onRetry={onRetry}
