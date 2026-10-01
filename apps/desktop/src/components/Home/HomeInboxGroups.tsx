@@ -38,6 +38,7 @@ import {
   skillKey,
   updateAllFailureMessage,
 } from "./home-inbox-data";
+import { rowClickOpensSkill } from "./home-row-click";
 import type { GroupId, HomeFilter, HomeGroups, HomeRowPlan } from "./home-inbox-data";
 
 /** Home's row's glyph hit box - the same size Skills uses, so the two lists line up. */
@@ -91,7 +92,11 @@ function HomeRow({
       role="row"
       aria-rowindex={rowIndex}
       tabIndex={tabIndex}
-      onClick={onOpen}
+      onClick={(e) => {
+        // SAFETY: a click's target is always an Element; browsers retarget clicks on text
+        // to the parent element.
+        if (rowClickOpensSkill(e.currentTarget, e.target as Element)) onOpen();
+      }}
       className={`${ROW_CLASS} grid-cols-[var(--glyph-hit)_minmax(0,1fr)_160px_148px_minmax(0,1fr)_88px] gap-x-3 px-3 hover:bg-bg-secondary focus-visible:outline-2 focus-visible:outline-accent -outline-offset-2`}
       style={
         // SAFETY: `--glyph-hit` is a custom property, not a known CSSProperties key; React
