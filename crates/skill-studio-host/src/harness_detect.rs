@@ -104,6 +104,78 @@ impl RealProcessSpawner {
         };
         std::env::join_paths(search_dirs.chain(inherited_dirs)).unwrap_or(inherited)
     }
+
+    /// The `PATH` `run` gives the child for `spec`.
+    fn effective_path(&self, spec: &ProcessSpec) -> OsString {
+        if let Some((_, value)) = spec.env.iter().find(|(key, _)| key == "PATH") {
+            return OsString::from(value);
+        }
+        if self.search_dirs.is_empty() {
+            return std::env::var_os("PATH").unwrap_or_default();
+        }
+        self.child_path()
+    }
+
+    /// For a failed `npx` run, appends one `Ran:` line naming the program,
+    /// its argv, and the `node` on the child's `PATH`, so a wrong Node
+    /// (Homebrew's instead of the user's mise) shows in the error. When that
+    /// `node` cannot start at all, the output says so instead of passing on
+    /// npx's raw dyld text. Never reads environment values or tokens.
+    fn describe_failed_npx(
+        &self,
+        spec: &ProcessSpec,
+        program: &Path,
+        mut output: ProcessOutput,
+    ) -> ProcessOutput {
+        let is_npx = Path::new(&spec.program)
+            .file_name()
+            .is_some_and(|n| n == "npx");
+        if !is_npx || output.status == Some(0) {
+            return output;
+        }
+        let path = self.effective_path(spec);
+        let node = std::env::split_paths(&path)
+            .map(|dir| dir.join("node"))
+            .find(|candidate| is_executable_file(candidate));
+        if let Some(node) = &node {
+            if let Some(broken) = broken_node_reason(node, &path) {
+                output.stderr = format!("The Node at {} is broken: {broken}", node.display());
+            }
+        }
+        let node_text = node.map_or_else(|| "not found".to_string(), |n| n.display().to_string());
+        let mut line = format!("Ran: {}", program.display());
+        for arg in &spec.args {
+            line.push(' ');
+            line.push_str(arg);
+        }
+        line.push_str(" (node: ");
+        line.push_str(&node_text);
+        line.push(')');
+        if !output.stderr.is_empty() && !output.stderr.ends_with('\n') {
+            output.stderr.push('\n');
+        }
+        output.stderr.push_str(&line);
+        output
+    }
+}
+
+/// The first dyld "Library not loaded" line from `node --version`, when
+/// `node` fails to start for that reason. `None` for a working Node or any
+/// other failure.
+fn broken_node_reason(node: &Path, path: &OsString) -> Option<String> {
+    let result = std::process::Command::new(node)
+        .arg("--version")
+        .env("PATH", path)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if result.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&result.stderr)
+        .lines()
+        .find(|line| line.contains("Library not loaded"))
+        .map(|line| line.trim().to_string())
 }
 
 impl Default for RealProcessSpawner {
@@ -236,12 +308,16 @@ impl ProcessSpawner for RealProcessSpawner {
             let _ = child.wait();
             let stdout = join_killed_reader(stdout_reader);
             let stderr = join_killed_reader(stderr_reader);
-            return Ok(ProcessOutput {
-                status: None,
-                stdout: String::from_utf8_lossy(&stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&stderr).into_owned(),
-                timed_out: true,
-            });
+            return Ok(self.describe_failed_npx(
+                spec,
+                &program,
+                ProcessOutput {
+                    status: None,
+                    stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                    timed_out: true,
+                },
+            ));
         };
 
         let stdout = stdout_reader
@@ -250,12 +326,16 @@ impl ProcessSpawner for RealProcessSpawner {
         let stderr = stderr_reader
             .and_then(|h| h.join().ok())
             .unwrap_or_default();
-        Ok(ProcessOutput {
-            status: status.code(),
-            stdout: String::from_utf8_lossy(&stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&stderr).into_owned(),
-            timed_out: false,
-        })
+        Ok(self.describe_failed_npx(
+            spec,
+            &program,
+            ProcessOutput {
+                status: status.code(),
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                timed_out: false,
+            },
+        ))
     }
 }
 
@@ -263,6 +343,73 @@ impl ProcessSpawner for RealProcessSpawner {
 mod tests {
     use super::*;
     use skill_studio_core::ports::NeverCancel;
+
+    fn write_script(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn run_fake_npx(dir: &Path) -> ProcessOutput {
+        let spec = ProcessSpec {
+            program: "npx".into(),
+            args: vec!["skills".into(), "update".into(), "foo".into()],
+            cwd: None,
+            env: Vec::new(),
+            timeout_ms: 10_000,
+        };
+        RealProcessSpawner::with_search_path(vec![dir.to_path_buf()])
+            .run(&spec, &NeverCancel)
+            .unwrap()
+    }
+
+    /// `a_failed_npx_names_the_program_argv_and_node_it_ran_or_names_the_missing_part`:
+    /// a user must be able to see which `npx` and `node` ran. Fails if the
+    /// failure output lacks the resolved program, the argv, or the node path.
+    #[test]
+    fn a_failed_npx_names_the_program_argv_and_node_it_ran_or_names_the_missing_part() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_script(&tmp.path().join("npx"), "echo boom >&2; exit 1");
+        write_script(&tmp.path().join("node"), "echo v22.0.0");
+
+        let output = run_fake_npx(tmp.path());
+
+        let expected = format!(
+            "Ran: {0}/npx skills update foo (node: {0}/node)",
+            tmp.path().display()
+        );
+        assert!(
+            output.stderr.contains("boom") && output.stderr.contains(&expected),
+            "stderr lacks `{expected}`: {:?}",
+            output.stderr
+        );
+    }
+
+    /// `a_node_that_cannot_load_its_library_is_reported_as_broken_or_shows_the_raw_npx_text`:
+    /// Homebrew's `node` fails with dyld "Library not loaded" after a
+    /// dependency upgrade. Fails if the output keeps npx's raw text instead
+    /// of naming the broken Node.
+    #[test]
+    fn a_node_that_cannot_load_its_library_is_reported_as_broken_or_shows_the_raw_npx_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_script(&tmp.path().join("npx"), "echo 'env: node: bad' >&2; exit 1");
+        write_script(
+            &tmp.path().join("node"),
+            "echo 'dyld[1]: Library not loaded: libsimdjson.dylib' >&2; exit 1",
+        );
+
+        let output = run_fake_npx(tmp.path());
+
+        let broken = format!(
+            "The Node at {}/node is broken: dyld[1]: Library not loaded",
+            tmp.path().display()
+        );
+        assert!(
+            output.stderr.contains(&broken),
+            "stderr does not report the broken Node: {:?}",
+            output.stderr
+        );
+    }
 
     #[test]
     fn run_captures_stdout_and_exit_status_or_names_the_missing_field() {
