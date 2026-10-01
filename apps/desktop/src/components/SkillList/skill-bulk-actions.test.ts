@@ -459,6 +459,22 @@ describe("runBulkUpdate", () => {
     expect(calls).toEqual([]);
     expect(result.failed[0]?.error).toBe("fork refused");
   });
+
+  it("progress_reaches_its_total_when_a_fork_fails_or_the_bar_stalls", async () => {
+    const seen: [number, number][] = [];
+    await runBulkUpdate(
+      [withProjectCopy("edited")],
+      new Set(["edited"]),
+      {
+        ...deps([], []),
+        fork: async () => {
+          throw new Error("fork refused");
+        },
+      },
+      (done, total) => seen.push([done, total]),
+    );
+    expect(seen[seen.length - 1]).toEqual([1, 1]);
+  });
 });
 
 describe("bulkActionToast conflicts", () => {

@@ -8,13 +8,8 @@
 
 import { useState } from "react";
 import type { InstalledSkill } from "@skill-studio/lib";
-import {
-  forkSkill,
-  pullForkUpstream,
-  removeSkill,
-  skillLocalEdits,
-  updateAllSkillsWithProgress,
-} from "../../lib/skill-api";
+import { removeSkill, skillLocalEdits } from "../../lib/skill-api";
+import { runListUpdate } from "../../hooks/skillBatchUpdates";
 import { forkableDeployment, skillsWithLocalEdits } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import type { UpdatePrompt } from "../SkillDetail/UpdateOverwritesEditsDialog";
@@ -25,7 +20,6 @@ import {
   bulkRemovalTargets,
   planBulkAction,
   runBulkSequentially,
-  runBulkUpdate,
 } from "./skill-bulk-actions";
 import type { BulkAction, BulkPlan, BulkRunResult } from "./skill-bulk-actions";
 import { runBatchAction } from "./skill-bulk-run";
@@ -70,16 +64,8 @@ export function useSkillBulkActions(
     let result: BulkRunResult;
     try {
       if (action.kind === "update")
-        result = await runBulkUpdate(
-          plan.applicable,
-          forkNames,
-          {
-            fork: forkSkill,
-            pullFork: pullForkUpstream,
-            updateAll: (targets, onProgress) =>
-              updateAllSkillsWithProgress(targets, ({ done, total }) => onProgress(done, total)),
-          },
-          (done, total) => setProgress(bulkUpdateProgressLabel(done, total)),
+        result = await runListUpdate(plan.applicable, forkNames, (done, total) =>
+          setProgress(bulkUpdateProgressLabel(done, total)),
         );
       else if (action.kind === "remove")
         result = await runBulkSequentially(plan.applicable, runRemoval, (current, total) =>

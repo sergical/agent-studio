@@ -17,6 +17,30 @@ fn lock(updated_at: &str) -> SkillLockFile {
     serde_json::from_str(&json).unwrap()
 }
 
+/// Backdates `path` to 2000, as `cp -p`, `rsync -a`, unzip and `mv` leave it.
+fn backdate(path: &std::path::Path) {
+    let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(946_684_800);
+    std::fs::File::open(path)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+}
+
+/// An install an hour ago: files and folder all older than the lock entry.
+fn installed_dir(files: &[&str]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for name in files {
+        std::fs::write(dir.path().join(name), "body\n").unwrap();
+        backdate(&dir.path().join(name));
+    }
+    backdate(dir.path());
+    dir
+}
+
+fn an_hour_ago() -> String {
+    (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339()
+}
+
 fn skill_dir() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("SKILL.md"), "body\n").unwrap();
@@ -47,6 +71,51 @@ fn a_mismatch_with_a_file_newer_than_the_install_reads_as_edited_or_a_real_edit_
             "s",
             dir.path()
         ),
+        LocalEdits::Edited
+    );
+}
+
+#[test]
+fn an_untouched_install_with_a_hash_mismatch_reads_as_unknown_or_the_control_proves_nothing() {
+    let dir = installed_dir(&["SKILL.md"]);
+    assert_eq!(
+        local_edits(&RealFs::new(), &lock(&an_hour_ago()), "s", dir.path()),
+        LocalEdits::Unknown
+    );
+}
+
+#[test]
+fn an_added_file_with_an_old_mtime_reads_as_edited_or_update_deletes_it_silently() {
+    let dir = installed_dir(&["SKILL.md"]);
+    std::fs::write(dir.path().join("notes.md"), "mine\n").unwrap();
+    backdate(&dir.path().join("notes.md"));
+    assert_eq!(
+        local_edits(&RealFs::new(), &lock(&an_hour_ago()), "s", dir.path()),
+        LocalEdits::Edited
+    );
+}
+
+#[test]
+fn a_deleted_file_reads_as_edited_or_update_restores_it_without_asking() {
+    let dir = installed_dir(&["SKILL.md", "extra.md"]);
+    std::fs::remove_file(dir.path().join("extra.md")).unwrap();
+    assert_eq!(
+        local_edits(&RealFs::new(), &lock(&an_hour_ago()), "s", dir.path()),
+        LocalEdits::Edited
+    );
+}
+
+#[test]
+fn a_file_added_in_a_subfolder_reads_as_edited_or_only_the_top_folder_is_watched() {
+    let dir = installed_dir(&["SKILL.md"]);
+    let sub = dir.path().join("refs");
+    std::fs::create_dir(&sub).unwrap();
+    backdate(&sub);
+    backdate(dir.path());
+    std::fs::write(sub.join("a.md"), "mine\n").unwrap();
+    backdate(&sub.join("a.md"));
+    assert_eq!(
+        local_edits(&RealFs::new(), &lock(&an_hour_ago()), "s", dir.path()),
         LocalEdits::Edited
     );
 }

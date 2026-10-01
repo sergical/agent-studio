@@ -702,4 +702,35 @@ describe("updateAllOutdatedSkills with edited skills", () => {
     expect(tally.firstError).toContain("The fork was made and your edits are kept");
     expect(tally.firstError).toContain("network down");
   });
+
+  it("update_all_counts_a_forked_skills_other_copy_as_failed_when_the_whole_batch_rejects_or_it_reads_as_updated", async () => {
+    const tally = await updateAllOutdatedSkills(
+      [twoOwners],
+      async () => pulled,
+      async () => {
+        throw new Error("ipc down");
+      },
+      undefined,
+      { names: new Set(["edited"]), fork: async () => forkRecord },
+    );
+    expect(tally.skillsSucceeded).toBe(0);
+    expect(tally.failures).toBe(1);
+  });
+
+  it("update_all_progress_reaches_its_total_when_a_fork_fails_or_the_bar_stalls", async () => {
+    const seen: [number, number][] = [];
+    await updateAllOutdatedSkills(
+      [twoOwners],
+      async () => pulled,
+      async () => succeedAll([]),
+      (done, total) => seen.push([done, total]),
+      {
+        names: new Set(["edited"]),
+        fork: async () => {
+          throw new Error("fork refused");
+        },
+      },
+    );
+    expect(seen[seen.length - 1]).toEqual([1, 1]);
+  });
 });

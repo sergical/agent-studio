@@ -17,7 +17,7 @@ import {
 } from "@skill-studio/ui";
 import { ProjectDirectorySelect } from "./ProjectDirectorySelect";
 import { ScopeToggleGroup } from "./ScopeToggleGroup";
-import { removeSkill, updateSkill } from "../../lib/skill-api";
+import { removeSkill } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import {
   skillLifecycleScopeSelection,
@@ -32,7 +32,7 @@ import type {
   SkillRemovalPreview,
   SkillUpdateAvailability,
 } from "../../lib/skill-lifecycle-target";
-import type { InstallScope, LifecycleTarget, SkillWithStatus } from "@skill-studio/lib";
+import type { InstallScope, SkillWithStatus } from "@skill-studio/lib";
 import { useGuardedSkillUpdate } from "../../hooks/useGuardedSkillUpdate";
 
 const ACTION_BUTTON_CLASS =
@@ -129,34 +129,20 @@ function useSkillLifecycleMutations(
       });
   };
 
-  const runUpdate = (target: LifecycleTarget) =>
-    updateSkill(target)
-      .then((result) => {
-        if (result.success) {
-          onInstallComplete({ success: true, skillName: skill.name });
-        } else {
-          onInstallComplete({
-            success: false,
-            error: result.error ?? "Update command failed without an error message.",
-            skillName: skill.name,
-          });
-        }
-      })
-      .catch((error) => {
-        onInstallComplete({
-          success: false,
-          error: error instanceof Error ? error.message : "Update failed without an error message.",
-          skillName: skill.name,
-        });
-      });
-
   const handleUpdate = async () => {
     const installed = skill.installed_info;
     if (!updateAvailability?.available || !installed) return;
-    const target = updateAvailability.target;
     setIsUpdating(true);
     try {
-      await guard.requestUpdate(installed, () => runUpdate(target), target);
+      await guard.requestUpdate(installed, {
+        scopeTarget: updateAvailability.target,
+        onFinished: ({ success, error }) =>
+          onInstallComplete(
+            success
+              ? { success: true, skillName: skill.name }
+              : { success: false, error: error ?? "Update failed.", skillName: skill.name },
+          ),
+      });
     } catch (error) {
       addToast({
         type: "error",

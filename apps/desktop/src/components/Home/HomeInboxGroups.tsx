@@ -9,24 +9,16 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } fr
 import { Button, Collapsible, CollapsiblePanel, Progress } from "@skill-studio/ui";
 import { formatRelativeTime, formatTokens, shortSha } from "@skill-studio/lib";
 import type { HealthIssue, InstalledSkill, RecentlyUsedSkill } from "@skill-studio/lib";
-import {
-  forkSkill,
-  parkSkill,
-  pullForkUpstream,
-  skillLocalEdits,
-  updateAllSkillsWithProgress,
-  updateSkill,
-} from "../../lib/skill-api";
+import { parkSkill, pullForkUpstream, skillLocalEdits } from "../../lib/skill-api";
 import {
   conflictedSkillsNote,
   lifecycleTargetForPark,
   skillCanPark,
   forkableDeployment,
   skillsWithLocalEdits,
-  skillUpdateToast,
-  updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
+import { runHomeUpdateAll } from "../../hooks/skillBatchUpdates";
 import { useGuardedSkillUpdate } from "../../hooks/useGuardedSkillUpdate";
 import { UpdateOverwritesEditsDialog } from "../SkillDetail/UpdateOverwritesEditsDialog";
 import { GroupHead } from "../SkillList/GroupHead";
@@ -45,7 +37,6 @@ import {
   rowAt,
   skillKey,
   updateAllFailureMessage,
-  updateAllOutdatedSkills,
 } from "./home-inbox-data";
 import type { GroupId, HomeFilter, HomeGroups, HomeRowPlan } from "./home-inbox-data";
 
@@ -155,7 +146,7 @@ function ShowAllLink({
 
 /**
  * "Pull latest" for one Updates row: a fork pulls upstream via
- * `pullForkUpstream`, any other managed skill re-syncs via `updateSkill`.
+ * `pullForkUpstream`, any other managed skill re-syncs through the guarded update.
  */
 function PullLatestButton({ skill }: { skill: InstalledSkill }) {
   const [isPulling, setIsPulling] = useState(false);
@@ -173,10 +164,7 @@ function PullLatestButton({ skill }: { skill: InstalledSkill }) {
         if (!title) title = `Merged ${skill.name}`;
         addToast({ type: "success", title });
       } else {
-        await guard.requestUpdate(skill, async () => {
-          const summary = await updateSkillOwners(skill, updateSkill);
-          addToast(skillUpdateToast(skill.name, summary));
-        });
+        await guard.requestUpdate(skill);
       }
       setIsPulling(false);
     } catch (err) {
@@ -573,13 +561,10 @@ function UpdatesGroup({
     // rejection itself and folds it into `failures`, so this await never
     // throws - a plain (React Compiler-friendly) sequence needs no
     // try/finally to still always clear the loading flag.
-    const tally = await updateAllOutdatedSkills(
+    const tally = await runHomeUpdateAll(
       updates,
-      pullForkUpstream,
-      (targets, onOwnerDone) =>
-        updateAllSkillsWithProgress(targets, ({ done }) => onOwnerDone(done)),
       (done, total) => setProgress({ done, total }),
-      forkNames && { names: forkNames, fork: forkSkill },
+      forkNames,
     );
     const { skillsAttempted, skillsSucceeded, failures } = tally;
     const conflictNote = conflictedSkillsNote(tally.conflicted ?? []);

@@ -276,10 +276,12 @@ pub fn local_edits(
     }
 }
 
-/// The latest mtime of any non-junk file under `dir`, or `None` when the
-/// platform reports none.
+/// The latest mtime of `dir`, its non-junk files and its non-junk
+/// subfolders, or `None` when the platform reports none. Folder mtimes
+/// matter: adding, deleting or renaming an entry bumps the parent's mtime
+/// even when `cp -p`, `rsync -a` or `mv` keep the file's own.
 fn newest_modified(fs: &dyn ScopeFs, dir: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
-    let mut newest = None;
+    let mut newest = fs.symlink_metadata(dir).ok().and_then(|f| f.modified);
     for item in fs.read_dir(dir).ok()? {
         if is_install_junk(&item.name, item.kind) {
             continue;
@@ -434,6 +436,7 @@ mod tests {
         );
     }
 
+    const INSTALLED_AT: &str = "2026-01-01T00:00:00.000Z";
     const SKILL_MD: &[u8] = b"---\nname: write-tests\n---\nBody\n";
 
     /// A lock file recording `hash` for `write-tests`.
@@ -447,8 +450,8 @@ mod tests {
                 source_url: "https://github.com/owner/repo".into(),
                 skill_path: None,
                 skill_folder_hash: hash.into(),
-                installed_at: String::new(),
-                updated_at: String::new(),
+                installed_at: INSTALLED_AT.into(),
+                updated_at: INSTALLED_AT.into(),
                 extra: serde_json::Map::new(),
             },
         );

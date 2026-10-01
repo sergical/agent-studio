@@ -138,7 +138,7 @@ export function updateAllFailureMessage(tally: UpdateAllTally): string | undefin
  * Home's "Update all": a fork pulls upstream one at a time (no batched CLI
  * form for that path), while every other outdated owner flattens into one
  * `updateAllOwners` call - one IPC round trip and one rescan for the whole
- * batch, instead of one `updateSkill` round trip and rescan per skill.
+ * batch, instead of one update round trip and rescan per skill.
  * `onProgress(done, total)` counts forks and owner targets in one sequence;
  * `updateAllOwners` reports how many of its own targets finished. A skill named
  * in `forkEdited.names` is forked first and then pulled like a fork, so its
@@ -170,8 +170,7 @@ export async function updateAllOutdatedSkills(
     const targets = skillUpdateOwnerTargets(skill);
     return pullsUpstream(skill) ? excludeForkedOwner(skill, targets) : targets;
   };
-  const plannedOwnerTargets = skills.flatMap(ownerTargetsOf);
-  const total = forks.length + plannedOwnerTargets.length;
+  let total = forks.length + skills.flatMap(ownerTargetsOf).length;
   const ownerSkillNames = new Set(
     skills.flatMap((skill) =>
       !pullsUpstream(skill) && skillUpdateOwnerTargets(skill).length > 0 ? [skill.name] : [],
@@ -212,6 +211,11 @@ export async function updateAllOutdatedSkills(
   const ownerTargets = skills.flatMap((skill) =>
     failedSkillNames.has(skill.name) ? [] : ownerTargetsOf(skill),
   );
+  // Their copies leave the total too, so progress still reaches it.
+  const plannedTotal = total;
+  total = forks.length + ownerTargets.length;
+  tally.attempted = total;
+  if (total !== plannedTotal) onProgress?.(forks.length, total);
   if (ownerTargets.length > 0) {
     try {
       const outcome = await updateAllOwners(ownerTargets, (done) =>
@@ -229,7 +233,12 @@ export async function updateAllOutdatedSkills(
         fail(failedItems.length, outcome.errors[first.skill] ?? `${first.skill} failed`);
       }
     } catch (error) {
-      for (const name of ownerSkillNames) failedSkillNames.add(name);
+      // Every skill in the rejected batch failed, including a forked skill's other copies.
+      for (const skill of skills) {
+        if (!failedSkillNames.has(skill.name) && ownerTargetsOf(skill).length > 0) {
+          failedSkillNames.add(skill.name);
+        }
+      }
       fail(ownerTargets.length, error instanceof Error ? error.message : String(error));
     }
   }

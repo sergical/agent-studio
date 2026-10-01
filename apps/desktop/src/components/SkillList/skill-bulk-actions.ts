@@ -147,7 +147,7 @@ export async function runBulkSequentially(
 }
 
 /**
- * Turns an `updateAllSkills` outcome into a run result: an item without an
+ * Turns an batched update outcome into a run result: an item without an
  * outcome failed, and a skill with several location items fails if any one did.
  */
 export function bulkUpdateResult(
@@ -195,7 +195,7 @@ export async function runBulkUpdate(
   const forkedOthers = new Map(
     forked.map((skill) => [skill, excludeForkedOwner(skill, bulkUpdateTargets(skill))]),
   );
-  const total =
+  let total =
     forked.length +
     rest.flatMap(bulkUpdateTargets).length +
     [...forkedOthers.values()].reduce((sum, targets) => sum + targets.length, 0);
@@ -224,6 +224,10 @@ export async function runBulkUpdate(
     ...rest.flatMap(bulkUpdateTargets),
     ...forkedToBatch.flatMap((skill) => forkedOthers.get(skill) ?? []),
   ];
+  // A failed fork's other copies leave the total, so progress still reaches it.
+  const plannedTotal = total;
+  total = forked.length + batchTargets.length;
+  if (total !== plannedTotal) onProgress(forked.length, total);
   if (batched.length > 0) {
     const outcome = await deps.updateAll(batchTargets, (done) =>
       onProgress(forked.length + done, total),

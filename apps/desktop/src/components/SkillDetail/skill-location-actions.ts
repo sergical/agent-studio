@@ -34,14 +34,11 @@ import {
   setPluginEnabled,
   setSkillInvocation,
   unparkSkill,
-  updateSkill,
 } from "../../lib/skill-api";
 import {
   lifecycleTargetForDeployment,
   lifecycleTargetForPark,
   lifecycleTargetForSkill,
-  skillUpdateToast,
-  updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import { useGuardedSkillUpdate } from "../../hooks/useGuardedSkillUpdate";
@@ -267,12 +264,7 @@ export function useLocationActions(
         });
         return;
       case "update":
-        runWithErrorToast("Update failed", () =>
-          guard.requestUpdate(skill, async () => {
-            const summary = await updateSkillOwners(skill, updateSkill);
-            addToast(skillUpdateToast(skill.name, summary));
-          }),
-        );
+        runWithErrorToast("Update failed", () => guard.requestUpdate(skill));
         return;
       case "install-again":
         runWithErrorToast("Couldn't reinstall", async () => {

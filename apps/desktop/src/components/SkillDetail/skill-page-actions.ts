@@ -17,7 +17,6 @@ import {
   removeSkill,
   unforkSkill,
   unparkSkill,
-  updateSkill,
 } from "../../lib/skill-api";
 import {
   lifecycleTargetForDeployment,
@@ -28,8 +27,6 @@ import {
   skillRemovalBlockedReason,
   skillRemovalChoices,
   skillRemovalEmptiesSkill,
-  skillUpdateToast,
-  updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import type { SkillRemovalChoice } from "../../lib/skill-lifecycle-target";
 import type { InstalledSkill, Toast } from "@skill-studio/lib";
@@ -239,12 +236,7 @@ export function useSkillPageActions(
     });
 
   const doUpdate = () =>
-    runAction(addToast, setIsUpdating, "Update failed", () =>
-      guard.requestUpdate(skill, async () => {
-        const summary = await updateSkillOwners(skill, updateSkill);
-        addToast(skillUpdateToast(skill.name, summary));
-      }),
-    );
+    runAction(addToast, setIsUpdating, "Update failed", () => guard.requestUpdate(skill));
 
   const doRemove = async (choice: SkillRemovalChoice) => {
     const confirmed = await ask(choice.confirmMessage, {

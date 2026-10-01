@@ -13,6 +13,7 @@ import {
   pullUpstreamToast,
   skillUpdateToast,
   skillsWithLocalEdits,
+  updateSkillOwners,
 } from "../lib/skill-lifecycle-target";
 import type { InstalledSkill, LifecycleTarget } from "@skill-studio/lib";
 import { useAppStore } from "../store/appStore";
@@ -31,26 +32,63 @@ interface PendingUpdate {
   scopeTarget?: LifecycleTarget;
 }
 
+/** How a single-owner update ended, for callers that report it their own way. */
+export interface UpdateFinish {
+  success: boolean;
+  error?: string;
+}
+
+interface UpdateRequestOptions {
+  /** Update this one owner instead of every owner of the skill. */
+  scopeTarget?: LifecycleTarget;
+  /** Called with the outcome of a `scopeTarget` update; without it the hook toasts. */
+  onFinished?: (finish: UpdateFinish) => void;
+}
+
 /**
- * `requestUpdate(skill, overwrite)` runs `overwrite` right away when the skill
- * has no local edits, and otherwise opens the dialog. `overwrite` is the
- * caller's plain update. Render `dialog` once next to the buttons.
+ * `requestUpdate(skill, options)` updates the skill right away when it has no
+ * local edits, and otherwise opens the dialog. The hook owns the update
+ * commands, so no caller can reach them without the check. Render `dialog`
+ * once next to the buttons.
  */
 export function useGuardedSkillUpdate() {
   const addToast = useAppStore((state) => state.addToast);
   const [pending, setPending] = useState<PendingUpdate | null>(null);
   const [isResolving, setIsResolving] = useState(false);
 
-  const requestUpdate = async (
-    skill: InstalledSkill,
-    overwrite: () => Promise<void>,
-    scopeTarget?: LifecycleTarget,
-  ) => {
+  const overwriteFor =
+    (skill: InstalledSkill, { scopeTarget, onFinished }: UpdateRequestOptions) =>
+    async () => {
+      if (scopeTarget) {
+        let finish: UpdateFinish;
+        try {
+          const result = await updateSkill(scopeTarget);
+          finish = {
+            success: result.success,
+            error: result.error ?? "Update command failed without an error message.",
+          };
+        } catch (error) {
+          finish = {
+            success: false,
+            error:
+              error instanceof Error ? error.message : "Update failed without an error message.",
+          };
+        }
+        onFinished?.(finish);
+        return;
+      }
+      const summary = await updateSkillOwners(skill, updateSkill);
+      addToast(skillUpdateToast(skill.name, summary));
+    };
+
+  const requestUpdate = async (skill: InstalledSkill, options: UpdateRequestOptions = {}) => {
+    const { scopeTarget } = options;
     const edited = await skillsWithLocalEdits(
       [skill],
       skillLocalEdits,
       scopeTarget ? () => [scopeTarget] : undefined,
     );
+    const overwrite = overwriteFor(skill, options);
     if (edited.length > 0) {
       setPending({ skill, overwrite, scopeTarget });
       return;
