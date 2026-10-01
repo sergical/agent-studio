@@ -3,7 +3,7 @@
 // actions for one exact deployment.
 // ============================================================================
 
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { PatchDiff } from "@pierre/diffs/react";
 import {
   Button,
@@ -50,16 +50,14 @@ export function SkillFrontmatterRepairDialog({
   const [applying, setApplying] = useState<FrontmatterRepairApplyMode | null>(null);
   const addToast = useAppStore((state) => state.addToast);
   // One controller per open dialog: its request generation must outlive re-renders.
-  const choices = useMemo(
-    () =>
-      createChoicePreviewController(
-        previewSkillFrontmatterRepair,
-        target,
-        initialPreview,
-        (message) => addToast({ type: "error", title: "Couldn't preview this option", message }),
-      ),
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
-    [],
+  // oxlint-disable-next-line react/hook-use-state -- created once per mount and never replaced
+  const [choices] = useState(() =>
+    createChoicePreviewController(
+      previewSkillFrontmatterRepair,
+      target,
+      initialPreview,
+      (message) => addToast({ type: "error", title: "Couldn't preview this option", message }),
+    ),
   );
   const choiceState = useSyncExternalStore(choices.subscribe, choices.getState);
   const { preview } = choiceState;
