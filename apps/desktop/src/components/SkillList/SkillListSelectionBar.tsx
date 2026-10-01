@@ -27,6 +27,7 @@ import { MenuControl, MenuItem } from "../ui/MenuControl";
 import { TooltipControl } from "../ui/TooltipControl";
 import { bulkDisabledReason, describeSkipped, planBulkAction } from "./skill-bulk-actions";
 import type { BulkAction } from "./skill-bulk-actions";
+import { UpdateOverwritesEditsDialog } from "../SkillDetail/UpdateOverwritesEditsDialog";
 import { useSkillBulkActions } from "./useSkillBulkActions";
 
 interface SkillListSelectionBarProps {
@@ -78,7 +79,7 @@ export function SkillListSelectionBar({
   onActionFinished,
 }: SkillListSelectionBarProps) {
   const [confirmingRemove, setConfirmingRemove] = useState(false);
-  const { progress, run } = useSkillBulkActions(onActionFinished);
+  const { progress, run, updatePrompt } = useSkillBulkActions(onActionFinished);
   const busy = progress !== null;
 
   const parkPlan = planBulkAction(selectedSkills, { kind: "park" });
@@ -181,6 +182,14 @@ export function SkillListSelectionBar({
           Cancel
         </Button>
       </div>
+
+      <UpdateOverwritesEditsDialog
+        skillNames={updatePrompt?.skillNames ?? []}
+        isBulk
+        onFork={() => updatePrompt?.fork()}
+        onOverwrite={() => updatePrompt?.overwrite()}
+        onCancel={() => updatePrompt?.cancel()}
+      />
 
       <AlertDialog open={confirmingRemove} onOpenChange={setConfirmingRemove}>
         <AlertDialogContent>

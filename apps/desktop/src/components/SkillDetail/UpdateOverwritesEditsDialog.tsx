@@ -15,6 +15,14 @@ import {
   AlertDialogTitle,
 } from "@skill-studio/ui";
 
+/** The pending "Update will replace your edits" choice: the dialog is open while `skillNames` is not empty. */
+export interface UpdatePrompt {
+  skillNames: string[];
+  fork: () => void;
+  overwrite: () => void;
+  cancel: () => void;
+}
+
 export function UpdateOverwritesEditsDialog({
   skillNames,
   isBulk,

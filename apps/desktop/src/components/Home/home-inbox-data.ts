@@ -26,7 +26,11 @@ import type {
   SkillSnapshot,
   UpdateAllOutcome,
 } from "@skill-studio/lib";
-import { lifecycleTargetForPark, skillUpdateOwnerTargets } from "../../lib/skill-lifecycle-target";
+import {
+  forkThenPull,
+  lifecycleTargetForPark,
+  skillUpdateOwnerTargets,
+} from "../../lib/skill-lifecycle-target";
 import { issueRowState, rowState, updateRowState } from "../SkillList/skill-row-state";
 import type { RowState } from "../SkillList/skill-row-state";
 
@@ -110,6 +114,8 @@ interface UpdateAllTally {
   skillsSucceeded: number;
   /** The first failed target's message, so the toast can say why. */
   firstError: string | null;
+  /** Skills whose pull left conflict markers; set only when there are any. */
+  conflicted?: string[];
 }
 
 const MAX_ERROR_LENGTH = 140;
@@ -183,12 +189,11 @@ export async function updateAllOutdatedSkills(
     try {
       // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
       const target = lifecycleTargetForPark(skill);
-      if (skill.source_kind === "fork" || !forkEdited) {
-        await pullFork(target);
-      } else {
-        const record = await forkEdited.fork(target);
-        await pullFork({ deployment_id: record.deployment_id ?? target.deployment_id });
-      }
+      const pull =
+        skill.source_kind === "fork" || !forkEdited
+          ? await pullFork(target)
+          : await forkThenPull(target, forkEdited.fork, pullFork);
+      if (pull.conflicts.length > 0) (tally.conflicted ??= []).push(skill.name);
       tally.succeeded += 1;
     } catch (error) {
       failedSkillNames.add(skill.name);

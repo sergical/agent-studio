@@ -18,6 +18,7 @@ import {
   updateSkill,
 } from "../../lib/skill-api";
 import {
+  conflictedSkillsNote,
   lifecycleTargetForPark,
   skillCanPark,
   skillsWithLocalEdits,
@@ -568,10 +569,12 @@ function UpdatesGroup({
       forkNames && { names: forkNames, fork: forkSkill },
     );
     const { skillsAttempted, skillsSucceeded, failures } = tally;
+    const conflictNote = conflictedSkillsNote(tally.conflicted ?? []);
     addToast({
-      type: failures > 0 ? "warning" : "success",
+      type: failures > 0 || conflictNote ? "warning" : "success",
       title: `Updated ${skillsSucceeded} of ${skillsAttempted} skill${skillsAttempted === 1 ? "" : "s"}`,
-      message: updateAllFailureMessage(tally),
+      message:
+        [updateAllFailureMessage(tally), conflictNote].filter(Boolean).join(". ") || undefined,
     });
     // react-doctor-disable-next-line react-doctor/no-loading-flag-reset-outside-finally -- the React Compiler rejects try/finally here (react-hooks-js/todo); `updateAllOutdatedSkills` never rejects, so this always runs
     setProgress(null);

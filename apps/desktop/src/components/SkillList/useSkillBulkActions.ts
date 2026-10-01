@@ -8,19 +8,26 @@
 
 import { useState } from "react";
 import type { InstalledSkill } from "@skill-studio/lib";
-import { removeSkill, updateAllSkillsWithProgress } from "../../lib/skill-api";
+import {
+  forkSkill,
+  pullForkUpstream,
+  removeSkill,
+  skillLocalEdits,
+  updateAllSkillsWithProgress,
+} from "../../lib/skill-api";
+import { skillsWithLocalEdits } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
+import type { UpdatePrompt } from "../SkillDetail/UpdateOverwritesEditsDialog";
 import {
   bulkActionToast,
   bulkProgressLabel,
   bulkUpdateProgressLabel,
   bulkRemovalTargets,
-  bulkUpdateResult,
-  bulkUpdateTargets,
   planBulkAction,
   runBulkSequentially,
+  runBulkUpdate,
 } from "./skill-bulk-actions";
-import type { BulkAction, BulkRunResult } from "./skill-bulk-actions";
+import type { BulkAction, BulkPlan, BulkRunResult } from "./skill-bulk-actions";
 import { runBatchAction } from "./skill-bulk-run";
 
 async function runRemoval(skill: InstalledSkill): Promise<void> {
@@ -32,21 +39,17 @@ async function runRemoval(skill: InstalledSkill): Promise<void> {
   }
 }
 
-async function runUpdateBatch(
-  skills: InstalledSkill[],
-  onProgress: (done: number, total: number) => void,
-): Promise<BulkRunResult> {
-  const targets = skills.flatMap(bulkUpdateTargets);
-  const outcome = await updateAllSkillsWithProgress(targets, ({ done, total }) =>
-    onProgress(done, total),
-  );
-  return bulkUpdateResult(skills, outcome);
-}
-
 interface UseSkillBulkActions {
   /** "Parking 5 skills…" while an action runs, otherwise `null`. */
   progress: string | null;
   run: (action: BulkAction, skills: InstalledSkill[]) => Promise<void>;
+  /** Confirm step before an update replaces local edits; `null` while none is pending. */
+  updatePrompt: UpdatePrompt | null;
+}
+
+interface PendingEditedUpdate {
+  plan: BulkPlan;
+  edited: InstalledSkill[];
 }
 
 /** `onFinished(hadFailures)` lets the caller clear the selection unless something failed. */
@@ -56,15 +59,27 @@ export function useSkillBulkActions(
   const addToast = useAppStore((state) => state.addToast);
   const [progress, setProgress] = useState<string | null>(null);
 
-  const run = async (action: BulkAction, skills: InstalledSkill[]) => {
-    const plan = planBulkAction(skills, action);
-    if (plan.applicable.length === 0) return;
+  const [pending, setPending] = useState<PendingEditedUpdate | null>(null);
+
+  const execute = async (
+    action: BulkAction,
+    plan: BulkPlan,
+    forkNames: ReadonlySet<string> = new Set(),
+  ) => {
     setProgress(bulkProgressLabel(action, 1, plan.applicable.length));
     let result: BulkRunResult;
     try {
       if (action.kind === "update")
-        result = await runUpdateBatch(plan.applicable, (done, total) =>
-          setProgress(bulkUpdateProgressLabel(done, total)),
+        result = await runBulkUpdate(
+          plan.applicable,
+          forkNames,
+          {
+            fork: forkSkill,
+            pullFork: pullForkUpstream,
+            updateAll: (targets, onProgress) =>
+              updateAllSkillsWithProgress(targets, ({ done, total }) => onProgress(done, total)),
+          },
+          (done, total) => setProgress(bulkUpdateProgressLabel(done, total)),
         );
       else if (action.kind === "remove")
         result = await runBulkSequentially(plan.applicable, runRemoval, (current, total) =>
@@ -84,5 +99,35 @@ export function useSkillBulkActions(
     onFinished(result.failed.length > 0);
   };
 
-  return { progress, run };
+  const run = async (action: BulkAction, skills: InstalledSkill[]) => {
+    const plan = planBulkAction(skills, action);
+    if (plan.applicable.length === 0) return;
+    if (action.kind === "update") {
+      setProgress(bulkProgressLabel(action, 1, plan.applicable.length));
+      // `skillsWithLocalEdits` treats a failed check as "no edits", so it never rejects.
+      const edited = await skillsWithLocalEdits(plan.applicable, skillLocalEdits);
+      if (edited.length > 0) {
+        setProgress(null);
+        setPending({ plan, edited });
+        return;
+      }
+    }
+    await execute(action, plan);
+  };
+
+  const updateAction: BulkAction = { kind: "update" };
+  const updatePrompt: UpdatePrompt | null = pending && {
+    skillNames: pending.edited.map((skill) => skill.name),
+    fork: () => {
+      setPending(null);
+      void execute(updateAction, pending.plan, new Set(pending.edited.map((skill) => skill.name)));
+    },
+    overwrite: () => {
+      setPending(null);
+      void execute(updateAction, pending.plan);
+    },
+    cancel: () => setPending(null),
+  };
+
+  return { progress, run, updatePrompt };
 }

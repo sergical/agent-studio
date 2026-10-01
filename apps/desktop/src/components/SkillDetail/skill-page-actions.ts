@@ -20,6 +20,7 @@ import {
   updateSkill,
 } from "../../lib/skill-api";
 import {
+  forkThenPull,
   lifecycleTargetForDeployment,
   lifecycleTargetForPark,
   lifecycleTargetForSkill,
@@ -34,6 +35,7 @@ import {
 import type { SkillRemovalChoice } from "../../lib/skill-lifecycle-target";
 import type { InstalledSkill, PullResult, Toast } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
+import type { UpdatePrompt } from "./UpdateOverwritesEditsDialog";
 
 /**
  * The one deployment `forkSkill` will accept: the shared-folder copy at
@@ -118,14 +120,6 @@ export interface SkillPageAction {
   title?: string;
 }
 
-/** The "Update will replace your edits" prompt: shown while `skillNames` is not empty. */
-export interface SkillPageUpdatePrompt {
-  skillNames: string[];
-  fork: () => void;
-  overwrite: () => void;
-  cancel: () => void;
-}
-
 export interface SkillPageActions {
   path: string | undefined;
   copied: boolean;
@@ -143,7 +137,7 @@ export interface SkillPageActions {
   /** Why there is no Remove, for a skill whose files the app must not delete. */
   removeBlockedReason: string | null;
   /** Confirm step before Update replaces local edits; `null` while none is pending. */
-  updatePrompt: SkillPageUpdatePrompt | null;
+  updatePrompt: UpdatePrompt | null;
 }
 
 /**
@@ -298,11 +292,11 @@ export function useSkillPageActions(
     return runAction(addToast, setIsUpdating, "Fork and update failed", async () => {
       if (!forkDeployment)
         throw new Error("Fork is only available for the Global Universal folder.");
-      const target = lifecycleTargetForDeployment(forkDeployment);
-      const record = await forkSkill(target);
-      const result = await pullForkUpstream({
-        deployment_id: record.deployment_id ?? target.deployment_id,
-      });
+      const result = await forkThenPull(
+        lifecycleTargetForDeployment(forkDeployment),
+        forkSkill,
+        pullForkUpstream,
+      );
       addToast(pullUpstreamToast(result));
     });
   };

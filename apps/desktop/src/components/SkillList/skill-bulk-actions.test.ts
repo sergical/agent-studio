@@ -3,7 +3,13 @@
 // ============================================================================
 
 import { describe, expect, it, vi } from "vitest";
-import type { Deployment, InstalledSkill, PluginInfo } from "@skill-studio/lib";
+import type {
+  Deployment,
+  ForkRecord,
+  InstalledSkill,
+  PluginInfo,
+  PullResult,
+} from "@skill-studio/lib";
 import { realCopyDeployment, universalDeployment } from "../../dev/harness/scanned-deployment";
 import {
   bulkActionToast,
@@ -13,6 +19,7 @@ import {
   bulkUpdateResult,
   planBulkAction,
   runBulkSequentially,
+  runBulkUpdate,
 } from "./skill-bulk-actions";
 
 function globalFolder(name: string, fields: Partial<Deployment> = {}): Deployment {
@@ -287,5 +294,98 @@ describe("bulk targets across locations", () => {
     });
     expect(names(result.failed.map((failure) => failure.skill))).toEqual(["both"]);
     expect(result.succeeded).toEqual([]);
+  });
+});
+
+function outdatedSkillsSh(name: string): InstalledSkill {
+  const ownerId = `owner:v1/global/${name}`;
+  return fixtureSkill(name, {
+    source_kind: "skills-sh",
+    deployments: [globalFolder(name, { owner_kind: "skills-sh" })],
+    update_owner_ids: [ownerId],
+    update_owners: [{ owner_id: ownerId, latest_commit: "next", latest_commit_at: null }],
+  });
+}
+
+function pullResult(conflicts: string[]): PullResult {
+  return {
+    from_commit: "a",
+    to_commit: "b",
+    merged: [],
+    conflicts,
+    added: [],
+    removed: [],
+    unchanged: 0,
+    message: null,
+  };
+}
+
+describe("runBulkUpdate", () => {
+  const edited = outdatedSkillsSh("edited");
+  const plain = outdatedSkillsSh("plain");
+
+  function deps(conflicts: string[], calls: string[]) {
+    return {
+      fork: async (target: { deployment_id?: string | null }) => {
+        calls.push(`fork ${target.deployment_id}`);
+        // SAFETY: only `deployment_id` is read from the record.
+        return { deployment_id: "dep:forked" } as ForkRecord;
+      },
+      pullFork: async (target: { deployment_id?: string | null }) => {
+        calls.push(`pull ${target.deployment_id}`);
+        return pullResult(conflicts);
+      },
+      updateAll: async (targets: { owner_id?: string | null }[]) => {
+        calls.push(`update ${targets.map((t) => t.owner_id).join(",")}`);
+        const outcome = {
+          items: targets.map(() => ({ skill: "plain", outcome: {} })),
+          errors: {},
+        };
+        // SAFETY: bulkUpdateResult reads only `items[].skill/outcome` and `errors`.
+        return outcome as never;
+      },
+    };
+  }
+
+  it("forks_then_pulls_the_edited_skill_and_updates_the_rest_or_overwrites_the_edit", async () => {
+    const calls: string[] = [];
+    const result = await runBulkUpdate(
+      [edited, plain],
+      new Set(["edited"]),
+      deps([], calls),
+      () => {},
+    );
+    expect(calls).toEqual([
+      expect.stringMatching(/^fork dep:/),
+      "pull dep:forked",
+      "update owner:v1/global/plain",
+    ]);
+    expect(names(result.succeeded)).toEqual(["edited", "plain"]);
+    expect(result.conflicted).toBeUndefined();
+  });
+
+  it("names_a_skill_whose_pull_left_conflict_markers_or_the_toast_reports_a_clean_update", async () => {
+    const calls: string[] = [];
+    const result = await runBulkUpdate(
+      [edited],
+      new Set(["edited"]),
+      deps(["SKILL.md"], calls),
+      () => {},
+    );
+    expect(result.conflicted).toEqual(["edited"]);
+  });
+});
+
+describe("bulkActionToast conflicts", () => {
+  it("warns_and_names_the_conflicted_skills_or_a_conflicted_pull_reads_as_a_clean_success", () => {
+    const a = fixtureSkill("a");
+    const plan = { applicable: [a], skipped: [] };
+    expect(
+      bulkActionToast({ kind: "update" }, plan, { succeeded: [a], failed: [], conflicted: ["a"] }),
+    ).toEqual({
+      type: "warning",
+      title: "Updated 1 skill",
+      message: "Conflicts to resolve in the editor: a",
+    });
   });
 });

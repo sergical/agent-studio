@@ -6,8 +6,19 @@
 // disagrees with the skill page.
 // ============================================================================
 
-import type { InstalledSkill, InvocationPolicy, LifecycleTarget, Toast } from "@skill-studio/lib";
+import type {
+  ForkRecord,
+  InstalledSkill,
+  InvocationPolicy,
+  LifecycleTarget,
+  PullResult,
+  Toast,
+  UpdateAllOutcome,
+} from "@skill-studio/lib";
 import {
+  conflictedSkillsNote,
+  forkThenPull,
+  lifecycleTargetForPark,
   skillMutableLifecycleScopes,
   skillParkVerb,
   skillRemovalAvailability,
@@ -32,7 +43,7 @@ interface BulkSkipped {
   reason: string;
 }
 
-interface BulkPlan {
+export interface BulkPlan {
   applicable: InstalledSkill[];
   skipped: BulkSkipped[];
 }
@@ -45,6 +56,8 @@ export interface BulkFailure {
 export interface BulkRunResult {
   succeeded: InstalledSkill[];
   failed: BulkFailure[];
+  /** Names of forked skills whose pull left conflict markers; set only for an update. */
+  conflicted?: string[];
 }
 
 /** Why `skill` cannot take `action`, or `null` when it can. */
@@ -155,6 +168,56 @@ export function bulkUpdateResult(
   return result;
 }
 
+/**
+ * The list's bulk Update: each skill in `forkNames` is forked and pulled
+ * (keeping the user's edits), the rest go through one batched update call.
+ * One result covers both, with the skills whose pull left conflict markers.
+ */
+export async function runBulkUpdate(
+  skills: InstalledSkill[],
+  forkNames: ReadonlySet<string>,
+  deps: {
+    fork: (target: LifecycleTarget) => Promise<ForkRecord>;
+    pullFork: (target: LifecycleTarget) => Promise<PullResult>;
+    updateAll: (
+      targets: LifecycleTarget[],
+      onProgress: (done: number, total: number) => void,
+    ) => Promise<UpdateAllOutcome>;
+  },
+  onProgress: (done: number, total: number) => void,
+): Promise<BulkRunResult> {
+  const forked = skills.filter((skill) => forkNames.has(skill.name));
+  const rest = skills.filter((skill) => !forkNames.has(skill.name));
+  const result: BulkRunResult = { succeeded: [], failed: [] };
+  const conflicted: string[] = [];
+  const restTargets = rest.flatMap(bulkUpdateTargets);
+  const total = forked.length + restTargets.length;
+  for (const [index, skill] of forked.entries()) {
+    try {
+      // react-doctor-disable-next-line react-doctor/async-await-in-loop -- each fork and pull takes an exclusive lease, so the calls must not overlap
+      const pull = await forkThenPull(lifecycleTargetForPark(skill), deps.fork, deps.pullFork);
+      if (pull.conflicts.length > 0) conflicted.push(skill.name);
+      result.succeeded.push(skill);
+    } catch (error) {
+      result.failed.push({
+        skill,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+    onProgress(index + 1, total);
+  }
+  if (rest.length > 0) {
+    const outcome = await deps.updateAll(restTargets, (done) =>
+      onProgress(forked.length + done, total),
+    );
+    const restResult = bulkUpdateResult(rest, outcome);
+    result.succeeded.push(...restResult.succeeded);
+    result.failed.push(...restResult.failed);
+  }
+  if (conflicted.length > 0) result.conflicted = conflicted;
+  return result;
+}
+
 function policyLabel(policy: InvocationPolicy): string {
   return (
     INVOCATION_POLICY_OPTIONS.find((option) => option.value === policy)?.label ?? policy
@@ -237,10 +300,18 @@ export function bulkActionToast(
   if (result.failed.length > 0) parts.push(`${result.failed.length} failed`);
   const subject = changed === total ? skillCount(total) : `${changed} of ${skillCount(total)}`;
   const title = [`${pastTitle(action)} ${subject}`, ...parts].join(" · ");
-  if (result.failed.length === 0) return { type: "success", title };
+  const conflictNote = conflictedSkillsNote(result.conflicted ?? []);
+  if (result.failed.length === 0) {
+    return conflictNote
+      ? { type: "warning", title, message: conflictNote }
+      : { type: "success", title };
+  }
+  const failureMessage = result.failed
+    .map(({ skill, error }) => `${skill.name}: ${error}`)
+    .join("; ");
   return {
     type: changed === 0 ? "error" : "warning",
     title,
-    message: result.failed.map(({ skill, error }) => `${skill.name}: ${error}`).join("; "),
+    message: conflictNote ? `${failureMessage}. ${conflictNote}` : failureMessage,
   };
 }

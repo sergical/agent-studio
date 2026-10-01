@@ -4,7 +4,9 @@ import type {
   InstalledSkill,
   InstallScope,
   LifecycleTarget,
+  ForkRecord,
   LocalEditsDto,
+  PullResult,
   Toast,
 } from "@skill-studio/lib";
 
@@ -336,6 +338,26 @@ export async function skillsWithLocalEdits<
     if (verdict?.checked && verdict.edited) edited.add(entry.skill);
   }
   return skills.filter((skill) => edited.has(skill));
+}
+
+/**
+ * Forks the skill at `target`, then pulls upstream on the new fork so the
+ * user's edits and the update are merged. The pull goes to the fork's own
+ * deployment id: the owner id the skill had before the fork no longer exists.
+ */
+export async function forkThenPull(
+  target: LifecycleTarget,
+  fork: (target: LifecycleTarget) => Promise<ForkRecord>,
+  pullFork: (target: LifecycleTarget) => Promise<PullResult>,
+): Promise<PullResult> {
+  const record = await fork(target);
+  return pullFork({ deployment_id: record.deployment_id ?? target.deployment_id });
+}
+
+/** Short toast line naming the skills whose pull left conflict markers, or `undefined` when none did. */
+export function conflictedSkillsNote(skillNames: string[]): string | undefined {
+  if (skillNames.length === 0) return undefined;
+  return `Conflicts to resolve in the editor: ${skillNames.join(", ")}`;
 }
 
 /** Run each owner update and return every failure for the UI. */

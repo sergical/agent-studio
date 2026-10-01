@@ -573,4 +573,37 @@ describe("updateAllOutdatedSkills with edited skills", () => {
     expect(tally.skillsSucceeded).toBe(0);
     expect(tally.firstError).toBe("fork refused");
   });
+
+  it("update_all_names_the_skill_whose_pull_left_conflict_markers_or_the_toast_hides_them", async () => {
+    const tally = await updateAllOutdatedSkills(
+      [edited],
+      async () => ({
+        from_commit: "a",
+        to_commit: "b",
+        merged: [],
+        added: [],
+        removed: [],
+        conflicts: ["SKILL.md"],
+        unchanged: 0,
+        message: null,
+      }),
+      async () => succeedAll([]),
+      undefined,
+      {
+        names: new Set(["edited"]),
+        fork: async () => ({
+          deployment_id: "dep:v1/forked",
+          forked_at: "2026-10-01T00:00:00Z",
+          origin_tool: "skills-sh",
+          origin_source: "owner/repo",
+          repo: "owner/repo",
+          path: "skills/edited",
+          declared_ref: null,
+          base_commit: "a",
+        }),
+      },
+    );
+    expect(tally.conflicted).toEqual(["edited"]);
+    expect(tally.skillsSucceeded).toBe(1);
+  });
 });
