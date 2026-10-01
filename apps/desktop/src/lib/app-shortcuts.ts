@@ -17,6 +17,8 @@ export const SHORTCUTS = {
   addSkill: { id: "add-skill", keys: ["⌘", "N"], label: "Add skill" },
   settings: { id: "settings", keys: ["⌘", ","], label: "Settings" },
   filterSkills: { id: "filter-skills", keys: ["/"], label: "Filter skills" },
+  back: { id: "back", keys: ["⌘", "["], label: "Back" },
+  forward: { id: "forward", keys: ["⌘", "]"], label: "Forward" },
   sync: { id: "sync", keys: [], label: "Sync" },
   toggleTheme: { id: "toggle-theme", keys: [], label: "Toggle theme" },
 } satisfies Record<string, ShortcutDef>;

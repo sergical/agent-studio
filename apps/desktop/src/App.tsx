@@ -79,6 +79,7 @@ function App() {
   const openSkill = useAppStore((state) => state.openSkill);
   const closeSkill = useAppStore((state) => state.closeSkill);
   const setTrackedProjects = useAppStore((state) => state.setTrackedProjects);
+  const setKnownSkillNames = useAppStore((state) => state.setKnownSkillNames);
   const addToast = useAppStore((state) => state.addToast);
 
   const onSelectSkill = (name: string, deploymentPath?: string) => openSkill(name, deploymentPath);
@@ -110,6 +111,10 @@ function App() {
       }
     })();
   }, [setTrackedProjects, addToast]);
+
+  useEffect(() => {
+    setKnownSkillNames(snapshot ? new Set(snapshot.skills.map((skill) => skill.name)) : null);
+  }, [snapshot, setKnownSkillNames]);
 
   // This toast is the only place on screen that shows a failed load or refresh.
   useEffect(() => {
