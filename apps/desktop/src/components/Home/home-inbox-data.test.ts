@@ -207,7 +207,14 @@ describe("updateAllOutdatedSkills", () => {
       "owner:v1/global/beta",
       "owner:v1/global/gamma",
     ]);
-    expect(tally).toEqual({ attempted: 3, succeeded: 3, failures: 0, firstError: null });
+    expect(tally).toEqual({
+      attempted: 3,
+      succeeded: 3,
+      failures: 0,
+      skillsAttempted: 3,
+      skillsSucceeded: 3,
+      firstError: null,
+    });
   });
 
   it("update_all_pulls_a_fork_upstream_separately_from_the_batched_owner_call_or_names_the_extra_call", async () => {
@@ -239,7 +246,14 @@ describe("updateAllOutdatedSkills", () => {
 
     expect(pullForkCalls).toBe(1);
     expect(updateAllCalls).toBe(1);
-    expect(tally).toEqual({ attempted: 2, succeeded: 2, failures: 0, firstError: null });
+    expect(tally).toEqual({
+      attempted: 2,
+      succeeded: 2,
+      failures: 0,
+      skillsAttempted: 2,
+      skillsSucceeded: 2,
+      firstError: null,
+    });
   });
 
   it("update_all_counts_every_owner_update_all_skills_reports_as_failed_or_names_the_uncounted_owner", async () => {
@@ -260,6 +274,8 @@ describe("updateAllOutdatedSkills", () => {
       attempted: 2,
       succeeded: 0,
       failures: 2,
+      skillsAttempted: 2,
+      skillsSucceeded: 0,
       firstError: "update failed",
     });
   });
@@ -291,6 +307,8 @@ describe("updateAllOutdatedSkills", () => {
       attempted: 2,
       succeeded: 0,
       failures: 2,
+      skillsAttempted: 1,
+      skillsSucceeded: 0,
       firstError: "update failed",
     });
   });
@@ -321,6 +339,8 @@ describe("updateAllOutdatedSkills", () => {
       attempted: 3,
       succeeded: 1,
       failures: 2,
+      skillsAttempted: 3,
+      skillsSucceeded: 1,
       firstError: "beta is wildcard-dotagents (read-only)",
     });
   });
@@ -345,6 +365,8 @@ describe("updateAllOutdatedSkills", () => {
       attempted: 2,
       succeeded: 0,
       failures: 2,
+      skillsAttempted: 2,
+      skillsSucceeded: 0,
       firstError: "backend unreachable",
     });
   });
@@ -381,7 +403,14 @@ describe("updateAllOutdatedSkills", () => {
 
 describe("updateAllFailureMessage", () => {
   it("update_all_toast_names_the_first_error_and_truncates_a_long_one_or_hides_why_it_failed", () => {
-    const tally = { attempted: 5, succeeded: 2, failures: 3, firstError: "read-only" };
+    const tally = {
+      attempted: 5,
+      succeeded: 2,
+      failures: 3,
+      skillsAttempted: 5,
+      skillsSucceeded: 2,
+      firstError: "read-only",
+    };
     expect(updateAllFailureMessage(tally)).toBe("3 failed: read-only");
     expect(updateAllFailureMessage({ ...tally, failures: 0, firstError: null })).toBeUndefined();
     const long = updateAllFailureMessage({ ...tally, firstError: "x".repeat(500) }) ?? "";

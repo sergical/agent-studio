@@ -510,7 +510,9 @@ function RecentGroup({
                   </span>
                 }
                 action={
-                  <span className={`${ROW_ACTION_CLASS} tabular-nums`}>{usesIn30Days} uses</span>
+                  <span className="w-full truncate text-right text-small tabular-nums text-text-tertiary">
+                    {usesIn30Days} uses
+                  </span>
                 }
               />
             );
@@ -558,10 +560,10 @@ function UpdatesGroup({
         updateAllSkillsWithProgress(targets, ({ done }) => onOwnerDone(done)),
       (done, total) => setProgress({ done, total }),
     );
-    const { attempted, succeeded, failures } = tally;
+    const { skillsAttempted, skillsSucceeded, failures } = tally;
     addToast({
       type: failures > 0 ? "warning" : "success",
-      title: `Updated ${succeeded} of ${attempted} deployment${attempted === 1 ? "" : "s"}`,
+      title: `Updated ${skillsSucceeded} of ${skillsAttempted} skill${skillsAttempted === 1 ? "" : "s"}`,
       message: updateAllFailureMessage(tally),
     });
     // react-doctor-disable-next-line react-doctor/no-loading-flag-reset-outside-finally -- the React Compiler rejects try/finally here (react-hooks-js/todo); `updateAllOutdatedSkills` never rejects, so this always runs
