@@ -4,7 +4,7 @@
 //! [`RuntimeScope`], the core normalizes it once into a [`NormalizedScope`],
 //! and every port call and every id derives from that normalized value.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use schemars::JsonSchema;
@@ -150,11 +150,12 @@ impl RuntimeScope {
         self
     }
 
-    /// Codex's own directory: the override, or `home_root/.codex`.
+    /// Codex's own directory: the override when [`usable_root`] accepts it,
+    /// else `home_root/.codex`. Lexical check only; [`NormalizedScope`] also
+    /// checks the canonical form.
     pub fn codex_home_or_default(&self) -> PathBuf {
-        self.codex_home
-            .clone()
-            .unwrap_or_else(|| self.home_root.join(".codex"))
+        usable_root(self.codex_home.as_deref())
+            .map_or_else(|| self.home_root.join(".codex"), Path::to_path_buf)
     }
 
     /// Read wait budget as a duration.
@@ -317,10 +318,17 @@ impl NormalizedScope {
             )
             .at(&clash.lexical));
         }
-        let codex_home = usable_root(raw.codex_home.as_deref())
-            .map_or_else(|| raw.home_root.join(".codex"), Path::to_path_buf);
-        let opencode_config_root =
-            usable_root(raw.opencode_config_root.as_deref()).map(Path::to_path_buf);
+        let (codex_home, codex_home_canonical) =
+            confined_root(fs, &home.canonical, raw.codex_home.as_deref()).unwrap_or_else(|| {
+                let default = raw.home_root.join(".codex");
+                let canonical = codex_path_form(fs, &default);
+                (default, canonical)
+            });
+        let (opencode_config_root, opencode_config_root_canonical) =
+            match confined_root(fs, &home.canonical, raw.opencode_config_root.as_deref()) {
+                Some((lexical, canonical)) => (Some(lexical), Some(canonical)),
+                None => (None, None),
+            };
         Ok(NormalizedScope {
             id: ScopeId::for_canonical_home(&home.canonical),
             home,
@@ -328,11 +336,9 @@ impl NormalizedScope {
             history_root: raw.history_root.clone(),
             cache_root: raw.cache_root.clone(),
             data_root: raw.data_root.clone(),
-            codex_home_canonical: codex_path_form(fs, &codex_home),
+            codex_home_canonical,
             codex_home,
-            opencode_config_root_canonical: opencode_config_root
-                .as_deref()
-                .map(|root| codex_path_form(fs, root)),
+            opencode_config_root_canonical,
             opencode_config_root,
             raw: raw.clone(),
         })
@@ -427,9 +433,29 @@ pub struct EffectiveScope {
 }
 
 /// A configured Codex or `OpenCode` root, or `None` when it is unset,
-/// relative, or a filesystem root (which would contain every path).
+/// relative, a filesystem root (which would contain every path), or spelled
+/// with `..` (which can resolve to a filesystem root).
 fn usable_root(root: Option<&Path>) -> Option<&Path> {
-    root.filter(|r| r.is_absolute() && r.parent().is_some())
+    root.filter(|r| {
+        r.is_absolute()
+            && r.parent().is_some()
+            && !r.components().any(|c| matches!(c, Component::ParentDir))
+    })
+}
+
+/// A usable root's lexical and canonical forms, or `None` when it resolves
+/// (through a symlink, say) to a filesystem root or a strict ancestor of the
+/// home - either would let `contains` accept paths far outside the scope.
+fn confined_root(
+    fs: &dyn ScopeFs,
+    home_canonical: &Path,
+    root: Option<&Path>,
+) -> Option<(PathBuf, PathBuf)> {
+    let lexical = usable_root(root)?;
+    let canonical = codex_path_form(fs, lexical);
+    let too_wide = canonical.parent().is_none()
+        || (canonical != home_canonical && home_canonical.starts_with(&canonical));
+    (!too_wide).then(|| (lexical.to_path_buf(), canonical))
 }
 
 fn physical(fs: &dyn ScopeFs, lexical: &Path) -> Result<PhysicalRoot, CoreError> {
