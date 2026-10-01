@@ -10,6 +10,7 @@ import { forkSkill, pullForkUpstream, skillLocalEdits, updateSkill } from "../li
 import {
   forkEditedAndUpdate,
   forkableDeployment,
+  lifecycleTargetForPark,
   pullUpstreamToast,
   skillUpdateToast,
   skillsWithLocalEdits,
@@ -137,5 +138,23 @@ export function useGuardedSkillUpdate() {
     />
   );
 
-  return { requestUpdate, isResolving, dialog };
+  /** "Pull latest" for one row: a fork merges upstream, any other skill takes the guarded update.
+   * Reports the outcome as a toast and never throws, so a row menu can fire and forget. */
+  const pullLatest = async (skill: InstalledSkill) => {
+    try {
+      if (skill.source_kind === "fork") {
+        addToast(pullUpstreamToast(await pullForkUpstream(lifecycleTargetForPark(skill))));
+      } else {
+        await requestUpdate(skill);
+      }
+    } catch (error) {
+      // An `if`, not a conditional expression: the React Compiler can't compile a value block
+      // directly inside a try/catch statement.
+      let message = "Unknown error";
+      if (error instanceof Error) message = error.message;
+      addToast({ type: "error", title: "Update failed", message });
+    }
+  };
+
+  return { requestUpdate, pullLatest, isResolving, dialog };
 }

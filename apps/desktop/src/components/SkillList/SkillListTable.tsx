@@ -184,7 +184,10 @@ export function SkillListTable({
     syncSelectionMode,
     handleRowCheckboxClick,
   } = useSkillListSelection(rows, rowPath);
-  const handleAct = useSkillListAct(onSelectSkill, deploymentPathForSkill);
+  const { handleAct, dialog: updateDialog } = useSkillListAct(
+    onSelectSkill,
+    deploymentPathForSkill,
+  );
   const { scrollElement, scrollMargin, setGridElement } = useSkillListScrollMargin();
 
   /** The flat item list the virtualizer measures, and each group's offset/size in that same
@@ -407,6 +410,7 @@ export function SkillListTable({
               }}
             />
           )}
+          {updateDialog}
         </div>
       </SkillRowMenuScope>
     </RichTooltipScope>
