@@ -167,9 +167,9 @@ export function SkillListTable({
    * `useRowCursor`'s return value before it exists. */
   const cursorKeyRef = useRef<string | null>(null);
 
-  /** The deployment path this row's selection checkbox stands for. */
-  const rowPath = (skill: InstalledSkill): string | undefined =>
-    deploymentPathForSkill?.(skill) ?? skill.deployments[0]?.path;
+  /** The deployment path this row's selection checkbox stands for - the skill's first copy, so it
+   * stays put when the copy the row opens changes with a rescan. */
+  const rowPath = (skill: InstalledSkill): string | undefined => skill.deployments[0]?.path;
 
   const { buckets, statesBySkill, rows } = groupSkillRows(skills, sort, stats);
   /** Row keys `useRowCursor` navigates, in rendered order - a collapsed group's rows drop out. */

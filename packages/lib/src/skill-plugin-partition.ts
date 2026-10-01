@@ -39,12 +39,21 @@ export function pluginDeployments(skill: InstalledSkill): Deployment[] {
  * Every skill with at least one non-plugin deployment, each cloned with
  * `deployments` narrowed to just the owned ones. A mixed-origin skill never
  * carries its plugin deployments along here, so they can't inflate scope
- * lists, agent chips, coverage, or stat counts derived from this view.
+ * lists, agent chips, coverage, or stat counts derived from this view. The
+ * skill's `spec_violations` are rebuilt from the owned copies for the same
+ * reason: a plugin copy's problems are not the user's to fix.
  */
 export function ownSkillsView(skills: InstalledSkill[]): InstalledSkill[] {
   return skills
     .filter((skill) => ownDeployments(skill).length > 0)
-    .map((skill) => ({ ...skill, deployments: ownDeployments(skill) }));
+    .map((skill) => {
+      const deployments = ownDeployments(skill);
+      return {
+        ...skill,
+        deployments,
+        spec_violations: [...new Set(deployments.flatMap((d) => d.spec_violations))],
+      };
+    });
 }
 
 /** The plugin-deployment mirror of `ownSkillsView`, for plugin-side counts. */

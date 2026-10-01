@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   coverageGaps,
+  deploymentWithSpecViolations,
   findDuplicateSkills,
   findLinkedRootIssues,
   findParkedButReinstalled,
@@ -24,6 +25,7 @@ function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
     symlink_is_broken: false,
     content_hash: "abc",
     disabled: false,
+    spec_violations: [],
     ...overrides,
   };
 }
@@ -267,5 +269,88 @@ describe("findParkedButReinstalled", () => {
       deployments: [fixtureDeployment({ scope: "global" })],
     });
     expect(findParkedButReinstalled([skill])).toEqual([]);
+  });
+});
+
+describe("deploymentWithSpecViolations", () => {
+  const WARNING = "description exceeds 1024 characters";
+  const ERROR = 'name "Find Bugs" is not a valid skill name';
+  const plugin = {
+    name: "p",
+    version: null,
+    harness: "Claude Code",
+    marketplace: "m",
+    id: "p@m",
+  };
+
+  it("a_blocking_copy_beats_an_earlier_warning_only_copy_or_the_error_stays_hidden", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/a", spec_violations: [WARNING] }),
+        fixtureDeployment({ path: "/b", spec_violations: [ERROR] }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)?.path).toBe("/b");
+  });
+
+  it("a_skill_with_no_violations_returns_undefined_so_callers_keep_their_default", () => {
+    const skill = fixtureSkill({ deployments: [fixtureDeployment()] });
+    expect(deploymentWithSpecViolations(skill)).toBeUndefined();
+  });
+
+  it("an_own_copy_with_a_warning_beats_a_plugin_copy_with_an_error_or_the_page_opens_a_read_only_file", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/plugin", spec_violations: [ERROR], plugin }),
+        fixtureDeployment({ path: "/own", spec_violations: [WARNING] }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)?.path).toBe("/own");
+  });
+
+  it("a_clean_own_copy_and_an_errored_plugin_copy_return_undefined_because_the_problem_is_not_the_users_to_fix", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/plugin", spec_violations: [ERROR], plugin }),
+        fixtureDeployment({ path: "/own" }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)).toBeUndefined();
+  });
+
+  it("a_plugin_only_skill_returns_its_errored_plugin_copy", () => {
+    const skill = fixtureSkill({
+      deployments: [fixtureDeployment({ path: "/plugin", spec_violations: [ERROR], plugin })],
+    });
+    expect(deploymentWithSpecViolations(skill)?.path).toBe("/plugin");
+  });
+
+  it("an_editable_copy_beats_a_symlink_copy_when_both_have_the_same_violation", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/link", is_symlink: true, spec_violations: [ERROR] }),
+        fixtureDeployment({ path: "/physical", spec_violations: [ERROR] }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)?.path).toBe("/physical");
+  });
+
+  it("a_skill_whose_only_own_copy_is_a_broken_symlink_returns_undefined_instead_of_a_plugin_copy", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/plugin", spec_violations: [ERROR], plugin }),
+        fixtureDeployment({ path: "/broken", symlink_is_broken: true }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)).toBeUndefined();
+  });
+
+  it("a_broken_symlink_never_wins_on_its_violations_alone", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/broken", symlink_is_broken: true, spec_violations: [ERROR] }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)).toBeUndefined();
   });
 });

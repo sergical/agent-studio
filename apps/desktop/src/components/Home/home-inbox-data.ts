@@ -5,6 +5,7 @@
 // ============================================================================
 
 import {
+  deploymentWithSpecViolations,
   attentionGroups,
   collectDashboardIssues,
   homeInvocationCounts,
@@ -73,6 +74,14 @@ export function homeRowState(
     case "rec":
       return rowState(skill);
   }
+}
+
+/** The copy a Home issue row opens: a spec-violation issue opens the copy that has the violation
+ * (the skill's first copy may be clean); other kinds open the skill's default copy. */
+export function issueDeploymentPath(issue: HealthIssue): string | undefined {
+  return issue.kind === "spec-violation"
+    ? deploymentWithSpecViolations(issue.skill)?.path
+    : undefined;
 }
 
 /** The row-level action label for one health issue kind - see NeedsAttentionCard's former mapping. */
@@ -225,7 +234,7 @@ export function buildHomeRowPlan(params: {
   groups: HomeGroups;
   isGroupVisible: (id: GroupId) => boolean;
   isGroupExpanded: (id: GroupId) => boolean;
-  onSelectSkill: (name: string) => void;
+  onSelectSkill: (name: string, deploymentPath?: string) => void;
 }): HomeRowPlan {
   const { groups, isGroupVisible, isGroupExpanded, onSelectSkill } = params;
   const { broken, warnings, updates, unused, recent } = groups;
@@ -265,7 +274,7 @@ export function buildHomeRowPlan(params: {
   const openByKey = new Map<string, () => void>([
     ...brokenRows.map((issue): [string, () => void] => [
       issueKey("broken", issue),
-      () => onSelectSkill(issue.skill.name),
+      () => onSelectSkill(issue.skill.name, issueDeploymentPath(issue)),
     ]),
     ...warnRows.map((issue): [string, () => void] => [
       issueKey("warn", issue),

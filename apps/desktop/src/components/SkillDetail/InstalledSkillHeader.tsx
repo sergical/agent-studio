@@ -11,6 +11,7 @@ import {
   describeFrontmatterErrorLine,
   describeFrontmatterRepair,
   isBlockingSpecViolation,
+  ownDeployments,
   parseYamlFrontmatterError,
   proposeFrontmatterQuoteRepair,
 } from "@skill-studio/lib";
@@ -63,13 +64,20 @@ export function InstalledSkillHeader({
   onFixRepair,
   onEditManually,
 }: InstalledSkillHeaderProps) {
-  const nonBlockingCount =
-    skill.spec_violations.length - skill.spec_violations.filter(isBlockingSpecViolation).length;
+  // Notes from the skill's own copies only, as on list rows - a plugin copy's notes are not the
+  // user's to fix. A plugin-only skill has no own copy, so it counts every copy.
+  const own = ownDeployments(skill);
+  const noteSources = own.length > 0 ? own : skill.deployments;
+  const nonBlockingNotes = [
+    ...new Set(
+      noteSources.flatMap((d) => d.spec_violations.filter((v) => !isBlockingSpecViolation(v))),
+    ),
+  ];
+  const nonBlockingCount = nonBlockingNotes.length;
   // The red violation line names only the deployment whose SKILL.md the page
   // actually renders - other deployments' violations show on their own
-  // Locations rows instead (see `SkillLocationsCard`). The union in
-  // `skill.spec_violations` (and its "N spec notes" chip above) is unchanged:
-  // Home's spec-violation issue still relies on it covering every copy.
+  // Locations rows instead (see `SkillLocationsCard`). Home's spec-violation
+  // issue still relies on `skill.spec_violations` covering every copy.
   const renderedDeployment = deployment ?? skill.deployments.find((d) => d.content_hash);
   const blockingViolations = (renderedDeployment?.spec_violations ?? []).filter(
     isBlockingSpecViolation,
@@ -126,11 +134,7 @@ export function InstalledSkillHeader({
           </span>
         )}
         {nonBlockingCount > 0 && (
-          <TooltipControl
-            content={skill.spec_violations
-              .filter((violation) => !isBlockingSpecViolation(violation))
-              .join("; ")}
-          >
+          <TooltipControl content={nonBlockingNotes.join("; ")}>
             <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-caption text-text-tertiary">
               {nonBlockingCount} spec note{nonBlockingCount !== 1 ? "s" : ""}
             </span>

@@ -201,6 +201,7 @@ describe("back/forward history", () => {
       navHistory: { back: [], forward: [] },
       knownSkillNames: null,
       defaultDeploymentPaths: null,
+      pinnedDeployment: { skillName: undefined, path: undefined },
       leaveGuard: null,
       lastClosedSkillName: null,
     });
@@ -274,6 +275,18 @@ describe("back/forward history", () => {
     const before = history().back.length;
     useAppStore.getState().openSkill("a");
     expect(history().back).toHaveLength(before);
+  });
+
+  it("an explicit copy that is the new snapshot default but not the pinned copy still records an entry, and Back returns to the pinned page", () => {
+    useAppStore.getState().setKnownSkillNames(new Set(["a"]), new Map([["a", "/d"]]));
+    useAppStore.getState().openSkill("a");
+    useAppStore.getState().setPinnedDeployment({ skillName: "a", path: "/x" });
+    const before = history().back.length;
+    useAppStore.getState().openSkill("a", "/d");
+    expect(history().back).toHaveLength(before + 1);
+    useAppStore.getState().goBack();
+    expect(useAppStore.getState().activeView).toMatchObject({ kind: "skill", name: "a" });
+    expect(useAppStore.getState().activeView).toHaveProperty("deploymentPath", undefined);
   });
 
   it("Back from a skill page to a list sets lastClosedSkillName, so the list restores its row cursor", () => {

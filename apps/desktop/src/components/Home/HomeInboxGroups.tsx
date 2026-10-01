@@ -32,6 +32,7 @@ import { RichTooltipScope } from "../ui/RichTooltip";
 import {
   homeRowState,
   issueActionLabel,
+  issueDeploymentPath,
   issueKey,
   MAX_ROWS_PER_GROUP,
   rowAt,
@@ -273,7 +274,7 @@ function BrokenGroup({
   start: number;
   isExpanded: boolean;
   onToggle: () => void;
-  onSelectSkill: (name: string) => void;
+  onSelectSkill: (name: string, deploymentPath?: string) => void;
   onShowAll: () => void;
 }) {
   return (
@@ -295,13 +296,13 @@ function BrokenGroup({
                 rowIndex={rowAt(start, i)}
                 rowRef={rowRef(key)}
                 tabIndex={tabIndexFor(key)}
-                onOpen={() => onSelectSkill(issue.skill.name)}
+                onOpen={() => onSelectSkill(issue.skill.name, issueDeploymentPath(issue))}
                 detail={<span>{issue.detail}</span>}
                 action={
                   <Button
                     variant="ghost"
                     className={ROW_ACTION_CLASS}
-                    onClick={() => onSelectSkill(issue.skill.name)}
+                    onClick={() => onSelectSkill(issue.skill.name, issueDeploymentPath(issue))}
                   >
                     {issueActionLabel(issue.kind)}
                   </Button>
@@ -680,7 +681,7 @@ export function HomeInboxGrid({
   isGroupVisible: (id: GroupId) => boolean;
   isGroupExpanded: (id: GroupId) => boolean;
   toggleGroup: (id: GroupId) => void;
-  onSelectSkill: (name: string) => void;
+  onSelectSkill: (name: string, deploymentPath?: string) => void;
   onShowAllIssues: () => void;
   onShowAllUpdates: () => void;
   onShowAllUnused: () => void;

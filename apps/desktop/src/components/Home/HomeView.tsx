@@ -37,7 +37,7 @@ import { useHomeRowCursor } from "./useHomeRowCursor";
 interface HomeViewProps {
   snapshot: SkillSnapshot | undefined;
   isLoading: boolean;
-  onSelectSkill: (name: string) => void;
+  onSelectSkill: (name: string, deploymentPath?: string) => void;
   /** Whether Home is the view on screen right now - `false` while it's kept mounted but hidden
    * behind an open skill's page, so its window-level keyboard shortcuts stay off. */
   active: boolean;
