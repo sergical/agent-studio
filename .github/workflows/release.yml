@@ -273,6 +273,30 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.ref_name }}" "$dsym_zip" --clobber
 
+      # The fixed names let the website link to /releases/latest/download/;
+      # tauri-action's DMG names carry the version.
+      - name: Attach the fixed-name DMG to the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            aarch64-apple-darwin) fixed_name="Skill-Studio-arm64.dmg" ;;
+            x86_64-apple-darwin) fixed_name="Skill-Studio-intel.dmg" ;;
+            *) echo "no fixed DMG name for $TARGET" >&2; exit 1 ;;
+          esac
+          dmg_dir="target/$TARGET/release/bundle/dmg"
+          shopt -s nullglob
+          dmgs=("$dmg_dir"/*.dmg)
+          if [[ ${#dmgs[@]} -ne 1 ]]; then
+            echo "expected exactly one DMG in $dmg_dir, found ${#dmgs[@]}" >&2
+            exit 1
+          fi
+          cp "${dmgs[0]}" "$RUNNER_TEMP/$fixed_name"
+          gh release upload "$TAG" "$RUNNER_TEMP/$fixed_name" --clobber
+
       # The npm packages ship the CLI binary on its own, outside the .app, so
       # it needs its own build, signature and notarization. Same compile-time
       # env as the tauri-action step above, so the CLI reports the same commit
