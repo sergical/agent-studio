@@ -14,8 +14,8 @@ describe("rankItems", () => {
   });
 
   it("ranks a multi-word query that starts at a word above a mid-word hit", () => {
-    const ranked = rankItems(["shave-adhd", "i-have-adhd"].map(skillItem), "have adhd");
-    expect(ranked.map((item) => item.label)).toEqual(["i-have-adhd", "shave-adhd"]);
+    const ranked = rankItems(["ahave-adhd", "i-have-adhd"].map(skillItem), "have adhd");
+    expect(ranked.map((item) => item.label)).toEqual(["i-have-adhd", "ahave-adhd"]);
   });
 
   it("matches words in any order after the in-order matches", () => {
