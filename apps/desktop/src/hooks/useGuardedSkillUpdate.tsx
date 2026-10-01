@@ -5,7 +5,7 @@
 // fork and merge, overwrite, or cancel.
 // ============================================================================
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { forkSkill, pullForkUpstream, skillLocalEdits, updateSkill } from "../lib/skill-api";
 import {
   forkEditedAndUpdate,
@@ -56,6 +56,7 @@ export function useGuardedSkillUpdate() {
   const addToast = useAppStore((state) => state.addToast);
   const [pending, setPending] = useState<PendingUpdate | null>(null);
   const [isResolving, setIsResolving] = useState(false);
+  const pulling = useRef(new Set<string>());
 
   const overwriteFor =
     (skill: InstalledSkill, { scopeTarget, onFinished }: UpdateRequestOptions) =>
@@ -139,8 +140,12 @@ export function useGuardedSkillUpdate() {
   );
 
   /** "Pull latest" for one row: a fork merges upstream, any other skill takes the guarded update.
-   * Reports the outcome as a toast and never throws, so a row menu can fire and forget. */
+   * Reports the outcome as a toast and never throws, so a row menu can fire and forget. A second
+   * pull of the same skill while one runs is dropped: the menu closes at once, so a user who sees
+   * nothing happen picks it again, and two `npx skills update` runs on one folder race. */
   const pullLatest = async (skill: InstalledSkill) => {
+    if (pulling.current.has(skill.name)) return;
+    pulling.current.add(skill.name);
     try {
       if (skill.source_kind === "fork") {
         addToast(pullUpstreamToast(await pullForkUpstream(lifecycleTargetForPark(skill))));
@@ -154,6 +159,7 @@ export function useGuardedSkillUpdate() {
       if (error instanceof Error) message = error.message;
       addToast({ type: "error", title: "Update failed", message });
     }
+    pulling.current.delete(skill.name);
   };
 
   return { requestUpdate, pullLatest, isResolving, dialog };
