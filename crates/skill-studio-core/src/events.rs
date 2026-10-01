@@ -725,6 +725,11 @@ pub(crate) fn parse_restore_add_codex_rows(inverse: &serde_json::Value) -> Vec<(
         .collect()
 }
 
+/// The `secondary_post` value for a path that could not be fingerprinted
+/// (an `Err` entry): it never equals a live fingerprint, so
+/// undo needs `force`.
+const UNREADABLE_FINGERPRINT: &str = "unknown";
+
 /// Adds a `"secondary_post"` array to a `restore_backup` inverse: every
 /// extra path the same event backed up beside `path` (an update's config,
 /// lock, and sibling skill folders), each with the fingerprint it had after
@@ -732,7 +737,7 @@ pub(crate) fn parse_restore_add_codex_rows(inverse: &serde_json::Value) -> Vec<(
 /// so an edit made after the event is not overwritten without `force`.
 pub(crate) fn with_secondary_post(
     mut inverse: serde_json::Value,
-    entries: &[(PathBuf, Option<Fingerprint>)],
+    entries: &[(PathBuf, Result<Option<Fingerprint>, crate::CoreError>)],
 ) -> serde_json::Value {
     if !entries.is_empty() {
         let entries: Vec<serde_json::Value> = entries
@@ -740,7 +745,10 @@ pub(crate) fn with_secondary_post(
             .map(|(path, fingerprint)| {
                 serde_json::json!({
                     "path": path,
-                    "fingerprint": fingerprint.as_ref().map_or("absent", Fingerprint::bare_hex),
+                    "fingerprint": match fingerprint {
+                        Ok(fingerprint) => fingerprint.as_ref().map_or("absent", Fingerprint::bare_hex),
+                        Err(_) => UNREADABLE_FINGERPRINT,
+                    },
                 })
             })
             .collect();

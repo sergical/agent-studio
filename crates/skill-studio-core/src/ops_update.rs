@@ -272,8 +272,8 @@ fn record_dotagents_side_effects(
 ) -> Result<(), CoreError> {
     let secondary_post = secondary
         .iter()
-        .map(|path| Ok((path.clone(), fingerprint_path(fs, path)?)))
-        .collect::<Result<Vec<_>, CoreError>>()?;
+        .map(|path| (path.clone(), fingerprint_path(fs, path)))
+        .collect::<Vec<_>>();
     let mut created = Vec::new();
     for name in skill_folder_names(fs, universal_root)? {
         let folder = universal_root.join(&name);

@@ -1760,8 +1760,10 @@ fn undoing_a_first_time_lock_removes_it_and_a_replacing_symlink_never_loses_its_
 
 /// Flow: the install creates `gamma`; undo removes it; a real folder with a
 /// user file now sits at `gamma`; a forced undo of that undo writes `gamma`
-/// back. The user's file must stay recoverable from the restore's backup.
-/// Fails when the forced write quarantines the folder with no backup.
+/// back. The user's file must stay recoverable from the restore's backup,
+/// and a plain undo of that restore must put the folder back. Fails when the
+/// forced write quarantines the folder with no backup, or when the second
+/// undo writes the folder back and then deletes it as a copy to remove.
 #[test]
 fn forced_undo_over_a_real_folder_where_a_copy_goes_back_keeps_that_folder_in_the_backup() {
     let home = siblings_home("update_write_back_backup");
@@ -1778,10 +1780,136 @@ fn forced_undo_over_a_real_folder_where_a_copy_goes_back_keeps_that_folder_in_th
     std::fs::create_dir_all(&gamma).unwrap();
     std::fs::write(gamma.join("notes.txt"), "mine\n").unwrap();
 
-    undo(&rt, first_undo.restore_event_id, true).unwrap();
+    let forced = undo(&rt, first_undo.restore_event_id, true).unwrap();
 
     assert!(skill_body(&home, "gamma").contains("Body at v2"));
     assert!(history_holds_text(&home, "mine\n"));
+
+    undo(&rt, forced.restore_event_id, false).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(gamma.join("notes.txt")).unwrap(),
+        "mine\n"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Runs the fake CLI, then makes `unreadable` unreadable, so the row's
+/// side-effect patch cannot fingerprint it.
+#[cfg(unix)]
+struct UnreadableAfterInstall {
+    inner: FakeNpxUpdateSpawner,
+    unreadable: PathBuf,
+}
+
+#[cfg(unix)]
+impl ProcessSpawner for UnreadableAfterInstall {
+    fn run(
+        &self,
+        spec: &ProcessSpec,
+        cancel: &dyn CancelToken,
+    ) -> Result<ProcessOutput, skill_studio_core::CoreError> {
+        use std::os::unix::fs::PermissionsExt;
+        let output = self.inner.run(spec, cancel)?;
+        std::fs::set_permissions(&self.unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Ok(output)
+    }
+}
+
+#[cfg(unix)]
+fn make_readable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+/// Flow: `beta` cannot be read when the update records its fingerprint, so
+/// the row has no real post-state for it. After it is readable again, undo
+/// must still refuse without force and name `beta`. Fails when the unreadable
+/// path is dropped from the row, so undo overwrites `beta` unchecked.
+#[cfg(unix)]
+#[test]
+fn undoing_an_update_that_could_not_read_a_sibling_refuses_without_force() {
+    let home = siblings_home("update_unreadable_sibling");
+    let beta_md = home.join(UNIVERSAL_ROOT_RELATIVE).join("beta/SKILL.md");
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(UnreadableAfterInstall {
+            inner: FakeNpxUpdateSpawner::new(home.clone(), "v2"),
+            unreadable: beta_md.clone(),
+        })),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    make_readable(&beta_md);
+
+    let err = undo(&rt, outcome.event_id.clone(), false).unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::DriftConflict);
+    assert!(
+        err.path.as_deref().is_some_and(|p| p.ends_with("beta")),
+        "the refusal must name beta, got {:?}",
+        err.path
+    );
+
+    undo(&rt, outcome.event_id, true).unwrap();
+    assert!(skill_body(&home, "beta").contains("Body at v1"));
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: a folder the install created cannot be read, so the row's whole
+/// side-effect patch fails. The user then edits `beta`, and a forced undo
+/// must still keep that edit in the restore's backup. Fails when the restore
+/// backs up only the paths a successful patch listed.
+#[cfg(unix)]
+#[test]
+fn undoing_an_update_whose_side_effect_patch_failed_still_backs_up_the_sibling_it_overwrites() {
+    let home = siblings_home("update_failed_patch_backup");
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(UnreadableAfterInstall {
+            inner: FakeNpxUpdateSpawner::new(home.clone(), "v2").installing_new(&["gamma"]),
+            unreadable: home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma/SKILL.md"),
+        })),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    let beta_md = home.join(UNIVERSAL_ROOT_RELATIVE).join("beta/SKILL.md");
+    std::fs::write(&beta_md, "my edit to beta\n").unwrap();
+
+    undo(&rt, outcome.event_id, true).unwrap();
+
+    assert!(skill_body(&home, "beta").contains("Body at v1"));
+    assert!(history_holds_text(&home, "my edit to beta\n"));
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the skills root cannot be listed, so the update cannot record which
+/// folders exist before it. It must fail before any backup, leaving `alpha`
+/// at v1. Fails when the update goes on and backs up or rewrites anything.
+#[cfg(unix)]
+#[test]
+fn update_that_cannot_list_the_skills_root_fails_before_any_backup() {
+    use std::os::unix::fs::PermissionsExt;
+    let (home, rt) = siblings_runtime("update_unlistable_root");
+    let root = home.join(UNIVERSAL_ROOT_RELATIVE);
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o300)).unwrap();
+    let mut req = cli_request("alpha", InstallMethod::Dotagents);
+    req.ref_pin = Some("bbb".to_string());
+
+    let result = ops::update(&rt, &ctx(), &req);
+
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(result.is_err());
+    assert!(skill_body(&home, "alpha").contains("Body at v1"));
+    assert!(
+        walk_files(&home.join(".history")).iter().all(|f| f
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("events.sqlite3"))),
+        "no backup may exist before the listing succeeds"
+    );
 
     std::fs::remove_dir_all(&home).ok();
 }

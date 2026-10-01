@@ -1172,3 +1172,74 @@ fn a_third_undo_restores_the_universal_folder_and_its_links() {
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// Flow: split with the skill off in Codex, the user turns the Codex copy on,
+/// the split is undone, then that undo is undone. Expect the Codex copy's
+/// row back as `enabled = true`. Fails when the undo of the undo writes the
+/// row back as disabled, turning off a copy the user had on.
+#[test]
+fn undoing_a_split_undo_keeps_a_codex_copy_the_user_turned_on_enabled() {
+    let home = unique_temp_dir("split_undo_undo_enabled");
+    splittable_home(&home);
+    let before = codex_config_with_universal_off(&home);
+    let rt = runtime_for(&home);
+    let split = ops::split(
+        &rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id: universal_deployment_id(&rt),
+            harnesses: harnesses(&["claude-code", "codex"]),
+        },
+    )
+    .unwrap();
+    let carried = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
+    let copy_row_on = carried[before.len()..].replace("enabled = false", "enabled = true");
+    std::fs::write(
+        home.join(".codex/config.toml"),
+        format!("{before}{copy_row_on}"),
+    )
+    .unwrap();
+    let first_undo = undo(&rt, &split.event_id, false).unwrap();
+
+    undo(&rt, &first_undo.restore_event_id, false).unwrap();
+
+    let after = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
+    assert!(
+        after.contains(copy_row_on.trim()),
+        "the Codex copy must be on again, config: {after}"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: undo a split, the user recreates the removed Codex copy folder,
+/// then the undo is undone. Expect a refusal naming that folder, which keeps
+/// its file; with force the copy goes back. Fails when the second undo
+/// writes over a folder that sits where the copy goes back.
+#[test]
+fn undoing_a_split_undo_refuses_when_a_folder_sits_where_a_copy_goes_back() {
+    let home = unique_temp_dir("split_undo_undo_occupied");
+    splittable_home(&home);
+    let rt = runtime_for(&home);
+    let undo_id = split_then_undo_with_codex_off(&home, &rt);
+    std::fs::create_dir_all(codex_copy(&home)).unwrap();
+    std::fs::write(codex_copy(&home).join("notes.txt"), b"mine\n").unwrap();
+
+    let err = undo(&rt, &undo_id, false).unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::DriftConflict);
+    assert_eq!(err.path.as_deref(), Some(codex_copy(&home).as_path()));
+    assert_eq!(
+        std::fs::read(codex_copy(&home).join("notes.txt")).unwrap(),
+        b"mine\n"
+    );
+    assert!(std::fs::symlink_metadata(universal(&home)).is_ok());
+
+    undo(&rt, &undo_id, true).unwrap();
+    assert_eq!(
+        std::fs::read(codex_copy(&home).join("SKILL.md")).unwrap(),
+        SKILL_MD
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
