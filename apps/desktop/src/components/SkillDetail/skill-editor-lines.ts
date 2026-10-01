@@ -32,7 +32,7 @@ export function isContentDirty(content: string, initialRaw: string): boolean {
 
 /**
  * The text to write: `content` with CRLF restored when the original file used it.
- * A file that mixed CRLF and LF is written back as all CRLF.
+ * A file that mixed CRLF and LF is written back as all CRLF; lone-CR line ends come back as LF.
  */
 export function contentForSave(content: string, initialRaw: string): string {
   return initialRaw.includes("\r\n") ? content.replace(/\r?\n/g, "\r\n") : content;

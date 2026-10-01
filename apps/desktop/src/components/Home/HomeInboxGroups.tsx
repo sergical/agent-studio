@@ -48,7 +48,7 @@ const HOME_GLYPH_SIZE = 14;
 /** Text link style shared by every "Show all"/"Show everything"/"Learn more" affordance on Home. */
 const LINK_CLASS = "h-auto gap-1 p-0 text-small";
 
-/** One inbox row's trailing action - a text button or, on the "Recently used" rows, a plain count. */
+/** One inbox row's trailing text-button action. */
 const ROW_ACTION_CLASS =
   "h-9 max-w-full justify-end truncate p-0 text-right text-small text-text-tertiary hover:bg-transparent hover:text-accent";
 

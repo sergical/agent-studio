@@ -44,7 +44,12 @@ function measureGutterLayout(textarea: HTMLTextAreaElement, content: string): Gu
     width: `${textarea.getBoundingClientRect().width - borderX - scrollbarWidth}px`,
     border: "0",
     padding: `0 ${style.paddingRight} 0 ${style.paddingLeft}`,
-    font: style.font,
+    // Longhands, because some engines report the `font` shorthand as "".
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    fontStyle: style.fontStyle,
+    fontWeight: style.fontWeight,
+    lineHeight: style.lineHeight,
     letterSpacing: style.letterSpacing,
     tabSize: style.tabSize,
     whiteSpace: style.whiteSpace,

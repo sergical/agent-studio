@@ -195,7 +195,8 @@ export async function updateAllOutdatedSkills(
     }
   }
 
-  tally.skillsSucceeded = tally.skillsAttempted - failedSkillNames.size;
+  // Core can report one requested skill under two names, so the difference can go below zero.
+  tally.skillsSucceeded = Math.max(0, tally.skillsAttempted - failedSkillNames.size);
   return tally;
 }
 
