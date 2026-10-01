@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
-import { resolveSkillPageDeployment } from "./skill-page-deployment";
+import { repinDeployment, resolveSkillPageDeployment } from "./skill-page-deployment";
 
 const WARNING = "description exceeds 1024 characters";
 const ERROR = 'name "Find Bugs" is not a valid skill name';
@@ -84,7 +84,7 @@ describe("resolveSkillPageDeployment", () => {
     expect(resolveSkillPageDeployment(skill, undefined).deployment?.path).toBe("/b/errored");
   });
 
-  it("a_plugin_copy_with_errors_beats_a_clean_editable_copy_because_the_point_is_to_show_the_problem", () => {
+  it("a_plugin_copy_with_errors_never_beats_a_clean_own_copy_because_the_page_must_open_a_file_the_user_can_edit", () => {
     const skill = fixtureSkill([
       fixtureDeployment({ path: "/own/clean" }),
       fixtureDeployment({
@@ -93,7 +93,35 @@ describe("resolveSkillPageDeployment", () => {
         plugin: { name: "p", version: null, harness: "Claude Code", marketplace: "m", id: "p@m" },
       }),
     ]);
+    expect(resolveSkillPageDeployment(skill, undefined).deployment?.path).toBe("/own/clean");
+  });
+
+  it("a_plugin_only_skill_opens_its_plugin_copy_with_errors_because_no_own_copy_exists", () => {
+    const skill = fixtureSkill([
+      fixtureDeployment({
+        path: "/plugin/clean",
+        plugin: { name: "p", version: null, harness: "Claude Code", marketplace: "m", id: "p@m" },
+      }),
+      fixtureDeployment({
+        path: "/plugin/errored",
+        spec_violations: [ERROR],
+        plugin: { name: "p", version: null, harness: "Claude Code", marketplace: "m", id: "p@m" },
+      }),
+    ]);
     expect(resolveSkillPageDeployment(skill, undefined).deployment?.path).toBe("/plugin/errored");
+  });
+
+  it("an_editable_copy_beats_a_symlink_own_copy_and_a_plugin_copy_when_all_have_violations", () => {
+    const skill = fixtureSkill([
+      fixtureDeployment({
+        path: "/plugin/errored",
+        spec_violations: [ERROR],
+        plugin: { name: "p", version: null, harness: "Claude Code", marketplace: "m", id: "p@m" },
+      }),
+      fixtureDeployment({ path: "/own/link", is_symlink: true, spec_violations: [ERROR] }),
+      fixtureDeployment({ path: "/own/physical", spec_violations: [ERROR] }),
+    ]);
+    expect(resolveSkillPageDeployment(skill, undefined).deployment?.path).toBe("/own/physical");
   });
 
   it("an_explicit_deployment_path_wins_over_a_warned_copy_so_a_clicked_row_never_jumps_to_another_copy", () => {
@@ -132,5 +160,50 @@ describe("resolveSkillPageDeployment", () => {
       fixtureDeployment({ path: "/b/clean" }),
     ]);
     expect(resolveSkillPageDeployment(skill, undefined).deployment?.path).toBe("/b/clean");
+  });
+});
+
+describe("repinDeployment", () => {
+  const empty = { skillName: undefined, path: undefined };
+
+  it("a_page_opened_without_a_path_pins_the_warned_copy_so_the_warning_is_visible", () => {
+    const skill = fixtureSkill([
+      fixtureDeployment({ path: "/a/clean" }),
+      fixtureDeployment({ path: "/b/warned", spec_violations: [WARNING] }),
+    ]);
+    expect(repinDeployment(empty, skill, undefined)).toEqual({
+      skillName: "find-bugs",
+      path: "/b/warned",
+    });
+  });
+
+  it("a_rescan_that_cleans_the_warned_copy_keeps_the_pinned_copy_or_the_page_jumps_and_drops_the_editor_draft", () => {
+    const warned = fixtureSkill([
+      fixtureDeployment({ path: "/a/clean" }),
+      fixtureDeployment({ path: "/b/warned", spec_violations: [WARNING] }),
+    ]);
+    const pinned = repinDeployment(empty, warned, undefined);
+    const cleaned = fixtureSkill([
+      fixtureDeployment({ path: "/a/clean" }),
+      fixtureDeployment({ path: "/b/warned" }),
+    ]);
+    expect(repinDeployment(pinned, cleaned, undefined)).toBe(pinned);
+  });
+
+  it("a_rescan_that_removes_the_pinned_copy_pins_the_default_again_or_the_page_shows_a_missing_file", () => {
+    const pinned = { skillName: "find-bugs", path: "/b/warned" };
+    const skill = fixtureSkill([fixtureDeployment({ path: "/a/clean" })]);
+    expect(repinDeployment(pinned, skill, undefined).path).toBe("/a/clean");
+  });
+
+  it("opening_another_skill_pins_that_skills_default_copy_or_the_old_skills_path_is_reused", () => {
+    const pinned = { skillName: "other", path: "/a/clean" };
+    const skill = fixtureSkill([fixtureDeployment({ path: "/a/clean" })]);
+    expect(repinDeployment(pinned, skill, undefined).skillName).toBe("find-bugs");
+  });
+
+  it("a_caller_requested_path_leaves_the_pin_alone_because_that_path_wins_anyway", () => {
+    const skill = fixtureSkill([fixtureDeployment({ path: "/a/clean" })]);
+    expect(repinDeployment(empty, skill, "/a/clean")).toBe(empty);
   });
 });

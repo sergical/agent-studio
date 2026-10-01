@@ -38,7 +38,8 @@ import { SkillPropertiesRail } from "./SkillPropertiesRail";
 import { SkillRepairCard } from "./SkillRepairCard";
 import { saveSkillEditorDraft } from "./skill-editor-save";
 import { useSkillPageActions } from "./skill-page-actions";
-import { resolveSkillPageDeployment } from "./skill-page-deployment";
+import { repinDeployment, resolveSkillPageDeployment } from "./skill-page-deployment";
+import type { PinnedDeployment } from "./skill-page-deployment";
 import { useSkillCompareDialog } from "./useSkillCompareDialog";
 import { useSkillEscapeGuard } from "./useSkillEscapeGuard";
 import { useSkillFrontmatterRepair } from "./useSkillFrontmatterRepair";
@@ -232,8 +233,15 @@ export function SkillPage({
     }
   }, [activeView, clearSkillIntent, setIsCompareOpen]);
 
+  const [pinned, setPinned] = useState<PinnedDeployment>({
+    skillName: undefined,
+    path: undefined,
+  });
+  const currentPinned = repinDeployment(pinned, skill, deploymentPath);
+  if (currentPinned !== pinned) setPinned(currentPinned);
+
   const { deployment, deploymentUnresolved, isDeploymentBroken, skillMdPath, isPluginManaged } =
-    resolveSkillPageDeployment(skill, deploymentPath);
+    resolveSkillPageDeployment(skill, deploymentPath ?? currentPinned.path);
 
   const { frontmatterRepairs, isFrontmatterPreviewSettled, clearFrontmatterRepair } =
     useSkillFrontmatterRepair(deployment);

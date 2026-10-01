@@ -219,16 +219,20 @@ export function isBlockingSpecViolation(violation: string): boolean {
 
 /**
  * The copy of `skill` to open so its spec violations are visible: the first readable copy with a
- * blocking violation, else the first readable copy with any violation, else `undefined`. Ties go
- * to editable copies, then own copies, so a plugin copy only wins when it is the one with the
- * problem. A broken symlink has no readable SKILL.md to show, so it never wins on violations alone.
+ * blocking violation, else the first readable copy with any violation, else `undefined`. A skill
+ * with any readable own copy only considers its own copies (editable first), so a plugin copy's
+ * problems never pull the page onto a read-only file; a plugin-only skill (or the plugin view,
+ * which narrows to plugin copies) considers its plugin copies. A broken symlink has no readable
+ * SKILL.md to show, so it never wins on violations alone.
  */
 export function deploymentWithSpecViolations(skill: InstalledSkill): Deployment | undefined {
-  const readable = [
-    ...editableDeployments(skill),
-    ...ownDeployments(skill),
-    ...skill.deployments,
-  ].filter((d) => !isUnresolvedDeployment(d));
+  const ownReadable = [...editableDeployments(skill), ...ownDeployments(skill)].filter(
+    (d) => !isUnresolvedDeployment(d),
+  );
+  const readable =
+    ownReadable.length > 0
+      ? ownReadable
+      : skill.deployments.filter((d) => !isUnresolvedDeployment(d));
   return (
     readable.find((d) => d.spec_violations.some(isBlockingSpecViolation)) ??
     readable.find((d) => d.spec_violations.length > 0)

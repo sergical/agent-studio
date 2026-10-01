@@ -5,6 +5,7 @@
 // ============================================================================
 
 import { describe, expect, it } from "vitest";
+import { ownSkillsView } from "@skill-studio/lib";
 import type {
   Deployment,
   HealthIssue,
@@ -13,7 +14,12 @@ import type {
   UpdateAllOutcome,
   UpdateOutcome,
 } from "@skill-studio/lib";
-import { homeRowState, updateAllFailureMessage, updateAllOutdatedSkills } from "./home-inbox-data";
+import {
+  homeRowState,
+  issueDeploymentPath,
+  updateAllFailureMessage,
+  updateAllOutdatedSkills,
+} from "./home-inbox-data";
 
 function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
@@ -387,5 +393,45 @@ describe("updateAllFailureMessage", () => {
     const long = updateAllFailureMessage({ ...tally, firstError: "x".repeat(500) }) ?? "";
     expect(long.length).toBeLessThan(170);
     expect(long.endsWith("…")).toBe(true);
+  });
+});
+
+describe("issueDeploymentPath", () => {
+  const ERROR = 'name "Find Bugs" is not a valid skill name';
+
+  it("a_spec_violation_issue_opens_the_warned_copy_instead_of_the_clean_first_copy_or_the_warning_stays_hidden", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/a/clean" }),
+        fixtureDeployment({ path: "/b/warned", spec_violations: [ERROR] }),
+      ],
+    });
+    const issue: HealthIssue = { kind: "spec-violation", skill, detail: ERROR };
+    expect(issueDeploymentPath(issue)).toBe("/b/warned");
+  });
+
+  it("a_non_spec_issue_names_no_copy_so_the_page_opens_its_default", () => {
+    const skill = fixtureSkill({
+      deployments: [fixtureDeployment({ path: "/b/warned", spec_violations: [ERROR] })],
+    });
+    const issue: HealthIssue = { kind: "broken-symlink", skill, detail: "broken" };
+    expect(issueDeploymentPath(issue)).toBeUndefined();
+  });
+
+  it("a_skill_also_shipped_by_a_plugin_opens_the_warned_own_copy_not_the_plugin_copy_in_the_own_view", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/own/warned", spec_violations: [ERROR] }),
+        fixtureDeployment({
+          path: "/plugin/errored",
+          spec_violations: [ERROR],
+          plugin: { name: "p", version: null, harness: "Claude Code", marketplace: "m", id: "p@m" },
+        }),
+      ],
+      spec_violations: [ERROR],
+    });
+    const [own] = ownSkillsView([skill]);
+    const issue: HealthIssue = { kind: "spec-violation", skill: own, detail: ERROR };
+    expect(issueDeploymentPath(issue)).toBe("/own/warned");
   });
 });

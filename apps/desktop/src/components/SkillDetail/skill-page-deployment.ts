@@ -53,3 +53,29 @@ export function resolveSkillPageDeployment(
   const isPluginManaged = Boolean(deployment?.plugin);
   return { deployment, deploymentUnresolved, isDeploymentBroken, skillMdPath, isPluginManaged };
 }
+
+/** The default copy a skill page settled on when it opened, kept so a rescan that changes which
+ * copy carries warnings never moves the page (and its open editor) to another copy. */
+export interface PinnedDeployment {
+  skillName: string | undefined;
+  path: string | undefined;
+}
+
+/**
+ * `pinned` unchanged unless the page must pick a default copy again: no caller-requested
+ * `deploymentPath`, and either the skill changed or the pinned copy is gone from the skill.
+ */
+export function repinDeployment(
+  pinned: PinnedDeployment,
+  skill: InstalledSkill | null,
+  deploymentPath: string | undefined,
+): PinnedDeployment {
+  if (!skill || deploymentPath) return pinned;
+  const stillPinned =
+    pinned.skillName === skill.name && skill.deployments.some((d) => d.path === pinned.path);
+  if (stillPinned) return pinned;
+  const path = resolveSkillPageDeployment(skill, undefined).deployment?.path;
+  return pinned.skillName === skill.name && pinned.path === path
+    ? pinned
+    : { skillName: skill.name, path };
+}
