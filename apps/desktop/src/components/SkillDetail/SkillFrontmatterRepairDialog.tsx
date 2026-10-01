@@ -3,7 +3,7 @@
 // actions for one exact deployment.
 // ============================================================================
 
-import { useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { PatchDiff } from "@pierre/diffs/react";
 import {
   Button,
@@ -18,12 +18,15 @@ import { homeRelativePath, unifiedSkillMdDiff } from "@skill-studio/lib";
 import type {
   FrontmatterRepairApplyMode,
   FrontmatterRepairPreview,
-  InvocationConflictChoice,
   LifecycleTarget,
 } from "@skill-studio/lib";
 import { applySkillFrontmatterRepair, previewSkillFrontmatterRepair } from "../../lib/skill-api";
 import { diffTheme } from "../../lib/theme";
 import { useAppStore } from "../../store/appStore";
+import {
+  canApplyChoicePreview,
+  createChoicePreviewController,
+} from "./skill-frontmatter-choice-preview";
 import {
   frontmatterRepairCopy,
   INVOCATION_CONFLICT_OPTIONS,
@@ -44,25 +47,29 @@ export function SkillFrontmatterRepairDialog({
   onApplied,
   onEditManually,
 }: SkillFrontmatterRepairDialogProps) {
-  const [preview, setPreview] = useState(initialPreview);
   const [applying, setApplying] = useState<FrontmatterRepairApplyMode | null>(null);
   const addToast = useAppStore((state) => state.addToast);
+  // One controller per open dialog: its request generation must outlive re-renders.
+  const choices = useMemo(
+    () =>
+      createChoicePreviewController(
+        previewSkillFrontmatterRepair,
+        target,
+        initialPreview,
+        (message) => addToast({ type: "error", title: "Couldn't preview this option", message }),
+      ),
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+  const choiceState = useSyncExternalStore(choices.subscribe, choices.getState);
+  const { preview } = choiceState;
   const theme = diffTheme(useAppStore((state) => state.resolvedTheme));
   const copy = frontmatterRepairCopy(preview.kind);
   const isConflict = preview.kind === "invocation-conflict";
-  // A conflict has no single right fix, so nothing can be applied until a side is picked.
-  const needsChoice = isConflict && preview.choice === null;
-  const choose = (choice: InvocationConflictChoice) => {
-    previewSkillFrontmatterRepair(target, preview.kind, choice)
-      .then(setPreview)
-      .catch((error) =>
-        addToast({
-          type: "error",
-          title: "Couldn't preview this option",
-          message: error instanceof Error ? error.message : "Unknown error",
-        }),
-      );
-  };
+  // A conflict has no single right fix, so nothing can be applied until the shown
+  // proposal is the one for the side picked last.
+  const cannotApply =
+    isConflict && !(preview.choice !== null && canApplyChoicePreview(choiceState));
   const apply = (mode: FrontmatterRepairApplyMode) => {
     setApplying(mode);
     applySkillFrontmatterRepair(target, preview, mode)
@@ -96,9 +103,9 @@ export function SkillFrontmatterRepairDialog({
             {INVOCATION_CONFLICT_OPTIONS.map(({ choice, label }) => (
               <Button
                 key={choice}
-                variant={preview.choice === choice ? "default" : "outline"}
-                aria-pressed={preview.choice === choice}
-                onClick={() => choose(choice)}
+                variant={choiceState.selectedChoice === choice ? "default" : "outline"}
+                aria-pressed={choiceState.selectedChoice === choice}
+                onClick={() => choices.choose(choice)}
                 disabled={applying !== null}
               >
                 {label}
@@ -135,20 +142,20 @@ export function SkillFrontmatterRepairDialog({
             <Button
               variant="outline"
               onClick={() => apply("fix-installed-copy")}
-              disabled={applying !== null || needsChoice}
+              disabled={applying !== null || cannotApply}
             >
               Fix installed copy
             </Button>
           )}
           {preview.allowed_apply_modes.includes("apply-fix") && (
-            <Button onClick={() => apply("apply-fix")} disabled={applying !== null || needsChoice}>
+            <Button onClick={() => apply("apply-fix")} disabled={applying !== null || cannotApply}>
               Apply fix
             </Button>
           )}
           {preview.allowed_apply_modes.includes("fork-and-fix") && (
             <Button
               onClick={() => apply("fork-and-fix")}
-              disabled={applying !== null || needsChoice}
+              disabled={applying !== null || cannotApply}
             >
               Fork and fix (recommended)
             </Button>

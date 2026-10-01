@@ -17,24 +17,26 @@ import {
 import type {
   Deployment,
   FrontmatterQuoteRepair,
+  FrontmatterRepairKind,
   FrontmatterRepairPreview,
   InstalledSkill,
 } from "@skill-studio/lib";
 import { TooltipControl } from "../ui/TooltipControl";
-import { canOfferLocalQuote, frontmatterRepairKindFor } from "./skill-frontmatter-repair-policy";
+import { canOfferLocalQuote, frontmatterRepairKindsFor } from "./skill-frontmatter-repair-policy";
 
 interface InstalledSkillHeaderProps {
   skill: InstalledSkill;
   /** The deployment whose SKILL.md the page renders - the header's violation line follows it. */
   deployment?: Deployment;
-  frontmatterRepair?: FrontmatterRepairPreview | null;
+  /** The previews the backend accepted, one per repair kind. */
+  frontmatterRepairs?: FrontmatterRepairPreview[];
   /** False while the backend preview is pending; the local quote repair waits for it. */
   isFrontmatterPreviewSettled?: boolean;
   /** The rendered copy's SKILL.md text; the quote repair and the line hint are derived from it. */
   skillMdContent?: string | null;
   /** Omitted when the rendered copy cannot be edited in place (plugin-managed). */
   onQuoteRepair?: (repair: FrontmatterQuoteRepair) => void;
-  onFixYaml: () => void;
+  onFixRepair: (kind: FrontmatterRepairKind) => void;
   onEditManually: () => void;
 }
 
@@ -54,11 +56,11 @@ function parkedChipLabel(parkedAt: string | null | undefined): string {
 export function InstalledSkillHeader({
   skill,
   deployment,
-  frontmatterRepair,
+  frontmatterRepairs = [],
   isFrontmatterPreviewSettled = false,
   skillMdContent,
   onQuoteRepair,
-  onFixYaml,
+  onFixRepair,
   onEditManually,
 }: InstalledSkillHeaderProps) {
   const nonBlockingCount =
@@ -77,10 +79,17 @@ export function InstalledSkillHeader({
   );
   const hasMalformedYaml = yamlViolation !== undefined;
   const yamlLocation = yamlViolation ? parseYamlFrontmatterError(yamlViolation) : null;
+  // Conflicting invocation keys are a non-blocking note with their own line and Fix;
+  // every other repair belongs to the red violation line.
+  const lineKind = frontmatterRepairKindsFor(renderedDeployment).find(
+    (kind) => kind !== "invocation-conflict",
+  );
+  const lineRepair = frontmatterRepairs.find((repair) => repair.kind === lineKind);
+  const conflictRepair = frontmatterRepairs.find((repair) => repair.kind === "invocation-conflict");
   // A backend "Fix" preview wins; the local quote repair covers what it declines.
   const canQuote = canOfferLocalQuote({
     isPreviewSettled: isFrontmatterPreviewSettled,
-    hasPreview: Boolean(frontmatterRepair),
+    hasPreview: Boolean(lineRepair),
   });
   const quoteRepair =
     yamlLocation && skillMdContent && canQuote && onQuoteRepair
@@ -90,9 +99,6 @@ export function InstalledSkillHeader({
     yamlLocation && skillMdContent && canQuote
       ? describeFrontmatterErrorLine(skillMdContent, yamlLocation.line)
       : null;
-  // Conflicting invocation keys are a non-blocking note, so they get their own line.
-  const hasInvocationConflict =
-    frontmatterRepairKindFor(renderedDeployment) === "invocation-conflict";
   const violationText = quoteRepair
     ? describeFrontmatterRepair(quoteRepair, yamlLocation?.column)
     : (lineHint ?? blockingViolations.join("; "));
@@ -141,22 +147,22 @@ export function InstalledSkillHeader({
               Quote the {quoteRepair.key}
             </Button>
           )}
-          {(hasMalformedYaml || (frontmatterRepair && !hasInvocationConflict)) && (
+          {(hasMalformedYaml || lineRepair) && (
             <Button
               size="sm"
               variant="outline"
-              onClick={frontmatterRepair ? onFixYaml : onEditManually}
+              onClick={lineRepair ? () => onFixRepair(lineRepair.kind) : onEditManually}
             >
-              {frontmatterRepair ? "Fix" : "Edit manually"}
+              {lineRepair ? "Fix" : "Edit manually"}
             </Button>
           )}
         </div>
       )}
-      {hasInvocationConflict && frontmatterRepair && (
+      {conflictRepair && (
         <div className="flex items-center gap-2 text-small text-error">
           <AlertTriangle size={13} />
           <span>Both invocation keys are set, so nothing can run this skill.</span>
-          <Button size="sm" variant="outline" onClick={onFixYaml}>
+          <Button size="sm" variant="outline" onClick={() => onFixRepair("invocation-conflict")}>
             Fix
           </Button>
         </div>

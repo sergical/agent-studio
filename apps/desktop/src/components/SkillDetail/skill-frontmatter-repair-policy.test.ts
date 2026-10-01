@@ -8,10 +8,12 @@ import {
   canOfferLocalQuote,
   frontmatterPreviewKey,
   frontmatterRepairCopy,
-  frontmatterRepairKindFor,
+  frontmatterRepairKindForViolation,
+  frontmatterRepairKindsFor,
   frontmatterRepairActionLabels,
   hasMalformedYamlWarning,
 } from "./skill-frontmatter-repair-policy";
+import violationMessages from "../../../../../crates/skill-studio-core/tests/fixtures/frontmatter-violation-messages.json";
 
 const deployment = {
   spec_violations: [
@@ -89,8 +91,8 @@ describe("canOfferLocalQuote", () => {
   });
 });
 
-describe("frontmatterRepairKindFor", () => {
-  const kindFor = (...spec_violations: string[]) => frontmatterRepairKindFor({ spec_violations });
+describe("frontmatterRepairKindsFor", () => {
+  const kindsFor = (...spec_violations: string[]) => frontmatterRepairKindsFor({ spec_violations });
 
   /**
    * Flow: the scanner reports each fixable violation.
@@ -98,23 +100,41 @@ describe("frontmatterRepairKindFor", () => {
    * Failure: a Fix button asks the backend for the wrong repair, which refuses it.
    */
   it("maps each fixable violation to its repair kind", () => {
-    expect(kindFor("invalid YAML frontmatter at line 3, column 1: x")).toBe("colon-scalar");
-    expect(kindFor('name "Foo" does not match its directory name "foo"')).toBe("name-mismatch");
+    expect(kindsFor("invalid YAML frontmatter at line 3, column 1: x")).toEqual(["colon-scalar"]);
+    expect(kindsFor('name "Foo" does not match its directory name "foo"')).toEqual([
+      "name-mismatch",
+    ]);
     expect(
-      kindFor('name "Foo" must be 1-64 lowercase a-z0-9 characters and hyphens, with no leading'),
-    ).toBe("name-format");
-    expect(kindFor("conflicting invocation keys")).toBe("invocation-conflict");
+      kindsFor('name "Foo" must be 1-64 lowercase a-z0-9 characters and hyphens, with no leading'),
+    ).toEqual(["name-format"]);
+    expect(kindsFor("conflicting invocation keys")).toEqual(["invocation-conflict"]);
   });
 
   /**
    * Flow: a skill has a name problem and the invocation conflict.
-   * Expect: the name fix first.
-   * Failure: the conflict dialog opens while the name stays wrong.
+   * Expect: both fixes, so the conflict stays reachable when the name fix is refused.
+   * Failure: one priority-picked kind hides the other, and a refused name fix
+   * leaves the conflict with no Fix at all.
    */
-  it("offers the name fix before the invocation conflict", () => {
+  it("offers the name fix and the invocation conflict fix together", () => {
     expect(
-      kindFor("conflicting invocation keys", 'name "a" does not match its directory name "b"'),
-    ).toBe("name-mismatch");
+      kindsFor("conflicting invocation keys", 'name "a" does not match its directory name "b"'),
+    ).toEqual(["invocation-conflict", "name-mismatch"]);
+  });
+
+  /**
+   * Flow: broken YAML hides the other checks.
+   * Expect: only the YAML fix.
+   * Failure: a name or conflict fix is previewed against content that does not parse.
+   */
+  it("offers only the YAML fix when the frontmatter does not parse", () => {
+    expect(
+      kindsFor(
+        "conflicting invocation keys",
+        "invalid YAML frontmatter at line 3, column 1: x",
+        'name "a" does not match its directory name "b"',
+      ),
+    ).toEqual(["colon-scalar"]);
   });
 
   /**
@@ -122,9 +142,21 @@ describe("frontmatterRepairKindFor", () => {
    * Expect: no kind, so no preview is requested.
    * Failure: every skill with a spec note triggers a backend preview.
    */
-  it("returns null when no repair applies", () => {
-    expect(kindFor("description exceeds 1024 characters")).toBeNull();
-    expect(frontmatterRepairKindFor(undefined)).toBeNull();
+  it("returns no kinds when no repair applies", () => {
+    expect(kindsFor("description exceeds 1024 characters")).toEqual([]);
+    expect(frontmatterRepairKindsFor(undefined)).toEqual([]);
+  });
+});
+
+describe("violation messages shared with the Rust matchers", () => {
+  /**
+   * Flow: `validate_skill` wording for each repairable violation, captured in
+   * the fixture the Rust tests also assert against.
+   * Expect: each message maps to its kind.
+   * Failure: one side rewords a message and the Fix button silently disappears.
+   */
+  it.each(Object.entries(violationMessages))("maps the %s message to its kind", (kind, message) => {
+    expect(frontmatterRepairKindForViolation(message)).toBe(kind);
   });
 });
 

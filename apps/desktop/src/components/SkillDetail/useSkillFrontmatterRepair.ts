@@ -9,18 +9,22 @@ import { useEffect, useState } from "react";
 import { previewSkillFrontmatterRepair } from "../../lib/skill-api";
 import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import type { Deployment, FrontmatterRepairPreview } from "@skill-studio/lib";
-import { frontmatterPreviewKey, frontmatterRepairKindFor } from "./skill-frontmatter-repair-policy";
+import {
+  frontmatterPreviewKey,
+  frontmatterRepairKindsFor,
+} from "./skill-frontmatter-repair-policy";
 
 interface UseSkillFrontmatterRepair {
-  selectedFrontmatterRepair: FrontmatterRepairPreview | null;
-  /** True when no backend preview is pending for the file on screen: it answered, failed, or does not apply. */
+  /** One preview per repair kind the backend accepted; a refused kind is absent. */
+  frontmatterRepairs: FrontmatterRepairPreview[];
+  /** True when no backend preview is pending for the file on screen: each answered, failed, or does not apply. */
   isFrontmatterPreviewSettled: boolean;
   clearFrontmatterRepair: () => void;
 }
 
 interface PreviewAnswer {
   key: string;
-  preview: FrontmatterRepairPreview | null;
+  previews: FrontmatterRepairPreview[];
 }
 
 export function useSkillFrontmatterRepair(
@@ -29,32 +33,39 @@ export function useSkillFrontmatterRepair(
   const [answer, setAnswer] = useState<PreviewAnswer | null>(null);
 
   const key = frontmatterPreviewKey(deployment);
-  const kind = frontmatterRepairKindFor(deployment);
-  const hasRepairableViolation = kind !== null;
+  const kinds = frontmatterRepairKindsFor(deployment);
+  const kindsKey = kinds.join(",");
+  const hasRepairableViolation = kinds.length > 0;
 
   useEffect(() => {
-    if (!deployment || key === null || kind === null) return;
+    if (!deployment || key === null || kinds.length === 0) return;
     let ignore = false;
-    previewSkillFrontmatterRepair(lifecycleTargetForDeployment(deployment), kind)
-      .then((preview) => {
-        if (ignore) return;
-        setAnswer({ key, preview: preview.deployment_id === deployment.id ? preview : null });
-      })
-      .catch(() => {
-        if (!ignore) setAnswer({ key, preview: null });
+    const target = lifecycleTargetForDeployment(deployment);
+    Promise.all(
+      kinds.map((kind) =>
+        previewSkillFrontmatterRepair(target, kind)
+          .then((preview) => (preview.deployment_id === deployment.id ? preview : null))
+          .catch(() => null),
+      ),
+    ).then((previews) => {
+      if (ignore) return;
+      setAnswer({
+        key,
+        previews: previews.filter((preview) => preview !== null),
       });
+    });
     return () => {
       ignore = true;
     };
     // Keyed on the file state, not the deployment object, which changes on every snapshot.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, kind]);
+  }, [key, kindsKey]);
 
   const current = answer !== null && answer.key === key ? answer : null;
 
   return {
-    selectedFrontmatterRepair: current?.preview ?? null,
+    frontmatterRepairs: current?.previews ?? [],
     isFrontmatterPreviewSettled: !hasRepairableViolation || current !== null,
-    clearFrontmatterRepair: () => key !== null && setAnswer({ key, preview: null }),
+    clearFrontmatterRepair: () => key !== null && setAnswer({ key, previews: [] }),
   };
 }

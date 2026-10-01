@@ -213,7 +213,12 @@ fn replace_scalar_line(line: &str, key: &str, value: &str) -> Option<String> {
         if rest.is_empty() || rest.starts_with(['|', '>', '&', '*', '!', '#']) {
             return None;
         }
-        let end = rest.find(" #").unwrap_or(rest.trim_end().len());
+        let end = rest
+            .char_indices()
+            .find(|&(at, c)| c == '#' && rest[..at].ends_with([' ', '\t']))
+            .map_or(rest.trim_end().len(), |(at, _)| {
+                rest[..at].trim_end_matches([' ', '\t']).len()
+            });
         (String::new(), &rest[end..])
     };
     Some(format!(
@@ -551,5 +556,60 @@ mod tests {
         assert!(
             propose_repair(FrontmatterRepairKind::NameFormat, content, "sample", None).is_err()
         );
+    }
+
+    /// Flow: the name value is followed by a tab and a comment. Expect: the
+    /// tab and comment survive the rewrite. Failure: the comment is lost or
+    /// glued to the name.
+    #[test]
+    fn name_repair_keeps_a_trailing_comment_after_a_tab() {
+        let content = "---\nname: Foo\t# keep\ndescription: d\n---\n";
+        let (proposed, _) =
+            propose_repair(FrontmatterRepairKind::NameFormat, content, "sample", None).unwrap();
+        assert_eq!(proposed, "---\nname: sample\t# keep\ndescription: d\n---\n");
+    }
+
+    /// Flow: `validate_skill` produces each violation the repairs target.
+    /// Expect: the message equals the shared fixture and the matcher claims
+    /// it. Failure: the wording drifts from the desktop's matching copy, so a
+    /// Fix button silently stops appearing or asks for the wrong repair.
+    #[test]
+    fn violation_messages_match_the_shared_fixture_and_matchers() {
+        let fixture: std::collections::BTreeMap<String, String> = serde_json::from_str(
+            include_str!("../tests/fixtures/frontmatter-violation-messages.json"),
+        )
+        .unwrap();
+        type Matcher = fn(&str) -> bool;
+        let cases: [(&str, &str, Matcher); 4] = [
+            (
+                "colon-scalar",
+                "---\nname: sample\ndescription: Triggers on: requests for tests\n---\nBody.",
+                |v| v.starts_with("invalid YAML frontmatter at line "),
+            ),
+            (
+                "name-mismatch",
+                "---\nname: other\ndescription: d\n---\n",
+                violation_is_name_mismatch,
+            ),
+            (
+                "name-format",
+                "---\nname: Sample Skill\ndescription: d\n---\n",
+                violation_is_name_format,
+            ),
+            (
+                "invocation-conflict",
+                CONFLICT,
+                violation_is_invocation_conflict,
+            ),
+        ];
+        for (kind, content, matches) in cases {
+            let violations = violations_of("sample", content);
+            let expected = &fixture[kind];
+            assert!(
+                violations.contains(expected),
+                "{kind}: {violations:?} lacks {expected:?}"
+            );
+            assert!(matches(expected), "{kind} matcher rejects its message");
+        }
     }
 }

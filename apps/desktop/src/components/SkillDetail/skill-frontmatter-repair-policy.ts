@@ -19,24 +19,35 @@ export function hasMalformedYamlWarning(
   );
 }
 
-const NAME_FORMAT_PREFIX = 'name "';
+/**
+ * The repair a single violation message calls for. The matching mirrors the
+ * Rust `violation_is_*` functions in `frontmatter_repair.rs`; a shared
+ * fixture of real messages keeps the two sides in step.
+ */
+export function frontmatterRepairKindForViolation(violation: string): FrontmatterRepairKind | null {
+  if (violation.startsWith("invalid YAML frontmatter at line ")) return "colon-scalar";
+  if (violation.startsWith('name "')) {
+    if (violation.includes("must be 1-64 lowercase")) return "name-format";
+    if (violation.includes("does not match its directory name")) return "name-mismatch";
+  }
+  if (violation === "conflicting invocation keys") return "invocation-conflict";
+  return null;
+}
 
 /**
- * Which backend repair, if any, targets the deployment's spec violations.
- * A broken YAML block hides the other checks, so it wins; name fixes come
- * before the invocation conflict because the user picks a side only once.
+ * Every backend repair that targets the deployment's spec violations, one per
+ * kind, so a refused name fix never hides the invocation-conflict fix. A broken
+ * YAML block hides the other checks, so it stands alone.
  */
-export function frontmatterRepairKindFor(
+export function frontmatterRepairKindsFor(
   deployment: Pick<Deployment, "spec_violations"> | undefined,
-): FrontmatterRepairKind | null {
-  const violations = deployment?.spec_violations ?? [];
-  if (hasMalformedYamlWarning(deployment)) return "colon-scalar";
-  const nameViolation = (fragment: string) =>
-    violations.some((v) => v.startsWith(NAME_FORMAT_PREFIX) && v.includes(fragment));
-  if (nameViolation("must be 1-64 lowercase")) return "name-format";
-  if (nameViolation("does not match its directory name")) return "name-mismatch";
-  if (violations.includes("conflicting invocation keys")) return "invocation-conflict";
-  return null;
+): FrontmatterRepairKind[] {
+  const kinds = new Set<FrontmatterRepairKind>();
+  for (const violation of deployment?.spec_violations ?? []) {
+    const kind = frontmatterRepairKindForViolation(violation);
+    if (kind !== null) kinds.add(kind);
+  }
+  return kinds.has("colon-scalar") ? ["colon-scalar"] : [...kinds];
 }
 
 export const INVOCATION_CONFLICT_OPTIONS: ReadonlyArray<{

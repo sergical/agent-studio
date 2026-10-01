@@ -14,7 +14,12 @@ import {
 import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import { editableDeployments } from "@skill-studio/lib";
-import type { Deployment, FrontmatterQuoteRepair, InstalledSkill } from "@skill-studio/lib";
+import type {
+  Deployment,
+  FrontmatterQuoteRepair,
+  FrontmatterRepairKind,
+  InstalledSkill,
+} from "@skill-studio/lib";
 import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
@@ -211,7 +216,7 @@ export function SkillPage({
   const { isRunsOpen, openAssistant, closeAssistant, openRuns, closeRuns } =
     useSkillAssistantNavigation(skill?.name, setIsAssistantOpen);
   const pageActions = useSkillPageActions(skill, onRemoveComplete);
-  const [isFrontmatterRepairOpen, setIsFrontmatterRepairOpen] = useState(false);
+  const [openRepairKind, setOpenRepairKind] = useState<FrontmatterRepairKind | null>(null);
   const assistantTriggerRef = useRef<HTMLButtonElement>(null);
 
   const { isCompareOpen, setIsCompareOpen } = useSkillCompareDialog(skill?.name);
@@ -230,8 +235,9 @@ export function SkillPage({
   const { deployment, deploymentUnresolved, isDeploymentBroken, skillMdPath, isPluginManaged } =
     resolveSkillPageDeployment(skill, deploymentPath);
 
-  const { selectedFrontmatterRepair, isFrontmatterPreviewSettled, clearFrontmatterRepair } =
+  const { frontmatterRepairs, isFrontmatterPreviewSettled, clearFrontmatterRepair } =
     useSkillFrontmatterRepair(deployment);
+  const openRepair = frontmatterRepairs.find((repair) => repair.kind === openRepairKind);
 
   const {
     rawContent,
@@ -317,11 +323,11 @@ export function SkillPage({
           <InstalledSkillHeader
             skill={skill}
             deployment={deployment ?? undefined}
-            frontmatterRepair={selectedFrontmatterRepair}
+            frontmatterRepairs={frontmatterRepairs}
             isFrontmatterPreviewSettled={isFrontmatterPreviewSettled}
             skillMdContent={rawContent}
             onQuoteRepair={isPluginManaged ? undefined : handleQuoteRepair}
-            onFixYaml={() => setIsFrontmatterRepairOpen(true)}
+            onFixRepair={setOpenRepairKind}
             onEditManually={startEditing}
           />
 
@@ -390,11 +396,11 @@ export function SkillPage({
         <SkillCompareDialog skill={skill} onClose={() => setIsCompareOpen(false)} />
       )}
 
-      {isFrontmatterRepairOpen && selectedFrontmatterRepair && deployment && (
+      {openRepair && deployment && (
         <SkillFrontmatterRepairDialog
           target={lifecycleTargetForDeployment(deployment)}
-          preview={selectedFrontmatterRepair}
-          onClose={() => setIsFrontmatterRepairOpen(false)}
+          preview={openRepair}
+          onClose={() => setOpenRepairKind(null)}
           onEditManually={startEditing}
           onApplied={() => {
             clearFrontmatterRepair();

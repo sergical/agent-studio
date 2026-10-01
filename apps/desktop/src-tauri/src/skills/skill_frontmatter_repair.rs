@@ -139,6 +139,36 @@ fn apply_modes(deployment: &Deployment) -> Vec<FrontmatterRepairApplyMode> {
     }
 }
 
+/// The folder name the scanner validates `name` against. The scanner checks
+/// the canonical folder, so a link under another name must not write its own
+/// name into the shared file.
+fn repair_folder_name(
+    deployment_path: &Path,
+    kind: FrontmatterRepairKind,
+) -> Result<String, String> {
+    let resolved = fs::canonicalize(deployment_path)
+        .map_err(|error| format!("Failed to resolve {}: {error}", deployment_path.display()))?;
+    let resolved_name = resolved
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Skill folder name is not UTF-8")?;
+    let is_symlink = fs::symlink_metadata(deployment_path)
+        .map_err(|error| format!("Failed to inspect {}: {error}", deployment_path.display()))?
+        .file_type()
+        .is_symlink();
+    let link_name = deployment_path.file_name().and_then(|name| name.to_str());
+    let is_name_fix = matches!(
+        kind,
+        FrontmatterRepairKind::NameMismatch | FrontmatterRepairKind::NameFormat
+    );
+    if is_name_fix && is_symlink && link_name != Some(resolved_name) {
+        return Err(format!(
+            "This skill is linked under a different folder name than its real folder \"{resolved_name}\". Fix the name from the real folder instead."
+        ));
+    }
+    Ok(resolved_name.to_string())
+}
+
 fn preview_from_deployment(
     deployment: &Deployment,
     kind: FrontmatterRepairKind,
@@ -149,11 +179,8 @@ fn preview_from_deployment(
         fs::read(&path).map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
     let original =
         String::from_utf8(bytes.clone()).map_err(|_| "SKILL.md is not UTF-8".to_string())?;
-    let dir_name = Path::new(&deployment.path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or("Skill folder name is not UTF-8")?;
-    let (proposed, reason) = propose_repair(kind, &original, dir_name, choice)?;
+    let dir_name = repair_folder_name(Path::new(&deployment.path), kind)?;
+    let (proposed, reason) = propose_repair(kind, &original, &dir_name, choice)?;
     let fingerprint = content_fingerprint(&bytes);
     Ok(FrontmatterRepairPreview {
         deployment_id: deployment.id.clone(),
@@ -677,6 +704,65 @@ mod tests {
             preview.allowed_apply_modes,
             vec![FrontmatterRepairApplyMode::ApplyFix]
         );
+    }
+
+    /// Flow: a link with the same basename as its real folder gets a name fix.
+    /// Expect: the proposal uses the resolved folder name. Failure: the fix
+    /// reads the link path wrongly or writes a different name.
+    #[cfg(unix)]
+    #[test]
+    fn name_fix_through_a_same_named_symlink_uses_the_resolved_folder_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real/sample");
+        let link_parent = temp.path().join("links");
+        fs::create_dir_all(&real).unwrap();
+        fs::create_dir_all(&link_parent).unwrap();
+        fs::write(
+            real.join("SKILL.md"),
+            "---\nname: other\ndescription: d\n---\n",
+        )
+        .unwrap();
+        let link = link_parent.join("sample");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let dep = deployment(&link, LifecycleOwnerKind::Manual);
+
+        let preview =
+            preview_from_deployment(&dep, FrontmatterRepairKind::NameMismatch, None).unwrap();
+
+        assert_eq!(
+            preview.proposed_content,
+            "---\nname: sample\ndescription: d\n---\n"
+        );
+    }
+
+    /// Flow: a link whose basename differs from its real folder gets a name
+    /// fix. Expect: refused with a message about the linked folder name.
+    /// Failure: the alias name is written into the shared SKILL.md.
+    #[cfg(unix)]
+    #[test]
+    fn name_fix_through_a_differently_named_symlink_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real/sample");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(
+            real.join("SKILL.md"),
+            "---\nname: Other Name\ndescription: d\n---\n",
+        )
+        .unwrap();
+        let link = temp.path().join("alias");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let dep = deployment(&link, LifecycleOwnerKind::Manual);
+
+        for kind in [
+            FrontmatterRepairKind::NameMismatch,
+            FrontmatterRepairKind::NameFormat,
+        ] {
+            let error = preview_from_deployment(&dep, kind, None).unwrap_err();
+            assert!(
+                error.contains("linked under a different folder name"),
+                "{error}"
+            );
+        }
     }
 
     /// Flow: the snapshot is not published yet (app just started). Expect: an
