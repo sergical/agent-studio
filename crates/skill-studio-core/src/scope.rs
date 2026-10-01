@@ -321,8 +321,10 @@ impl NormalizedScope {
         let (codex_home, codex_home_canonical) =
             confined_root(fs, &home.canonical, raw.codex_home.as_deref()).unwrap_or_else(|| {
                 let default = raw.home_root.join(".codex");
-                let canonical = codex_path_form(fs, &default);
-                (default, canonical)
+                // A `~/.codex` symlink to `/` or a home ancestor is too wide as
+                // well; keep the unresolved name so writes through it fail closed.
+                confined_root(fs, &home.canonical, Some(&default))
+                    .unwrap_or_else(|| (default, home.canonical.join(".codex")))
             });
         let (opencode_config_root, opencode_config_root_canonical) =
             match confined_root(fs, &home.canonical, raw.opencode_config_root.as_deref()) {
@@ -616,7 +618,7 @@ mod tests {
     /// ignored for the default, so `contains` stays confined and scan and
     /// install agree on the root.
     #[test]
-    fn unusable_configured_roots_fall_back_to_the_defaults_or_widen_the_scope() {
+    fn unusable_configured_roots_fall_back_to_the_defaults_or_contains_accepts_every_path() {
         let fs = FixtureBuilder::new().dir("/home/alice").build_fs();
         for bad in ["/", "relative/dir"] {
             let mut raw = RuntimeScope::fixture("/home/alice");
@@ -645,7 +647,7 @@ mod tests {
     /// A configured root behind a symlink is contained by both its given and
     /// its canonical name.
     #[test]
-    fn configured_roots_behind_a_symlink_are_contained_by_either_name_or_refused() {
+    fn configured_roots_behind_a_symlink_are_contained_by_either_name_or_installs_there_fail() {
         let fs = FixtureBuilder::new()
             .dir("/home/alice")
             .dir("/private/tmp/oc")
@@ -668,5 +670,24 @@ mod tests {
             assert!(scope.contains(Path::new(path)), "{path} must be contained");
         }
         assert!(!scope.contains(Path::new("/private/tmp/other")));
+    }
+
+    /// With no usable setting, the default `~/.codex` gets the same width
+    /// check: a `~/.codex` symlink to `/` must not make every path in scope.
+    #[test]
+    fn a_default_codex_home_linked_to_the_filesystem_root_stays_confined_or_contains_accepts_every_path(
+    ) {
+        let fs = FixtureBuilder::new()
+            .dir("/home/alice")
+            .dir("/etc")
+            .alias("/home/alice/.codex", "/")
+            .build_fs();
+        let mut raw = RuntimeScope::fixture("/home/alice");
+        raw.codex_home = Some(PathBuf::from("/"));
+
+        let scope = NormalizedScope::normalize(&raw, &fs).unwrap();
+
+        assert!(!scope.contains(Path::new("/etc/passwd")));
+        assert!(!scope.contains(Path::new("/skills/x")));
     }
 }
