@@ -16,6 +16,7 @@ use skill_studio_core::dto::{
     InstallFile, InstallLinkMode, InstallMethod, InstallRequest, ListEventsRequest, RestoreRequest,
     ScanRequest, UpdateOutcome, UpdateRequest,
 };
+use skill_studio_core::error::ErrorCode;
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::{AgentId, LifecycleOwnerKind, RootScope, SkillName};
 use skill_studio_core::ops;
@@ -52,6 +53,9 @@ struct FakeNpxUpdateSpawner {
     links_into: Vec<&'static str>,
     /// Same, but the fake CLI writes a real folder instead of a link.
     copies_into: Vec<&'static str>,
+    /// Skill folders a `dotagents install` adds beside the declared ones,
+    /// as it does for an entry another machine declared.
+    installs_new: Vec<&'static str>,
 }
 
 impl FakeNpxUpdateSpawner {
@@ -62,7 +66,13 @@ impl FakeNpxUpdateSpawner {
             recorded: Mutex::new(Vec::new()),
             links_into: Vec::new(),
             copies_into: Vec::new(),
+            installs_new: Vec::new(),
         }
+    }
+
+    fn installing_new(mut self, skills: &[&'static str]) -> Self {
+        self.installs_new = skills.to_vec();
+        self
     }
 
     fn linking_into(mut self, dirs: &[&'static str]) -> Self {
@@ -101,6 +111,7 @@ impl ProcessSpawner for FakeNpxUpdateSpawner {
             std::fs::read_dir(root)
                 .unwrap()
                 .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .chain(self.installs_new.iter().map(|s| (*s).to_string()))
                 .collect()
         } else {
             vec![spec.args.get(2).expect("skills update <name>").clone()]
@@ -1479,6 +1490,570 @@ fn undo_of_a_copy_update_restores_the_registry_row_without_the_post_write_patch(
         read_registry(&home)["copies"][&key]["content_hash"],
         hash_before
     );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+const SIBLINGS_TOML: &str = "version = 1\n\n[[skills]]\nname = \"alpha\"\nsource = \"o/r\"\nref = \"aaa\"\n\n[[skills]]\nname = \"beta\"\nsource = \"o/r\"\n";
+
+/// Two declared skills, `alpha` pinned and `beta` not, both at v1 with the
+/// dotagents files beside them. The fake install rewrites both folders.
+fn siblings_home(name: &str) -> PathBuf {
+    let home = unique_temp_dir(name);
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "alpha", "v1");
+    seed_installed_skill(&home, "beta", "v1");
+    seed_dotagents_files(&home, SIBLINGS_TOML);
+    home
+}
+
+fn pinned_alpha_update(rt: &Runtime) -> UpdateOutcome {
+    let mut req = cli_request("alpha", InstallMethod::Dotagents);
+    req.ref_pin = Some("bbb".to_string());
+    ops::update(rt, &ctx(), &req).unwrap()
+}
+
+fn skill_body(home: &std::path::Path, skill: &str) -> String {
+    std::fs::read_to_string(
+        home.join(UNIVERSAL_ROOT_RELATIVE)
+            .join(skill)
+            .join("SKILL.md"),
+    )
+    .unwrap()
+}
+
+fn undo(
+    rt: &Runtime,
+    event_id: skill_studio_core::identity::EventId,
+    force: bool,
+) -> Result<skill_studio_core::dto::RestoreOutcome, skill_studio_core::CoreError> {
+    ops::restore_event(rt, &ctx(), &RestoreRequest { event_id, force })
+}
+
+/// Flow: `alpha` and unpinned `beta` sit at v1; updating `alpha` runs an
+/// install that rewrites both folders, `agents.toml` and `agents.lock`. One
+/// undo must put `beta`, `alpha`, the toml and the lock back to their v1
+/// bytes. Fails when only `alpha` returns and `beta` stays at v2, a change
+/// the update's backup never covered.
+#[test]
+fn undoing_a_dotagents_update_restores_the_sibling_folders_the_install_rewrote() {
+    let home = siblings_home("update_siblings_undo");
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"))),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    assert!(skill_body(&home, "beta").contains("Body at v2"));
+
+    undo(&rt, outcome.event_id, false).unwrap();
+
+    for skill in ["alpha", "beta"] {
+        assert!(
+            skill_body(&home, skill).contains("Body at v1"),
+            "{skill} not restored"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(home.join(".agents/agents.toml")).unwrap(),
+        SIBLINGS_TOML
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join(".agents/agents.lock")).unwrap(),
+        LOCK_BEFORE
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: after the update, the user edits `beta`. Undo must refuse and name
+/// `beta`, leaving everything as it is. With force it restores v1 and keeps
+/// the edit in the restore's own backup. Fails when undo overwrites the edit
+/// without force, or when force leaves no copy of the edit.
+#[test]
+fn undoing_a_dotagents_update_refuses_over_an_edited_sibling_and_force_keeps_the_edit() {
+    let home = siblings_home("update_siblings_edit");
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"))),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    let beta_md = home.join(UNIVERSAL_ROOT_RELATIVE).join("beta/SKILL.md");
+    std::fs::write(&beta_md, "my edit to beta\n").unwrap();
+
+    let err = undo(&rt, outcome.event_id.clone(), false).unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::DriftConflict);
+    assert!(
+        err.path.as_deref().is_some_and(|p| p.ends_with("beta")),
+        "the refusal must name beta, got {:?}",
+        err.path
+    );
+    assert_eq!(
+        std::fs::read_to_string(&beta_md).unwrap(),
+        "my edit to beta\n"
+    );
+    assert!(skill_body(&home, "alpha").contains("Body at v2"));
+
+    let restored = undo(&rt, outcome.event_id, true).unwrap();
+
+    assert!(skill_body(&home, "beta").contains("Body at v1"));
+    assert!(skill_body(&home, "alpha").contains("Body at v1"));
+    let restore_backup_has_edit = std::fs::read_dir(home.join(".history"))
+        .unwrap()
+        .flatten()
+        .any(|entry| {
+            walk_files(&entry.path())
+                .iter()
+                .any(|f| std::fs::read_to_string(f).is_ok_and(|t| t == "my edit to beta\n"))
+        });
+    assert!(
+        restore_backup_has_edit,
+        "force must back up the edit under restore {:?}",
+        restored.restore_event_id
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+fn walk_files(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(walk_files(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// Flow: the install also creates `gamma`, a folder that did not exist
+/// before. Undo must remove it along with restoring the declared skills.
+/// Fails when `gamma` stays behind as a skill the update never announced.
+#[test]
+fn undoing_a_dotagents_update_removes_a_folder_the_install_created() {
+    let home = siblings_home("update_siblings_new");
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(
+            FakeNpxUpdateSpawner::new(home.clone(), "v2").installing_new(&["gamma"]),
+        )),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    assert!(home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma").is_dir());
+
+    undo(&rt, outcome.event_id, false).unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma")).is_err(),
+        "gamma must be gone after undo"
+    );
+    assert!(skill_body(&home, "beta").contains("Body at v1"));
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+fn history_holds_text(home: &std::path::Path, text: &str) -> bool {
+    std::fs::read_dir(home.join(".history"))
+        .unwrap()
+        .flatten()
+        .any(|entry| {
+            walk_files(&entry.path())
+                .iter()
+                .any(|f| std::fs::read_to_string(f).is_ok_and(|t| t == text))
+        })
+}
+
+fn siblings_runtime(name: &str) -> (PathBuf, Runtime) {
+    let home = siblings_home(name);
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"))),
+    );
+    (home, rt)
+}
+
+/// Flow: update, undo it, then edit `beta` and add a row to `agents.toml`
+/// before undoing the undo. Without force the second undo must refuse for
+/// drift and leave both edits; with force it proceeds, backs both edits up,
+/// and puts the update's v2 state back. Fails when the undo's own inverse
+/// does not vouch for the extra paths, so the second undo overwrites the
+/// edits silently.
+#[test]
+fn undoing_an_update_undo_refuses_over_edits_made_since_and_force_backs_them_up() {
+    let (home, rt) = siblings_runtime("update_undo_undo_drift");
+    let outcome = pinned_alpha_update(&rt);
+    let first_undo = undo(&rt, outcome.event_id, false).unwrap();
+    let beta_md = home.join(UNIVERSAL_ROOT_RELATIVE).join("beta/SKILL.md");
+    let toml = home.join(".agents/agents.toml");
+    std::fs::write(&beta_md, "my edit to beta\n").unwrap();
+    let edited_toml = format!("{SIBLINGS_TOML}\n[[skills]]\nname = \"mine\"\nsource = \"o/r\"\n");
+    std::fs::write(&toml, &edited_toml).unwrap();
+
+    let err = undo(&rt, first_undo.restore_event_id.clone(), false).unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::DriftConflict);
+    assert_eq!(
+        std::fs::read_to_string(&beta_md).unwrap(),
+        "my edit to beta\n"
+    );
+    assert_eq!(std::fs::read_to_string(&toml).unwrap(), edited_toml);
+
+    undo(&rt, first_undo.restore_event_id, true).unwrap();
+
+    assert!(skill_body(&home, "beta").contains("Body at v2"));
+    assert!(history_holds_text(&home, "my edit to beta\n"));
+    assert!(history_holds_text(&home, &edited_toml));
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the first dotagents update creates `agents.lock`. Undo must remove
+/// it. When a symlink replaced it before a forced undo, the symlink goes
+/// and the file it pointed at survives. Fails when undo follows the link
+/// and deletes its target.
+#[test]
+fn undoing_a_first_time_lock_removes_it_and_a_replacing_symlink_never_loses_its_target() {
+    for replaced_by_link in [false, true] {
+        let home = unique_temp_dir("update_first_lock");
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        seed_installed_skill(&home, "alpha", "v1");
+        seed_installed_skill(&home, "beta", "v1");
+        std::fs::write(home.join(".agents/agents.toml"), SIBLINGS_TOML).unwrap();
+        let rt = runtime_with(
+            &home,
+            Arc::new(RealFs::new()),
+            Some(Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"))),
+        );
+        let outcome = pinned_alpha_update(&rt);
+        let lock = home.join(".agents/agents.lock");
+        assert!(lock.is_file());
+        let outside = home.join("outside.txt");
+        if replaced_by_link {
+            std::fs::write(&outside, "keep me\n").unwrap();
+            std::fs::remove_file(&lock).unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&outside, &lock).unwrap();
+        }
+
+        undo(&rt, outcome.event_id, replaced_by_link).unwrap();
+
+        assert!(
+            lock.symlink_metadata().is_err(),
+            "lock must be gone (link: {replaced_by_link})"
+        );
+        if replaced_by_link {
+            assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep me\n");
+        }
+
+        std::fs::remove_dir_all(&home).ok();
+    }
+}
+
+/// Flow: the install creates `gamma`; undo removes it; a real folder with a
+/// user file now sits at `gamma`; a forced undo of that undo writes `gamma`
+/// back. The user's file must stay recoverable from the restore's backup,
+/// and a plain undo of that restore must put the folder back. Fails when the
+/// forced write quarantines the folder with no backup, or when the second
+/// undo writes the folder back and then deletes it as a copy to remove.
+#[test]
+fn forced_undo_over_a_real_folder_where_a_copy_goes_back_keeps_that_folder_in_the_backup() {
+    let home = siblings_home("update_write_back_backup");
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(
+            FakeNpxUpdateSpawner::new(home.clone(), "v2").installing_new(&["gamma"]),
+        )),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    let first_undo = undo(&rt, outcome.event_id, false).unwrap();
+    let gamma = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
+    std::fs::create_dir_all(&gamma).unwrap();
+    std::fs::write(gamma.join("notes.txt"), "mine\n").unwrap();
+
+    let forced = undo(&rt, first_undo.restore_event_id, true).unwrap();
+
+    assert!(skill_body(&home, "gamma").contains("Body at v2"));
+    assert!(history_holds_text(&home, "mine\n"));
+
+    undo(&rt, forced.restore_event_id, false).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(gamma.join("notes.txt")).unwrap(),
+        "mine\n"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Runs the fake CLI, then makes `unreadable` unreadable, so the row's
+/// side-effect patch cannot fingerprint it.
+#[cfg(unix)]
+struct UnreadableAfterInstall {
+    inner: FakeNpxUpdateSpawner,
+    unreadable: PathBuf,
+}
+
+#[cfg(unix)]
+impl ProcessSpawner for UnreadableAfterInstall {
+    fn run(
+        &self,
+        spec: &ProcessSpec,
+        cancel: &dyn CancelToken,
+    ) -> Result<ProcessOutput, skill_studio_core::CoreError> {
+        use std::os::unix::fs::PermissionsExt;
+        let output = self.inner.run(spec, cancel)?;
+        std::fs::set_permissions(&self.unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Ok(output)
+    }
+}
+
+#[cfg(unix)]
+fn make_readable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+/// Flow: `beta` cannot be read when the update records its fingerprint, so
+/// the row has no real post-state for it. After it is readable again, undo
+/// must still refuse without force and name `beta`. Fails when the unreadable
+/// path is dropped from the row, so undo overwrites `beta` unchecked.
+#[cfg(unix)]
+#[test]
+fn undoing_an_update_that_could_not_read_a_sibling_refuses_without_force() {
+    let home = siblings_home("update_unreadable_sibling");
+    let beta_md = home.join(UNIVERSAL_ROOT_RELATIVE).join("beta/SKILL.md");
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(UnreadableAfterInstall {
+            inner: FakeNpxUpdateSpawner::new(home.clone(), "v2"),
+            unreadable: beta_md.clone(),
+        })),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    make_readable(&beta_md);
+
+    let err = undo(&rt, outcome.event_id.clone(), false).unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::DriftConflict);
+    assert!(
+        err.path.as_deref().is_some_and(|p| p.ends_with("beta")),
+        "the refusal must name beta, got {:?}",
+        err.path
+    );
+
+    undo(&rt, outcome.event_id, true).unwrap();
+    assert!(skill_body(&home, "beta").contains("Body at v1"));
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: a folder the install created cannot be read, so the row's whole
+/// side-effect patch fails. The user then edits `beta`, and a forced undo
+/// must still keep that edit in the restore's backup. Fails when the restore
+/// backs up only the paths a successful patch listed.
+#[cfg(unix)]
+#[test]
+fn undoing_an_update_whose_side_effect_patch_failed_still_backs_up_the_sibling_it_overwrites() {
+    let home = siblings_home("update_failed_patch_backup");
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(UnreadableAfterInstall {
+            inner: FakeNpxUpdateSpawner::new(home.clone(), "v2").installing_new(&["gamma"]),
+            unreadable: home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma/SKILL.md"),
+        })),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    let beta_md = home.join(UNIVERSAL_ROOT_RELATIVE).join("beta/SKILL.md");
+    std::fs::write(&beta_md, "my edit to beta\n").unwrap();
+
+    undo(&rt, outcome.event_id, true).unwrap();
+
+    assert!(skill_body(&home, "beta").contains("Body at v1"));
+    assert!(history_holds_text(&home, "my edit to beta\n"));
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the skills root cannot be listed, so the update cannot record which
+/// folders exist before it. It must fail before any backup, leaving `alpha`
+/// at v1. Fails when the update goes on and backs up or rewrites anything.
+#[cfg(unix)]
+#[test]
+fn update_that_cannot_list_the_skills_root_fails_before_any_backup() {
+    use std::os::unix::fs::PermissionsExt;
+    let (home, rt) = siblings_runtime("update_unlistable_root");
+    let root = home.join(UNIVERSAL_ROOT_RELATIVE);
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o300)).unwrap();
+    let mut req = cli_request("alpha", InstallMethod::Dotagents);
+    req.ref_pin = Some("bbb".to_string());
+
+    let result = ops::update(&rt, &ctx(), &req);
+
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(result.is_err());
+    assert!(skill_body(&home, "alpha").contains("Body at v1"));
+    assert!(
+        walk_files(&home.join(".history")).iter().all(|f| f
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("events.sqlite3"))),
+        "no backup may exist before the listing succeeds"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the install creates `gamma`, which cannot be read when the row's
+/// side-effect patch runs. The user then edits `beta`. A plain undo must
+/// refuse and leave the edit. Fails when the unreadable folder drops the
+/// whole patch, so the row has no vouched post-state for `beta` and undo
+/// overwrites the edit without `force`.
+#[cfg(unix)]
+#[test]
+fn plain_undo_refuses_over_an_edited_sibling_when_a_created_folder_was_unreadable() {
+    let home = siblings_home("update_unreadable_created");
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(UnreadableAfterInstall {
+            inner: FakeNpxUpdateSpawner::new(home.clone(), "v2").installing_new(&["gamma"]),
+            unreadable: home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma/SKILL.md"),
+        })),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    let beta_md = home.join(UNIVERSAL_ROOT_RELATIVE).join("beta/SKILL.md");
+    std::fs::write(&beta_md, "my edit to beta\n").unwrap();
+
+    let err = undo(&rt, outcome.event_id, false).unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::DriftConflict);
+    assert_eq!(
+        std::fs::read_to_string(&beta_md).unwrap(),
+        "my edit to beta\n"
+    );
+
+    make_readable(&home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma/SKILL.md"));
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: a dotfiles repo links `agents.lock`; the install writes through the
+/// link; undo must restore the lock's v1 bytes in the link's target and keep
+/// the link. Fails when undo deletes the link and writes a plain file, or
+/// leaves the target at the install's bytes.
+#[cfg(unix)]
+#[test]
+fn undoing_an_update_keeps_a_symlinked_agents_lock_and_restores_its_target_bytes() {
+    let home = siblings_home("update_symlinked_lock");
+    let real = home.join("dotfiles/agents.lock");
+    let link = home.join(".agents/agents.lock");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::rename(&link, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"))),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    assert_eq!(
+        std::fs::read_to_string(&real).unwrap(),
+        "# rewritten by install\n"
+    );
+
+    undo(&rt, outcome.event_id, false).unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "undo replaced the symlinked agents.lock with a plain file"
+    );
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), LOCK_BEFORE);
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: the install creates the declared `beta`; the user then replaces it
+/// with a link to a folder outside the scope holding their own files; a
+/// forced undo must take the link down and leave that folder alone. Fails
+/// when removing the created extra path follows the link and deletes the
+/// user's data.
+#[cfg(unix)]
+#[test]
+fn forced_undo_leaves_a_link_target_outside_scope_alone_or_deletes_user_data() {
+    let home = unique_temp_dir("update_remove_extra_link");
+    std::fs::create_dir_all(&home).unwrap();
+    seed_installed_skill(&home, "alpha", "v1");
+    seed_dotagents_files(&home, SIBLINGS_TOML);
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(
+            FakeNpxUpdateSpawner::new(home.clone(), "v2").installing_new(&["beta"]),
+        )),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    let outside = unique_temp_dir("update_remove_extra_outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("SKILL.md"), "outside beta\n").unwrap();
+    let beta = home.join(UNIVERSAL_ROOT_RELATIVE).join("beta");
+    std::fs::remove_dir_all(&beta).unwrap();
+    std::os::unix::fs::symlink(&outside, &beta).unwrap();
+
+    undo(&rt, outcome.event_id, true).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(outside.join("SKILL.md")).unwrap(),
+        "outside beta\n"
+    );
+
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&outside).ok();
+}
+
+/// Flow: after the update, `agents.toml` becomes a link to another file in
+/// the scope; a forced undo must replace the link with a plain file holding
+/// the v1 bytes and leave the link's target as the user wrote it. Fails when
+/// undo writes through the link into the target, or keeps the link.
+#[cfg(unix)]
+#[test]
+fn forced_undo_replaces_a_linked_extra_file_with_a_plain_file_or_writes_into_the_target() {
+    let home = siblings_home("update_extra_became_link");
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(Arc::new(FakeNpxUpdateSpawner::new(home.clone(), "v2"))),
+    );
+    let outcome = pinned_alpha_update(&rt);
+    let toml = home.join(".agents/agents.toml");
+    let target = home.join("user-target.toml");
+    std::fs::write(&target, "user bytes\n").unwrap();
+    std::fs::remove_file(&toml).unwrap();
+    std::os::unix::fs::symlink(&target, &toml).unwrap();
+
+    undo(&rt, outcome.event_id, true).unwrap();
+
+    assert!(
+        !std::fs::symlink_metadata(&toml)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link must be replaced by a plain file"
+    );
+    assert_eq!(std::fs::read_to_string(&toml).unwrap(), SIBLINGS_TOML);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "user bytes\n");
 
     std::fs::remove_dir_all(&home).ok();
 }

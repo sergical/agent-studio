@@ -397,7 +397,7 @@ fn write_split(
         crate::ops::restore_write_dir(rt, &session.guard, &copy.path, writes.files)?;
         let skill_md = copy.path.join("SKILL.md");
         if writes.codex_rows.contains(&skill_md) {
-            crate::ops::codex_append_carried_row(rt, &session.guard, &skill_md)?;
+            crate::ops::codex_append_carried_row(rt, &session.guard, &skill_md, false)?;
             appended_codex_rows.push(skill_md);
         }
     }

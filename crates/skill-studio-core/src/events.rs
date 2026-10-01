@@ -634,6 +634,145 @@ pub(crate) fn parse_restore_remove_codex_rows(inverse: &serde_json::Value) -> Ve
         .collect()
 }
 
+/// Adds a `"write_back"` array to a `restore_backup` inverse: folders the
+/// same restore removed (a split's copies), to write back from this event's
+/// own backup when the restore is undone. Mirrors `"remove_copies"`.
+pub(crate) fn with_write_back(
+    mut inverse: serde_json::Value,
+    paths: &[PathBuf],
+) -> serde_json::Value {
+    if !paths.is_empty() {
+        inverse["write_back"] = serde_json::json!(paths);
+    }
+    inverse
+}
+
+/// Reads back the `"write_back"` array [`with_write_back`] adds, or an empty
+/// list for an inverse that has none.
+pub(crate) fn parse_restore_write_back(inverse: &serde_json::Value) -> Vec<PathBuf> {
+    inverse
+        .get("write_back")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.as_str().map(PathBuf::from))
+        .collect()
+}
+
+/// Adds a `"remove_links"` array to a `restore_backup` inverse: links the
+/// same restore recreated, each with the target text it was created with.
+/// Mirrors `"links"`.
+pub(crate) fn with_remove_links(
+    mut inverse: serde_json::Value,
+    links: &[(PathBuf, PathBuf)],
+) -> serde_json::Value {
+    if !links.is_empty() {
+        let links: Vec<serde_json::Value> = links
+            .iter()
+            .map(|(path, target)| serde_json::json!({ "path": path, "target": target }))
+            .collect();
+        inverse["remove_links"] = serde_json::Value::Array(links);
+    }
+    inverse
+}
+
+/// Reads back the `"remove_links"` array [`with_remove_links`] adds, or an
+/// empty list for an inverse that has none.
+pub(crate) fn parse_restore_remove_links(inverse: &serde_json::Value) -> Vec<(PathBuf, PathBuf)> {
+    inverse
+        .get("remove_links")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let path = PathBuf::from(entry.get("path")?.as_str()?);
+            let target = PathBuf::from(entry.get("target")?.as_str()?);
+            Some((path, target))
+        })
+        .collect()
+}
+
+/// Adds an `"add_codex_rows"` array to a `restore_backup` inverse: the
+/// `SKILL.md` paths whose Codex config row the same restore removed, with
+/// the `enabled` value that row held. Mirrors `"remove_codex_rows"`.
+pub(crate) fn with_add_codex_rows(
+    mut inverse: serde_json::Value,
+    rows: &[(PathBuf, bool)],
+) -> serde_json::Value {
+    if !rows.is_empty() {
+        let rows: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(path, enabled)| serde_json::json!({ "path": path, "enabled": enabled }))
+            .collect();
+        inverse["add_codex_rows"] = serde_json::Value::Array(rows);
+    }
+    inverse
+}
+
+/// Reads back the `"add_codex_rows"` array [`with_add_codex_rows`] adds, or
+/// an empty list for an inverse that has none.
+pub(crate) fn parse_restore_add_codex_rows(inverse: &serde_json::Value) -> Vec<(PathBuf, bool)> {
+    inverse
+        .get("add_codex_rows")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let path = PathBuf::from(entry.get("path")?.as_str()?);
+            let enabled = entry.get("enabled")?.as_bool()?;
+            Some((path, enabled))
+        })
+        .collect()
+}
+
+/// The `secondary_post` value for a path that could not be fingerprinted
+/// (an `Err` entry): it never equals a live fingerprint, so
+/// undo needs `force`.
+const UNREADABLE_FINGERPRINT: &str = "unknown";
+
+/// Adds a `"secondary_post"` array to a `restore_backup` inverse: every
+/// extra path the same event backed up beside `path` (an update's config,
+/// lock, and sibling skill folders), each with the fingerprint it had after
+/// the write, `"absent"` for none. Undo compares each against the live path
+/// so an edit made after the event is not overwritten without `force`.
+pub(crate) fn with_secondary_post(
+    mut inverse: serde_json::Value,
+    entries: &[(PathBuf, Result<Option<Fingerprint>, crate::CoreError>)],
+) -> serde_json::Value {
+    if !entries.is_empty() {
+        let entries: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(path, fingerprint)| {
+                serde_json::json!({
+                    "path": path,
+                    "fingerprint": match fingerprint {
+                        Ok(fingerprint) => fingerprint.as_ref().map_or("absent", Fingerprint::bare_hex),
+                        Err(_) => UNREADABLE_FINGERPRINT,
+                    },
+                })
+            })
+            .collect();
+        inverse["secondary_post"] = serde_json::Value::Array(entries);
+    }
+    inverse
+}
+
+/// Reads back the `"secondary_post"` array [`with_secondary_post`] adds, or
+/// an empty list for an inverse that has none.
+pub(crate) fn parse_restore_secondary_post(inverse: &serde_json::Value) -> Vec<(PathBuf, String)> {
+    inverse
+        .get("secondary_post")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let path = PathBuf::from(entry.get("path")?.as_str()?);
+            let fingerprint = entry.get("fingerprint")?.as_str()?.to_string();
+            Some((path, fingerprint))
+        })
+        .collect()
+}
+
 /// Reads a `restore_backup` inverse payload back into its path and
 /// fingerprints. `None` for either fingerprint means `"absent"`. Returns
 /// `None` when `inverse` is not a `restore_backup` op (an unrecognized op,
@@ -807,5 +946,39 @@ mod tests {
                 "a {status:?} row must name its own status, not fall through to Yes"
             );
         }
+    }
+
+    #[test]
+    fn inverse_from_before_the_mirror_fields_parses_to_empty_lists() {
+        let old = restore_backup_inverse_with_links(
+            Path::new("/home/u/.agents/skills/a"),
+            None,
+            None,
+            &[(PathBuf::from("/l"), PathBuf::from("/t"))],
+        );
+        assert!(parse_restore_write_back(&old).is_empty());
+        assert!(parse_restore_remove_links(&old).is_empty());
+        assert!(parse_restore_add_codex_rows(&old).is_empty());
+        assert!(parse_restore_secondary_post(&old).is_empty());
+    }
+
+    #[test]
+    fn mirror_fields_round_trip_through_their_parsers() {
+        let inverse = with_add_codex_rows(
+            with_remove_links(
+                with_write_back(serde_json::json!({}), &[PathBuf::from("/c")]),
+                &[(PathBuf::from("/l"), PathBuf::from("../t"))],
+            ),
+            &[(PathBuf::from("/c/SKILL.md"), true)],
+        );
+        assert_eq!(parse_restore_write_back(&inverse), [PathBuf::from("/c")]);
+        assert_eq!(
+            parse_restore_remove_links(&inverse),
+            [(PathBuf::from("/l"), PathBuf::from("../t"))]
+        );
+        assert_eq!(
+            parse_restore_add_codex_rows(&inverse),
+            [(PathBuf::from("/c/SKILL.md"), true)]
+        );
     }
 }
