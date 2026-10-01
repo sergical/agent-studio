@@ -1,9 +1,9 @@
 // ============================================================================
 // Skill Studio - Mascot stage
-// The app icon with a messy pile of skills around it. Pressing the mascot tidies the
-// pile: kept skills line up, and the broken, unused and duplicate ones are parked.
+// The app icon with a messy pile of skills around it. Tidying lines up the kept skills,
+// fixes the broken one, updates the outdated one and parks the unused and duplicates.
 // ============================================================================
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 
 import { siteTokens } from "../SiteTheme.stylex";
@@ -21,7 +21,7 @@ interface Chip {
 const chips: ReadonlyArray<Chip> = [
   { name: "agent-browser", state: "ok", messy: [-335, -20, -9], tidyLeft: true },
   { name: "motion", state: "broken", messy: [-215, 40, 14], tidyLeft: true },
-  { name: "commit", state: "ok", messy: [-330, 96, 6], tidyLeft: true },
+  { name: "commit", state: "unused", messy: [-330, 96, 6], tidyLeft: true },
   { name: "pdf-tools", state: "unused", messy: [-205, -150, -14], tidyLeft: true },
   { name: "frontend-design", state: "ok", messy: [-260, 150, -4], tidyLeft: true },
   { name: "release-notes", state: "unused", messy: [262, -128, 9], tidyLeft: false },
@@ -32,10 +32,15 @@ const chips: ReadonlyArray<Chip> = [
   { name: "skill-creator", state: "outdated", messy: [105, -178, -6], tidyLeft: false },
 ];
 
-// Outdated skills stay in the tidy set: tidying updates them instead of parking them.
-const isKept = (chip: Chip) => chip.state === "ok" || chip.state === "outdated";
+// Tidying keeps these and resolves them instead of parking them.
+const resolvedLabel = new Map<ChipState, string>([
+  ["broken", "fixed"],
+  ["outdated", "updated"],
+]);
+const isKept = (chip: Chip) => chip.state === "ok" || resolvedLabel.has(chip.state);
+const countState = (state: ChipState) => chips.filter((chip) => chip.state === state).length;
 const PARKED_COUNT = chips.filter((chip) => !isKept(chip)).length;
-const UPDATED_COUNT = chips.filter((chip) => chip.state === "outdated").length;
+const TIDY_SUMMARY = `${PARKED_COUNT} skills parked, ${countState("broken")} fixed, ${countState("outdated")} updated.`;
 const TIDY_COLUMNS = [true, false].map((left) =>
   chips.filter((chip) => isKept(chip) && chip.tidyLeft === left),
 );
@@ -46,7 +51,6 @@ const MASCOT_LIFT = -4;
 // Messy offsets shrink with the stage below its full 860px width. Pure CSS, so the
 // prerendered pile already fits before any script runs.
 const STAGE_UNIT = "min(1px, 100cqw / 860)";
-const INTRO_SEEN_KEY = "skill-studio:mascot-intro";
 
 const stateLabel = {
   ok: "used",
@@ -124,22 +128,6 @@ function useStageMetrics() {
   return { stageRef, mascotRef, metrics };
 }
 
-function readIntroSeen() {
-  try {
-    return sessionStorage.getItem(INTRO_SEEN_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function markIntroSeen() {
-  try {
-    sessionStorage.setItem(INTRO_SEEN_KEY, "1");
-  } catch {
-    // Private windows can block storage; the intro then plays on every visit.
-  }
-}
-
 function chipTransform(chip: Chip, tidy: boolean, layout: TidyLayout | null) {
   const placed = tidy ? layout?.chips.get(chip.name) : undefined;
   if (placed)
@@ -148,18 +136,10 @@ function chipTransform(chip: Chip, tidy: boolean, layout: TidyLayout | null) {
   return `translate(-50%, -50%) translate(calc(${x} * ${STAGE_UNIT}), calc(${y} * ${STAGE_UNIT})) rotate(${tidy ? 0 : rotation}deg)`;
 }
 
-function MascotChips({
-  tidy,
-  animate,
-  layout,
-}: {
-  tidy: boolean;
-  animate: boolean;
-  layout: TidyLayout | null;
-}) {
+function MascotChips({ tidy, layout }: { tidy: boolean; layout: TidyLayout | null }) {
   return chips.map((chip, index) => {
     const kept = isKept(chip);
-    const updated = tidy && chip.state === "outdated";
+    const resolved = tidy ? resolvedLabel.get(chip.state) : undefined;
     return (
       <span
         key={chip.name}
@@ -169,59 +149,32 @@ function MascotChips({
           styles.chip,
           styles.chipPosition(chipTransform(chip, tidy, layout), index * 28),
           tidy && !kept && styles.chipParked,
-          !animate && styles.still,
         )}
       >
-        <span
-          {...stylex.props(
-            styles.dot,
-            updated ? styles.ok : styles[chip.state],
-            !animate && styles.still,
-          )}
-        />
+        <span {...stylex.props(styles.dot, resolved ? styles.ok : styles[chip.state])} />
         {chip.name}
-        <span {...stylex.props(styles.chipState)}>
-          {updated ? "updated" : stateLabel[chip.state]}
-        </span>
+        <span {...stylex.props(styles.chipState)}>{resolved ?? stateLabel[chip.state]}</span>
       </span>
     );
   });
 }
 
 export function MascotStage() {
-  // Prerendered HTML shows the messy pile; the intro tidies it once per session.
+  // Prerendered HTML shows the messy pile; every page load tidies it once.
   const [tidy, setTidy] = useState(false);
-  // Off until the first paint, so a return visit shows the tidy pile without replaying it.
-  const [animate, setAnimate] = useState(false);
   const { stageRef, mascotRef, metrics } = useStageMetrics();
   const layout = metrics ? tidyLayout(metrics) : null;
 
-  useLayoutEffect(() => {
-    if (readIntroSeen()) {
-      setTidy(true);
-      let frame = requestAnimationFrame(() => {
-        frame = requestAnimationFrame(() => setAnimate(true));
-      });
-      return () => cancelAnimationFrame(frame);
-    }
-    setAnimate(true);
+  useEffect(() => {
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    // Marked when the intro plays, not on mount: StrictMode's second effect run in dev
-    // would otherwise take the return-visit path.
-    const timer = window.setTimeout(
-      () => {
-        markIntroSeen();
-        setTidy(true);
-      },
-      reduceMotion ? 0 : 900,
-    );
+    const timer = window.setTimeout(() => setTidy(true), reduceMotion ? 0 : 900);
     return () => window.clearTimeout(timer);
   }, []);
 
   return (
     <div {...stylex.props(styles.visual)}>
       <div ref={stageRef} {...stylex.props(styles.stage)}>
-        <MascotChips tidy={tidy} animate={animate} layout={layout} />
+        <MascotChips tidy={tidy} layout={layout} />
         <button
           ref={mascotRef}
           type="button"
@@ -231,7 +184,6 @@ export function MascotStage() {
           {...stylex.props(
             styles.mascotButton,
             tidy && layout && styles.mascotLift(layout.mascotY),
-            !animate && styles.still,
           )}
         >
           <img
@@ -244,9 +196,7 @@ export function MascotStage() {
         </button>
       </div>
       <p {...stylex.props(styles.hint)} aria-live="polite">
-        {tidy
-          ? `${PARKED_COUNT} skills parked, ${UPDATED_COUNT} updated. Press the mascot to undo.`
-          : "Press the mascot to tidy up."}
+        {tidy ? `${TIDY_SUMMARY} Press the mascot to undo.` : "Press the mascot to tidy up."}
       </p>
     </div>
   );
@@ -340,7 +290,6 @@ const styles = stylex.create({
   broken: { backgroundColor: "oklch(0.66 0.21 25)" },
   unused: { backgroundColor: "oklch(0.6 0.02 290)" },
   duplicate: { backgroundColor: "oklch(0.8 0.15 80)" },
-  still: { transition: "none" },
   hint: {
     color: siteTokens.muted,
     fontSize: 13,
