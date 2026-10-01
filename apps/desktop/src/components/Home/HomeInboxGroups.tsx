@@ -21,11 +21,13 @@ import {
   conflictedSkillsNote,
   lifecycleTargetForPark,
   skillCanPark,
+  forkableDeployment,
   skillsWithLocalEdits,
   skillUpdateToast,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
+import { useGuardedSkillUpdate } from "../../hooks/useGuardedSkillUpdate";
 import { UpdateOverwritesEditsDialog } from "../SkillDetail/UpdateOverwritesEditsDialog";
 import { GroupHead } from "../SkillList/GroupHead";
 import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
@@ -158,6 +160,7 @@ function ShowAllLink({
 function PullLatestButton({ skill }: { skill: InstalledSkill }) {
   const [isPulling, setIsPulling] = useState(false);
   const addToast = useAppStore((state) => state.addToast);
+  const guard = useGuardedSkillUpdate();
 
   const handlePull = async () => {
     setIsPulling(true);
@@ -170,8 +173,10 @@ function PullLatestButton({ skill }: { skill: InstalledSkill }) {
         if (!title) title = `Merged ${skill.name}`;
         addToast({ type: "success", title });
       } else {
-        const summary = await updateSkillOwners(skill, updateSkill);
-        addToast(skillUpdateToast(skill.name, summary));
+        await guard.requestUpdate(skill, async () => {
+          const summary = await updateSkillOwners(skill, updateSkill);
+          addToast(skillUpdateToast(skill.name, summary));
+        });
       }
       setIsPulling(false);
     } catch (err) {
@@ -183,13 +188,21 @@ function PullLatestButton({ skill }: { skill: InstalledSkill }) {
   };
 
   return (
-    <Button variant="ghost" className={ROW_ACTION_CLASS} onClick={handlePull} disabled={isPulling}>
-      {isPulling ? (
-        <span className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
-      ) : (
-        "Pull latest"
-      )}
-    </Button>
+    <>
+      <Button
+        variant="ghost"
+        className={ROW_ACTION_CLASS}
+        onClick={handlePull}
+        disabled={isPulling || guard.isResolving}
+      >
+        {isPulling || guard.isResolving ? (
+          <span className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+        ) : (
+          "Pull latest"
+        )}
+      </Button>
+      {guard.dialog}
+    </>
   );
 }
 
@@ -673,6 +686,7 @@ function UpdatesGroup({
       <UpdateOverwritesEditsDialog
         skillNames={editedSkills.map((skill) => skill.name)}
         isBulk
+        canFork={editedSkills.every((skill) => forkableDeployment(skill) !== undefined)}
         onFork={() => {
           closeEditsDialog();
           void runUpdateAll(new Set(editedSkills.map((skill) => skill.name)));

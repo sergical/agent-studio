@@ -15,7 +15,7 @@ import {
   skillLocalEdits,
   updateAllSkillsWithProgress,
 } from "../../lib/skill-api";
-import { skillsWithLocalEdits } from "../../lib/skill-lifecycle-target";
+import { forkableDeployment, skillsWithLocalEdits } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import type { UpdatePrompt } from "../SkillDetail/UpdateOverwritesEditsDialog";
 import {
@@ -118,6 +118,7 @@ export function useSkillBulkActions(
   const updateAction: BulkAction = { kind: "update" };
   const updatePrompt: UpdatePrompt | null = pending && {
     skillNames: pending.edited.map((skill) => skill.name),
+    canFork: pending.edited.every((skill) => forkableDeployment(skill) !== undefined),
     fork: () => {
       setPending(null);
       void execute(updateAction, pending.plan, new Set(pending.edited.map((skill) => skill.name)));

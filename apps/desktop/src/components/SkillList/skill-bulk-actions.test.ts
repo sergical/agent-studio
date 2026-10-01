@@ -374,6 +374,91 @@ describe("runBulkUpdate", () => {
     );
     expect(result.conflicted).toEqual(["edited"]);
   });
+
+  /** One skills.sh skill with a global copy and a project copy, each its own update owner. */
+  function withProjectCopy(name: string): InstalledSkill {
+    const projectOwner = `owner:v1/project/${name}`;
+    const base = outdatedSkillsSh(name);
+    return {
+      ...base,
+      deployments: [
+        ...base.deployments,
+        globalFolder(name, {
+          scope: "project",
+          project_path: "/p",
+          path: `/p/.agents/skills/${name}`,
+          owner_kind: "skills-sh",
+          owner_id: projectOwner,
+          backing: { kind: "canonical" },
+        }),
+      ],
+      update_owner_ids: [...base.update_owner_ids, projectOwner],
+      update_owners: [
+        ...(base.update_owners ?? []),
+        { owner_id: projectOwner, latest_commit: "next", latest_commit_at: null },
+      ],
+    };
+  }
+
+  it("still_updates_the_project_copy_of_a_forked_skill_or_silently_skips_it", async () => {
+    const calls: string[] = [];
+    const both = withProjectCopy("edited");
+    const result = await runBulkUpdate(
+      [both],
+      new Set(["edited"]),
+      {
+        ...deps([], calls),
+        updateAll: async (targets) => {
+          calls.push(`update ${targets.map((t) => t.owner_id).join(",")}`);
+          // SAFETY: bulkUpdateResult reads only `items[].skill/outcome` and `errors`.
+          return { items: [{ skill: "edited", outcome: {} }], errors: {} } as never;
+        },
+      },
+      () => {},
+    );
+    expect(calls).toEqual([
+      expect.stringMatching(/^fork dep:/),
+      "pull dep:forked",
+      "update owner:v1/project/edited",
+    ]);
+    expect(names(result.succeeded)).toEqual(["edited"]);
+  });
+
+  it("fails_the_skill_when_only_its_project_copy_fails_or_the_toast_reports_a_false_success", async () => {
+    const calls: string[] = [];
+    const both = withProjectCopy("edited");
+    const result = await runBulkUpdate(
+      [both],
+      new Set(["edited"]),
+      {
+        ...deps([], calls),
+        // SAFETY: bulkUpdateResult reads only `items[].skill/outcome` and `errors`.
+        updateAll: async () =>
+          ({ items: [{ skill: "edited", outcome: null }], errors: { edited: "boom" } }) as never,
+      },
+      () => {},
+    );
+    expect(result.succeeded).toEqual([]);
+    expect(result.failed[0]?.error).toContain("another copy failed: boom");
+  });
+
+  it("updates_no_copy_when_the_fork_fails_or_the_edit_is_overwritten_after_all", async () => {
+    const calls: string[] = [];
+    const both = withProjectCopy("edited");
+    const result = await runBulkUpdate(
+      [both],
+      new Set(["edited"]),
+      {
+        ...deps([], calls),
+        fork: async () => {
+          throw new Error("fork refused");
+        },
+      },
+      () => {},
+    );
+    expect(calls).toEqual([]);
+    expect(result.failed[0]?.error).toBe("fork refused");
+  });
 });
 
 describe("bulkActionToast conflicts", () => {

@@ -495,8 +495,41 @@ describe("updateAllOutdatedSkills with edited skills", () => {
   const edited = {
     ...ownerSkill("edited", "owner:v1/global/edited"),
     deployments: [
-      { ...canonicalDeployment, id: "dep:v1/edited", owner_kind: "skills-sh" as const },
+      {
+        ...canonicalDeployment,
+        id: "dep:v1/edited",
+        owner_kind: "skills-sh" as const,
+        owner_id: "owner:v1/global/edited",
+      },
     ],
+  };
+  const twoOwners = {
+    ...edited,
+    update_owner_ids: ["owner:v1/global/edited", "owner:v1/project/edited"],
+    update_owners: [
+      { owner_id: "owner:v1/global/edited", latest_commit: "next", latest_commit_at: null },
+      { owner_id: "owner:v1/project/edited", latest_commit: "next", latest_commit_at: null },
+    ],
+  };
+  const pulled = {
+    from_commit: "a",
+    to_commit: "b",
+    merged: [],
+    added: [],
+    removed: [],
+    conflicts: [],
+    unchanged: 0,
+    message: null,
+  };
+  const forkRecord: ForkRecord = {
+    deployment_id: "dep:v1/forked",
+    forked_at: "2026-10-01T00:00:00Z",
+    origin_tool: "skills-sh",
+    origin_source: "owner/repo",
+    repo: "owner/repo",
+    path: "skills/edited",
+    declared_ref: null,
+    base_commit: "a",
   };
   const plain = ownerSkill("plain", "owner:v1/global/plain");
 
@@ -605,5 +638,68 @@ describe("updateAllOutdatedSkills with edited skills", () => {
     );
     expect(tally.conflicted).toEqual(["edited"]);
     expect(tally.skillsSucceeded).toBe(1);
+  });
+
+  it("update_all_still_updates_the_other_copy_of_a_forked_skill_or_silently_skips_it", async () => {
+    const updated: string[] = [];
+    const tally = await updateAllOutdatedSkills(
+      [twoOwners],
+      async () => pulled,
+      async (targets) => {
+        updated.push(...targets.map((target) => target.owner_id ?? ""));
+        return succeedAll(["edited"]);
+      },
+      undefined,
+      { names: new Set(["edited"]), fork: async () => forkRecord },
+    );
+    expect(updated).toEqual(["owner:v1/project/edited"]);
+    expect(tally.attempted).toBe(2);
+    expect(tally.succeeded).toBe(2);
+    expect(tally.skillsSucceeded).toBe(1);
+  });
+
+  it("update_all_counts_a_forked_skill_as_failed_when_its_other_copy_fails_or_reports_a_false_success", async () => {
+    const tally = await updateAllOutdatedSkills(
+      [twoOwners],
+      async () => pulled,
+      async () => failAll(["edited"]),
+      undefined,
+      { names: new Set(["edited"]), fork: async () => forkRecord },
+    );
+    expect(tally.failures).toBe(1);
+    expect(tally.skillsSucceeded).toBe(0);
+  });
+
+  it("update_all_leaves_every_copy_alone_when_the_fork_fails_or_the_other_copy_is_overwritten", async () => {
+    const tally = await updateAllOutdatedSkills(
+      [twoOwners],
+      async () => pulled,
+      async () => {
+        throw new Error("no owner may be updated after a failed fork");
+      },
+      undefined,
+      {
+        names: new Set(["edited"]),
+        fork: async () => {
+          throw new Error("fork refused");
+        },
+      },
+    );
+    expect(tally.skillsSucceeded).toBe(0);
+    expect(tally.firstError).toBe("fork refused");
+  });
+
+  it("update_all_says_the_fork_was_made_when_only_the_pull_fails_or_the_user_thinks_the_edits_are_gone", async () => {
+    const tally = await updateAllOutdatedSkills(
+      [edited],
+      async () => {
+        throw new Error("network down");
+      },
+      async () => succeedAll([]),
+      undefined,
+      { names: new Set(["edited"]), fork: async () => forkRecord },
+    );
+    expect(tally.firstError).toContain("The fork was made and your edits are kept");
+    expect(tally.firstError).toContain("network down");
   });
 });

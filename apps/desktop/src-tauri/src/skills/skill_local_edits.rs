@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use skill_studio_core::lock_file::{self, LocalEdits};
+use skill_studio_core::lock_file::{self, LocalEdits, SkillLockFile};
 use skill_studio_core::ports::ScopeFs;
 use tauri::Manager;
 
@@ -30,21 +30,17 @@ const NOT_CHECKED: LocalEditsDto = LocalEditsDto {
 /// The verdict for the deployment an update would replace.
 fn deployment_local_edits(
     fs: &dyn ScopeFs,
-    home: &Path,
+    lock: Option<&SkillLockFile>,
     skill_name: &str,
     deployment: &Deployment,
 ) -> LocalEditsDto {
     if deployment.owner_kind != LifecycleOwnerKind::SkillsSh || deployment.scope != "global" {
         return NOT_CHECKED;
     }
-    let lock = match lock_file::read_lock_file(fs, &lock_file::lock_file_path(home)) {
-        Ok(lock) => lock,
-        Err(e) => {
-            eprintln!("[local-edits] {skill_name}: lock file unreadable: {e:?}");
-            return NOT_CHECKED;
-        }
+    let Some(lock) = lock else {
+        return NOT_CHECKED;
     };
-    match lock_file::local_edits(fs, &lock, skill_name, Path::new(&deployment.path)) {
+    match lock_file::local_edits(fs, lock, skill_name, Path::new(&deployment.path)) {
         LocalEdits::Unedited => LocalEditsDto {
             edited: false,
             checked: true,
@@ -73,12 +69,19 @@ pub async fn skill_local_edits(
         let snapshot = skill_lifecycle::rebuild_fresh_lifecycle_snapshot(&app, &refresh_state)?;
         let home = dirs::home_dir().ok_or("Could not find home directory")?;
         let fs = skill_studio_host::RealFs::new();
+        let lock = match lock_file::read_lock_file(&fs, &lock_file::lock_file_path(&home)) {
+            Ok(lock) => Some(lock),
+            Err(e) => {
+                eprintln!("[local-edits] lock file unreadable: {e:?}");
+                None
+            }
+        };
         Ok(targets
             .iter()
             .map(|target| {
                 match skill_lifecycle::resolve_lifecycle_target(&snapshot, target, "Update") {
                     Ok((skill, deployment)) => {
-                        deployment_local_edits(&fs, &home, &skill.name, &deployment)
+                        deployment_local_edits(&fs, lock.as_ref(), &skill.name, &deployment)
                     }
                     Err(e) => {
                         eprintln!("[local-edits] target not resolved: {e}");

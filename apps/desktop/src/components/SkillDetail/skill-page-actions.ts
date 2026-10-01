@@ -7,6 +7,7 @@
 // ============================================================================
 
 import { useState } from "react";
+import type { ReactNode } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   forkSkill,
@@ -14,28 +15,26 @@ import {
   parkSkill,
   pullForkUpstream,
   removeSkill,
-  skillLocalEdits,
   unforkSkill,
   unparkSkill,
   updateSkill,
 } from "../../lib/skill-api";
 import {
-  forkThenPull,
   lifecycleTargetForDeployment,
   lifecycleTargetForPark,
   lifecycleTargetForSkill,
+  pullUpstreamToast,
   skillCanPark,
   skillRemovalBlockedReason,
   skillRemovalChoices,
   skillRemovalEmptiesSkill,
-  skillsWithLocalEdits,
   skillUpdateToast,
   updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import type { SkillRemovalChoice } from "../../lib/skill-lifecycle-target";
-import type { InstalledSkill, PullResult, Toast } from "@skill-studio/lib";
+import type { InstalledSkill, Toast } from "@skill-studio/lib";
 import { useAppStore } from "../../store/appStore";
-import type { UpdatePrompt } from "./UpdateOverwritesEditsDialog";
+import { useGuardedSkillUpdate } from "../../hooks/useGuardedSkillUpdate";
 
 /**
  * The one deployment `forkSkill` will accept: the shared-folder copy at
@@ -50,34 +49,6 @@ function sharedFolderDeployment(skill: InstalledSkill) {
 }
 
 type AddToast = ReturnType<typeof useAppStore.getState>["addToast"];
-
-/**
- * Builds the toast for a finished `pull_fork_upstream` call. Conflicts win
- * over `message` when both are set - the only case that happens in
- * practice is a failed editor open after a conflicted pull, where
- * `message` names the file and the open error (see `skill_fork.rs`'s
- * `pull_fork_upstream`) and would otherwise silently replace the conflict
- * count and title. `message` alone (the "Already up to date" case) still
- * gets its own info toast.
- */
-export function pullUpstreamToast(result: PullResult): Omit<Toast, "id"> {
-  if (result.conflicts.length > 0) {
-    const conflictText = result.conflicts.join(", ");
-    return {
-      type: "warning",
-      title: `${result.conflicts.length} conflicts — open the editor to resolve`,
-      message: result.message ? `${conflictText} ${result.message}` : conflictText,
-    };
-  }
-  if (result.message) {
-    return { type: "info", title: result.message };
-  }
-  // No conflicts and no message: every file here was a clean pull from
-  // upstream (nothing merged - a file both sides changed would have
-  // landed in `result.conflicts` instead, with markers).
-  const updatedCount = result.merged.length + result.added.length + result.removed.length;
-  return { type: "success", title: `Updated ${updatedCount} files` };
-}
 
 /**
  * The header Remove button's success toast: "Removed" plus the skill name,
@@ -136,8 +107,8 @@ export interface SkillPageActions {
   removeActions: (SkillPageAction & { key: string })[];
   /** Why there is no Remove, for a skill whose files the app must not delete. */
   removeBlockedReason: string | null;
-  /** Confirm step before Update replaces local edits; `null` while none is pending. */
-  updatePrompt: UpdatePrompt | null;
+  /** The "Update will replace your edits" dialog; render it once beside the header. */
+  updateDialog: ReactNode;
 }
 
 /**
@@ -164,7 +135,7 @@ export function useSkillPageActions(
   const [isUnforking, setIsUnforking] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
-  const [isConfirmingOverwrite, setIsConfirmingOverwrite] = useState(false);
+  const guard = useGuardedSkillUpdate();
 
   if (!skill) {
     return {
@@ -178,7 +149,7 @@ export function useSkillPageActions(
       forkAction: null,
       removeActions: [],
       removeBlockedReason: null,
-      updatePrompt: null,
+      updateDialog: null,
     };
   }
 
@@ -267,39 +238,13 @@ export function useSkillPageActions(
       addToast(pullUpstreamToast(result));
     });
 
-  const overwriteWithUpdate = async () => {
-    const summary = await updateSkillOwners(skill, updateSkill);
-    addToast(skillUpdateToast(skill.name, summary));
-  };
-
   const doUpdate = () =>
-    runAction(addToast, setIsUpdating, "Update failed", async () => {
-      const edited = await skillsWithLocalEdits([skill], skillLocalEdits);
-      if (edited.length > 0) {
-        setIsConfirmingOverwrite(true);
-        return;
-      }
-      await overwriteWithUpdate();
-    });
-
-  const doOverwriteEdits = () => {
-    setIsConfirmingOverwrite(false);
-    return runAction(addToast, setIsUpdating, "Update failed", overwriteWithUpdate);
-  };
-
-  const doForkAndUpdate = () => {
-    setIsConfirmingOverwrite(false);
-    return runAction(addToast, setIsUpdating, "Fork and update failed", async () => {
-      if (!forkDeployment)
-        throw new Error("Fork is only available for the Global Universal folder.");
-      const result = await forkThenPull(
-        lifecycleTargetForDeployment(forkDeployment),
-        forkSkill,
-        pullForkUpstream,
-      );
-      addToast(pullUpstreamToast(result));
-    });
-  };
+    runAction(addToast, setIsUpdating, "Update failed", () =>
+      guard.requestUpdate(skill, async () => {
+        const summary = await updateSkillOwners(skill, updateSkill);
+        addToast(skillUpdateToast(skill.name, summary));
+      }),
+    );
 
   const doRemove = async (choice: SkillRemovalChoice) => {
     const confirmed = await ask(choice.confirmMessage, {
@@ -322,7 +267,7 @@ export function useSkillPageActions(
     (skill.source_kind === "dotagents" || skill.source_kind === "skills-sh") &&
     skill.update_owner_ids.length > 0
   ) {
-    primaryAction = { label: "Update", run: doUpdate, busy: isUpdating };
+    primaryAction = { label: "Update", run: doUpdate, busy: isUpdating || guard.isResolving };
   }
 
   let forkAction: SkillPageAction | null = null;
@@ -352,13 +297,6 @@ export function useSkillPageActions(
     forkAction,
     removeActions,
     removeBlockedReason: skillRemovalBlockedReason(skill),
-    updatePrompt: isConfirmingOverwrite
-      ? {
-          skillNames: [skill.name],
-          fork: doForkAndUpdate,
-          overwrite: doOverwriteEdits,
-          cancel: () => setIsConfirmingOverwrite(false),
-        }
-      : null,
+    updateDialog: guard.dialog,
   };
 }

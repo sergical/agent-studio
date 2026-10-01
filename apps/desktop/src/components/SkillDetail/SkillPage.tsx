@@ -24,7 +24,6 @@ import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
-import { UpdateOverwritesEditsDialog } from "./UpdateOverwritesEditsDialog";
 import { InstalledSkillHeader } from "./InstalledSkillHeader";
 import { backLabel } from "./skill-page-nav";
 import { SkillAssistantDrawer } from "./SkillAssistantDrawer";
@@ -423,13 +422,7 @@ export function SkillPage({
         />
       )}
 
-      <UpdateOverwritesEditsDialog
-        skillNames={pageActions.updatePrompt?.skillNames ?? []}
-        isBulk={false}
-        onFork={() => pageActions.updatePrompt?.fork()}
-        onOverwrite={() => pageActions.updatePrompt?.overwrite()}
-        onCancel={() => pageActions.updatePrompt?.cancel()}
-      />
+      {pageActions.updateDialog}
 
       <DiscardChangesDialog
         open={pendingDiscard !== null}

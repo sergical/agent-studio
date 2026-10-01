@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  forkEditedAndUpdate,
+  forkableDeployment,
   lifecycleTargetForDeployment,
   lifecycleTargetForHarnessRoot,
   lifecycleTargetForSkill,
@@ -18,7 +20,7 @@ import {
   skillUpdateToast,
   updateSkillOwners,
 } from "./skill-lifecycle-target";
-import type { Deployment, InstalledSkill } from "@skill-studio/lib";
+import type { Deployment, ForkRecord, InstalledSkill, PullResult } from "@skill-studio/lib";
 
 function deployment(id: string, ownerId?: string, projectPath?: string): Deployment {
   return {
@@ -531,5 +533,98 @@ describe("skillsWithLocalEdits", () => {
       throw new Error("ipc down");
     });
     expect(result).toEqual([]);
+  });
+});
+
+describe("forkEditedAndUpdate", () => {
+  const globalOwner = "owner:v1/global/x";
+  const projectOwner = "owner:v1/project/x";
+  const skill = {
+    name: "x",
+    deployments: [
+      deployment("dep:global", globalOwner),
+      deployment("dep:project", projectOwner, "/p"),
+    ],
+    update_owner_ids: [globalOwner, projectOwner],
+    update_owners: [
+      { owner_id: globalOwner, latest_commit: "n", latest_commit_at: null },
+      { owner_id: projectOwner, latest_commit: "n", latest_commit_at: null },
+    ],
+  };
+  const pull: PullResult = {
+    from_commit: "a",
+    to_commit: "b",
+    merged: [],
+    conflicts: [],
+    added: [],
+    removed: [],
+    unchanged: 0,
+    message: null,
+  };
+  const record: ForkRecord = {
+    deployment_id: "dep:forked",
+    forked_at: "2026-10-01T00:00:00Z",
+    origin_tool: "skills-sh",
+    origin_source: "o/r",
+    repo: "o/r",
+    path: "x",
+    declared_ref: null,
+    base_commit: "a",
+  };
+
+  it("only_the_global_universal_skills_sh_folder_is_forkable_or_fork_is_offered_where_it_must_fail", () => {
+    expect(forkableDeployment(skill)?.id).toBe("dep:global");
+    expect(
+      forkableDeployment({ deployments: [deployment("dep:project", projectOwner, "/p")] }),
+    ).toBe(undefined);
+  });
+
+  it("updates_the_other_owner_normally_after_the_fork_or_the_project_copy_is_silently_dropped", async () => {
+    const calls: string[] = [];
+    const { others } = await forkEditedAndUpdate(skill, {
+      fork: async (target) => {
+        calls.push(`fork ${target.deployment_id}`);
+        return record;
+      },
+      pullFork: async (target) => {
+        calls.push(`pull ${target.deployment_id}`);
+        return pull;
+      },
+      updateOwner: async (target) => {
+        calls.push(`update ${target.owner_id}`);
+        return { success: true };
+      },
+    });
+    expect(calls).toEqual(["fork dep:global", "pull dep:forked", `update ${projectOwner}`]);
+    expect(others.succeeded).toBe(1);
+  });
+
+  it("a_failed_pull_after_a_good_fork_says_the_edits_are_kept_or_it_reads_like_a_lost_fork", async () => {
+    await expect(
+      forkEditedAndUpdate(skill, {
+        fork: async () => record,
+        pullFork: async () => {
+          throw new Error("network down");
+        },
+        updateOwner: async () => ({ success: true }),
+      }),
+    ).rejects.toThrow(/fork was made and your edits are kept.*network down/);
+  });
+
+  it("a_scoped_update_leaves_the_other_owners_alone_or_a_global_fork_updates_the_project", async () => {
+    const updated: string[] = [];
+    await forkEditedAndUpdate(
+      skill,
+      {
+        fork: async () => record,
+        pullFork: async () => pull,
+        updateOwner: async (target) => {
+          updated.push(target.owner_id ?? "");
+          return { success: true };
+        },
+      },
+      { updateOthers: false },
+    );
+    expect(updated).toEqual([]);
   });
 });

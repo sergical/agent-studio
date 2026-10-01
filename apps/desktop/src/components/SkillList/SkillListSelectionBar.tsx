@@ -186,6 +186,7 @@ export function SkillListSelectionBar({
       <UpdateOverwritesEditsDialog
         skillNames={updatePrompt?.skillNames ?? []}
         isBulk
+        canFork={updatePrompt?.canFork ?? true}
         onFork={() => updatePrompt?.fork()}
         onOverwrite={() => updatePrompt?.overwrite()}
         onCancel={() => updatePrompt?.cancel()}

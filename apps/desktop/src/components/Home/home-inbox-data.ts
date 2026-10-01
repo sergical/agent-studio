@@ -27,6 +27,8 @@ import type {
   UpdateAllOutcome,
 } from "@skill-studio/lib";
 import {
+  excludeForkedOwner,
+  forkTargetForSkill,
   forkThenPull,
   lifecycleTargetForPark,
   skillUpdateOwnerTargets,
@@ -161,10 +163,15 @@ export async function updateAllOutdatedSkills(
   const pullsUpstream = (skill: (typeof skills)[number]) =>
     skill.source_kind === "fork" || forkEdited?.names.has(skill.name) === true;
   const forks = skills.filter(pullsUpstream);
-  const ownerTargets = skills.flatMap((skill) =>
-    pullsUpstream(skill) ? [] : skillUpdateOwnerTargets(skill),
-  );
-  const total = forks.length + ownerTargets.length;
+  // A skill forked because it was edited keeps its other owners (project or
+  // per-harness copies) on the normal update; only the forked owner is replaced.
+  const ownerTargetsOf = (skill: (typeof skills)[number]) => {
+    if (skill.source_kind === "fork") return [];
+    const targets = skillUpdateOwnerTargets(skill);
+    return pullsUpstream(skill) ? excludeForkedOwner(skill, targets) : targets;
+  };
+  const plannedOwnerTargets = skills.flatMap(ownerTargetsOf);
+  const total = forks.length + plannedOwnerTargets.length;
   const ownerSkillNames = new Set(
     skills.flatMap((skill) =>
       !pullsUpstream(skill) && skillUpdateOwnerTargets(skill).length > 0 ? [skill.name] : [],
@@ -188,11 +195,10 @@ export async function updateAllOutdatedSkills(
   for (const [index, skill] of forks.entries()) {
     try {
       // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
-      const target = lifecycleTargetForPark(skill);
       const pull =
         skill.source_kind === "fork" || !forkEdited
-          ? await pullFork(target)
-          : await forkThenPull(target, forkEdited.fork, pullFork);
+          ? await pullFork(lifecycleTargetForPark(skill))
+          : await forkThenPull(forkTargetForSkill(skill), forkEdited.fork, pullFork);
       if (pull.conflicts.length > 0) (tally.conflicted ??= []).push(skill.name);
       tally.succeeded += 1;
     } catch (error) {
@@ -202,6 +208,10 @@ export async function updateAllOutdatedSkills(
     onProgress?.(index + 1, total);
   }
 
+  // A skill whose fork failed keeps all its owners untouched, so its other copies are not updated either.
+  const ownerTargets = skills.flatMap((skill) =>
+    failedSkillNames.has(skill.name) ? [] : ownerTargetsOf(skill),
+  );
   if (ownerTargets.length > 0) {
     try {
       const outcome = await updateAllOwners(ownerTargets, (done) =>

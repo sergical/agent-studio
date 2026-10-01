@@ -32,7 +32,8 @@ import type {
   SkillRemovalPreview,
   SkillUpdateAvailability,
 } from "../../lib/skill-lifecycle-target";
-import type { InstallScope, SkillWithStatus } from "@skill-studio/lib";
+import type { InstallScope, LifecycleTarget, SkillWithStatus } from "@skill-studio/lib";
+import { useGuardedSkillUpdate } from "../../hooks/useGuardedSkillUpdate";
 
 const ACTION_BUTTON_CLASS =
   "h-(--control-height) w-full justify-center gap-2 rounded-md px-3.5 text-body font-medium";
@@ -102,6 +103,7 @@ function useSkillLifecycleMutations(
   const addToast = useAppStore((state) => state.addToast);
   const [isRemoving, setIsRemoving] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+  const guard = useGuardedSkillUpdate();
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
 
   const handleRemove = () => {
@@ -127,13 +129,8 @@ function useSkillLifecycleMutations(
       });
   };
 
-  const handleUpdate = () => {
-    setIsUpdating(true);
-    if (!updateAvailability?.available) {
-      setIsUpdating(false);
-      return Promise.resolve();
-    }
-    return updateSkill(updateAvailability.target)
+  const runUpdate = (target: LifecycleTarget) =>
+    updateSkill(target)
       .then((result) => {
         if (result.success) {
           onInstallComplete({ success: true, skillName: skill.name });
@@ -151,15 +148,30 @@ function useSkillLifecycleMutations(
           error: error instanceof Error ? error.message : "Update failed without an error message.",
           skillName: skill.name,
         });
-      })
-      .finally(() => {
-        setIsUpdating(false);
       });
+
+  const handleUpdate = async () => {
+    const installed = skill.installed_info;
+    if (!updateAvailability?.available || !installed) return;
+    const target = updateAvailability.target;
+    setIsUpdating(true);
+    try {
+      await guard.requestUpdate(installed, () => runUpdate(target), target);
+    } catch (error) {
+      addToast({
+        type: "error",
+        title: "Update failed",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setIsUpdating(false);
+    }
   };
 
   return {
     isRemoving,
-    isUpdating,
+    isUpdating: isUpdating || guard.isResolving,
+    updateDialog: guard.dialog,
     showRemoveConfirm,
     setShowRemoveConfirm,
     handleRemove,
@@ -234,6 +246,7 @@ export function InstalledSkillLifecycleActions({
   const {
     isRemoving,
     isUpdating,
+    updateDialog,
     showRemoveConfirm,
     setShowRemoveConfirm,
     handleRemove,
@@ -305,6 +318,8 @@ export function InstalledSkillLifecycleActions({
       {removalDisabledReason && (
         <p className="m-0 text-caption text-text-tertiary">{removalDisabledReason}</p>
       )}
+
+      {updateDialog}
 
       <AlertDialog open={showRemoveConfirm} onOpenChange={setShowRemoveConfirm}>
         <AlertDialogContent>

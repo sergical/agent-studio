@@ -18,7 +18,8 @@ import type {
 import {
   conflictedSkillsNote,
   forkThenPull,
-  lifecycleTargetForPark,
+  excludeForkedOwner,
+  forkTargetForSkill,
   skillMutableLifecycleScopes,
   skillParkVerb,
   skillRemovalAvailability,
@@ -190,15 +191,23 @@ export async function runBulkUpdate(
   const rest = skills.filter((skill) => !forkNames.has(skill.name));
   const result: BulkRunResult = { succeeded: [], failed: [] };
   const conflicted: string[] = [];
-  const restTargets = rest.flatMap(bulkUpdateTargets);
-  const total = forked.length + restTargets.length;
+  // A forked skill's other owners still get the normal update.
+  const forkedOthers = new Map(
+    forked.map((skill) => [skill, excludeForkedOwner(skill, bulkUpdateTargets(skill))]),
+  );
+  const total =
+    forked.length +
+    rest.flatMap(bulkUpdateTargets).length +
+    [...forkedOthers.values()].reduce((sum, targets) => sum + targets.length, 0);
+  const forkFailed = new Set<InstalledSkill>();
   for (const [index, skill] of forked.entries()) {
     try {
       // react-doctor-disable-next-line react-doctor/async-await-in-loop -- each fork and pull takes an exclusive lease, so the calls must not overlap
-      const pull = await forkThenPull(lifecycleTargetForPark(skill), deps.fork, deps.pullFork);
+      const pull = await forkThenPull(forkTargetForSkill(skill), deps.fork, deps.pullFork);
       if (pull.conflicts.length > 0) conflicted.push(skill.name);
       result.succeeded.push(skill);
     } catch (error) {
+      forkFailed.add(skill);
       result.failed.push({
         skill,
         error: error instanceof Error ? error.message : "Unknown error",
@@ -206,13 +215,35 @@ export async function runBulkUpdate(
     }
     onProgress(index + 1, total);
   }
-  if (rest.length > 0) {
-    const outcome = await deps.updateAll(restTargets, (done) =>
+  // A skill whose fork failed keeps all its owners untouched, so its other copies are not updated either.
+  const forkedToBatch = forked.filter(
+    (skill) => !forkFailed.has(skill) && (forkedOthers.get(skill) ?? []).length > 0,
+  );
+  const batched = [...rest, ...forkedToBatch];
+  const batchTargets = [
+    ...rest.flatMap(bulkUpdateTargets),
+    ...forkedToBatch.flatMap((skill) => forkedOthers.get(skill) ?? []),
+  ];
+  if (batched.length > 0) {
+    const outcome = await deps.updateAll(batchTargets, (done) =>
       onProgress(forked.length + done, total),
     );
-    const restResult = bulkUpdateResult(rest, outcome);
-    result.succeeded.push(...restResult.succeeded);
-    result.failed.push(...restResult.failed);
+    const batchResult = bulkUpdateResult(batched, outcome);
+    for (const skill of batchResult.succeeded) {
+      if (!forked.includes(skill)) result.succeeded.push(skill);
+    }
+    for (const failure of batchResult.failed) {
+      if (!forked.includes(failure.skill)) {
+        result.failed.push(failure);
+      } else {
+        // The fork and pull went through; only another copy failed. Count it as failed, once, with that reason.
+        result.succeeded = result.succeeded.filter((skill) => skill !== failure.skill);
+        result.failed.push({
+          skill: failure.skill,
+          error: `Forked and updated, but another copy failed: ${failure.error}`,
+        });
+      }
+    }
   }
   if (conflicted.length > 0) result.conflicted = conflicted;
   return result;

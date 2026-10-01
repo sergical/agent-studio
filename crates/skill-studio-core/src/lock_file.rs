@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, ErrorCode};
-use crate::ports::{confine, ExclusiveGuard, ScopeFs};
+use crate::ports::{confine, ExclusiveGuard, FileKind, ScopeFs};
 use crate::scope::NormalizedScope;
-use crate::tree_hash::tree_hash;
+use crate::tree_hash::{is_install_junk, tree_hash_ignoring_junk};
 
 /// Largest lock file the core will read. Larger is treated as corrupt
 /// rather than silently truncated.
@@ -238,8 +238,19 @@ pub enum LocalEdits {
     Unknown,
 }
 
+/// Length of a hex SHA-1. The CLI records a git tree SHA only for GitHub
+/// sources; other sources get a sha256 (64 hex chars) that can never equal
+/// a tree hash.
+const TREE_SHA_HEX_LEN: usize = 40;
+
 /// Compares the git tree hash of `folder` - the installed copy an update
 /// would replace - with `skill_name`'s `skillFolderHash` in `lock`.
+///
+/// The recorded hash is GitHub's tree SHA, which includes upstream files
+/// the CLI never copies (`metadata.json`). A mismatch alone therefore does
+/// not prove an edit: it counts as [`LocalEdits::Edited`] only when a file
+/// was modified after the entry's `updatedAt`. When mtimes or the
+/// timestamp are unavailable, a mismatch counts as edited.
 pub fn local_edits(
     fs: &dyn ScopeFs,
     lock: &SkillLockFile,
@@ -249,14 +260,39 @@ pub fn local_edits(
     let Some(entry) = lock.skills.get(skill_name) else {
         return LocalEdits::Unknown;
     };
-    if entry.skill_folder_hash.is_empty() {
+    if entry.skill_folder_hash.len() != TREE_SHA_HEX_LEN {
         return LocalEdits::Unknown;
     }
-    match tree_hash(fs, folder) {
+    match tree_hash_ignoring_junk(fs, folder) {
         Ok(hash) if hash == entry.skill_folder_hash => LocalEdits::Unedited,
-        Ok(_) => LocalEdits::Edited,
+        Ok(_) => {
+            let installed = chrono::DateTime::parse_from_rfc3339(&entry.updated_at).ok();
+            match (installed, newest_modified(fs, folder)) {
+                (Some(installed), Some(newest)) if newest <= installed => LocalEdits::Unknown,
+                _ => LocalEdits::Edited,
+            }
+        }
         Err(_) => LocalEdits::Unknown,
     }
+}
+
+/// The latest mtime of any non-junk file under `dir`, or `None` when the
+/// platform reports none.
+fn newest_modified(fs: &dyn ScopeFs, dir: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+    let mut newest = None;
+    for item in fs.read_dir(dir).ok()? {
+        if is_install_junk(&item.name, item.kind) {
+            continue;
+        }
+        let path = dir.join(&item.name);
+        let modified = match item.kind {
+            FileKind::Dir => newest_modified(fs, &path),
+            FileKind::File => fs.symlink_metadata(&path).ok().and_then(|f| f.modified),
+            _ => None,
+        };
+        newest = newest.max(modified);
+    }
+    newest
 }
 
 #[cfg(test)]
@@ -424,7 +460,7 @@ mod tests {
         let fs = FixtureBuilder::new()
             .file("/skill/SKILL.md", SKILL_MD)
             .build_fs();
-        tree_hash(&fs, Path::new("/skill")).unwrap()
+        crate::tree_hash::tree_hash(&fs, Path::new("/skill")).unwrap()
     }
 
     #[test]
@@ -472,6 +508,46 @@ mod tests {
         let lock = lock_with_hash(&installed_hash());
         assert_eq!(
             local_edits(&fs, &lock, "other-skill", Path::new("/skill")),
+            LocalEdits::Unknown
+        );
+    }
+
+    #[test]
+    fn finder_and_python_litter_is_ignored_or_an_untouched_install_warns() {
+        let fs = FixtureBuilder::new()
+            .file("/skill/SKILL.md", SKILL_MD)
+            .file("/skill/.DS_Store", b"\0\0")
+            .file("/skill/scripts/__pycache__/a.pyc", b"x")
+            .file("/skill/.git/HEAD", b"ref")
+            .build_fs();
+        let lock = lock_with_hash(&installed_hash());
+        assert_eq!(
+            local_edits(&fs, &lock, "write-tests", Path::new("/skill")),
+            LocalEdits::Unedited
+        );
+    }
+
+    #[test]
+    fn an_edit_beside_litter_still_reads_as_edited_or_the_ignore_hides_real_edits() {
+        let fs = FixtureBuilder::new()
+            .file("/skill/SKILL.md", b"changed\n")
+            .file("/skill/.DS_Store", b"\0\0")
+            .build_fs();
+        let lock = lock_with_hash(&installed_hash());
+        assert_eq!(
+            local_edits(&fs, &lock, "write-tests", Path::new("/skill")),
+            LocalEdits::Edited
+        );
+    }
+
+    #[test]
+    fn a_sha256_lock_hash_reads_as_unknown_or_every_non_github_skill_warns() {
+        let fs = FixtureBuilder::new()
+            .file("/skill/SKILL.md", SKILL_MD)
+            .build_fs();
+        let lock = lock_with_hash(&"a".repeat(64));
+        assert_eq!(
+            local_edits(&fs, &lock, "write-tests", Path::new("/skill")),
             LocalEdits::Unknown
         );
     }
