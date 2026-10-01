@@ -11,7 +11,7 @@ import type { ActivityFilter, UsageWindow } from "@skill-studio/lib";
 import type { Toast, TrackedProjects } from "@skill-studio/lib";
 import { addToast } from "../lib/toast";
 import { EMPTY_NAV_HISTORY, recordNavigation, stepBack, stepForward } from "../lib/nav-history";
-import type { NavHistory, NavStep } from "../lib/nav-history";
+import type { DefaultDeploymentPaths, NavHistory, NavStep } from "../lib/nav-history";
 import {
   loadStoredTheme,
   resolveTheme,
@@ -90,7 +90,13 @@ interface AppState {
   /** Names of the skills in the latest snapshot, or null before one loads. A history entry for a
    * skill not in this set is skipped; with null every entry counts as present. */
   knownSkillNames: ReadonlySet<string> | null;
-  setKnownSkillNames: (names: ReadonlySet<string> | null) => void;
+  /** Default deployment path per skill in the latest snapshot; lets history treat "no path" and
+   * the default copy's path as one page. */
+  defaultDeploymentPaths: DefaultDeploymentPaths | null;
+  setKnownSkillNames: (
+    names: ReadonlySet<string> | null,
+    defaultPaths?: DefaultDeploymentPaths | null,
+  ) => void;
   /** Set by the skill page while it can hold unsaved edits. Called with the step to run: returns
    * true when it took over (it shows the discard dialog and runs `proceed` on confirm). */
   leaveGuard: ((proceed: () => void) => boolean) | null;
@@ -237,12 +243,14 @@ function navigateHistory(
   const run = () => {
     const result = plan();
     if (!result) return;
+    const left = get().activeView;
     set({
       activeView: result.view,
       navHistory: result.history,
       selectedSkillPaths: new Set(),
       selectionMode: false,
-      lastClosedSkillName: null,
+      // Leaving a skill page for a list restores that list's row cursor, as Escape does.
+      lastClosedSkillName: left.kind === "skill" && result.view.kind !== "skill" ? left.name : null,
     });
   };
   if (get().leaveGuard?.(run)) return;
@@ -267,7 +275,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   setActiveView: (view) =>
     set((state) => ({
       activeView: view,
-      navHistory: recordNavigation(state.navHistory, state.activeView, view),
+      navHistory: recordNavigation(
+        state.navHistory,
+        state.activeView,
+        view,
+        state.defaultDeploymentPaths,
+      ),
       selectedSkillPaths: new Set(),
       selectionMode: false,
       lastClosedSkillName: null,
@@ -278,7 +291,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const next: ActiveView = { kind: "skill", name, deploymentPath, from, intent };
     set((state) => ({
       activeView: next,
-      navHistory: recordNavigation(state.navHistory, state.activeView, next),
+      navHistory: recordNavigation(
+        state.navHistory,
+        state.activeView,
+        next,
+        state.defaultDeploymentPaths,
+      ),
       selectedSkillPaths: new Set(),
       selectionMode: false,
     }));
@@ -288,7 +306,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (current.kind === "skill") {
       set((state) => ({
         activeView: current.from,
-        navHistory: recordNavigation(state.navHistory, current, current.from),
+        navHistory: recordNavigation(
+          state.navHistory,
+          current,
+          current.from,
+          state.defaultDeploymentPaths,
+        ),
         lastClosedSkillName: current.name,
       }));
     }
@@ -303,7 +326,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   navHistory: EMPTY_NAV_HISTORY,
   knownSkillNames: null,
-  setKnownSkillNames: (names) => set({ knownSkillNames: names }),
+  defaultDeploymentPaths: null,
+  setKnownSkillNames: (names, defaultPaths = null) =>
+    set({ knownSkillNames: names, defaultDeploymentPaths: defaultPaths }),
   leaveGuard: null,
   setLeaveGuard: (guard) => set({ leaveGuard: guard }),
   goBack: () => navigateHistory(get, set, stepBack),

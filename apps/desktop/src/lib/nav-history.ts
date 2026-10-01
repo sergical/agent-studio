@@ -16,12 +16,21 @@ export interface NavHistory {
 
 export const EMPTY_NAV_HISTORY: NavHistory = { back: [], forward: [] };
 
+/** Default deployment path per skill name: the copy a skill page shows when none was requested. */
+export type DefaultDeploymentPaths = ReadonlyMap<string, string>;
+
 /** Whether two views are the same place. A skill page's `from` and one-shot `intent` don't
- * count: they describe how it was opened, not where it is. */
-export function isSameLocation(left: ActiveView, right: ActiveView): boolean {
+ * count: they describe how it was opened, not where it is. With `defaults`, "no path" and the
+ * path of the default copy count as the same page, since both show the same SKILL.md. */
+export function isSameLocation(
+  left: ActiveView,
+  right: ActiveView,
+  defaults?: DefaultDeploymentPaths | null,
+): boolean {
   if (left.kind !== right.kind) return false;
   if (left.kind === "skill" && right.kind === "skill") {
-    return left.name === right.name && left.deploymentPath === right.deploymentPath;
+    const resolve = (view: typeof left) => view.deploymentPath ?? defaults?.get(view.name);
+    return left.name === right.name && resolve(left) === resolve(right);
   }
   if (left.kind === "learn" && right.kind === "learn") return left.section === right.section;
   return true;
@@ -38,8 +47,9 @@ export function recordNavigation(
   history: NavHistory,
   current: ActiveView,
   next: ActiveView,
+  defaults?: DefaultDeploymentPaths | null,
 ): NavHistory {
-  if (isSameLocation(current, next)) return history;
+  if (isSameLocation(current, next, defaults)) return history;
   return {
     back: [...history.back, toEntry(current)].slice(-NAV_HISTORY_LIMIT),
     forward: [],

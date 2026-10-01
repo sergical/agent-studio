@@ -29,6 +29,7 @@ import {
 } from "./lib/skill-api";
 import { clearLegacyProjectPaths, readLegacyProjectPaths } from "./lib/legacy-project-paths";
 import type { ActiveView } from "./store/appStore";
+import { resolveSkillPageDeployment } from "./components/SkillDetail/skill-page-deployment";
 import { useAppStore } from "./store/appStore";
 import "./App.css";
 
@@ -113,7 +114,16 @@ function App() {
   }, [setTrackedProjects, addToast]);
 
   useEffect(() => {
-    setKnownSkillNames(snapshot ? new Set(snapshot.skills.map((skill) => skill.name)) : null);
+    if (!snapshot) {
+      setKnownSkillNames(null);
+      return;
+    }
+    const defaultPaths = new Map<string, string>();
+    for (const skill of snapshot.skills) {
+      const path = resolveSkillPageDeployment(skill, undefined).deployment?.path;
+      if (path) defaultPaths.set(skill.name, path);
+    }
+    setKnownSkillNames(new Set(snapshot.skills.map((skill) => skill.name)), defaultPaths);
   }, [snapshot, setKnownSkillNames]);
 
   // This toast is the only place on screen that shows a failed load or refresh.

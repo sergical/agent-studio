@@ -416,6 +416,9 @@ export function SkillPage({
           if (!open) setPendingDiscard(null);
         }}
         onDiscard={() => {
+          // The step may land on this same SKILL.md, which would not reset the editor by itself.
+          setEditorOpenedContent(null);
+          setIsEditorDirty(false);
           pendingDiscard?.();
           setPendingDiscard(null);
         }}
