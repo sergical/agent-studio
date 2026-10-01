@@ -430,14 +430,15 @@ describe("updateAllFailureMessage", () => {
         skillsSucceeded: 0,
       }),
     ).toBe("1 failed: read-only");
-    // One copy failed, one succeeded: the skill is not fully updated, so it counts as failed.
+    // Three copies failed across two skills, one skill fully updated: one skill failed, not three.
     expect(
       updateAllFailureMessage({
         ...base,
+        attempted: 4,
         succeeded: 1,
-        failures: 1,
-        skillsAttempted: 1,
-        skillsSucceeded: 0,
+        failures: 3,
+        skillsAttempted: 2,
+        skillsSucceeded: 1,
       }),
     ).toBe("1 failed: read-only");
   });

@@ -6,7 +6,12 @@ import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "re
 import { Save, X } from "lucide-react";
 import { Button, Textarea } from "@skill-studio/ui";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
-import { lineRange, normalizeLineEndings } from "./skill-editor-lines";
+import {
+  contentForSave,
+  isContentDirty,
+  lineRange,
+  normalizeLineEndings,
+} from "./skill-editor-lines";
 
 interface GutterLayout {
   /** Rendered height of each logical line, wrapped rows included. */
@@ -105,7 +110,7 @@ export function SkillMarkdownEditor({
   highlightLine,
 }: SkillMarkdownEditorProps) {
   const [content, setContent] = useState(initialContent);
-  const isDirty = content !== initialContent;
+  const isDirty = isContentDirty(content, initialContent);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
   const [showDiscardDialog, setShowDiscardDialog] = useState(false);
@@ -117,7 +122,7 @@ export function SkillMarkdownEditor({
   // value up to the parent - it only needs to fire on an actual dirty-state
   // flip, same as the effect it replaces.
   const handleContentChange = (value: string) => {
-    const nextDirty = value !== initialContent;
+    const nextDirty = isContentDirty(value, initialContent);
     setContent(value);
     if (nextDirty !== isDirty) onDirtyChange?.(nextDirty);
   };
@@ -136,7 +141,7 @@ export function SkillMarkdownEditor({
     if ((e.metaKey || e.ctrlKey) && e.key === "s") {
       e.preventDefault();
       if (isSaving || !isDirty) return;
-      onSave(content);
+      onSave(contentForSave(content, initialContent));
       return;
     }
     if (e.key === "Escape") {
@@ -157,27 +162,37 @@ export function SkillMarkdownEditor({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Re-measured on every content change and whenever the textarea's width
-  // changes (window or drag-resize), since either can re-wrap lines.
+  const measureLatest = useEffectEvent(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const next = measureGutterLayout(textarea, content);
+    setLayout((prev) => (sameLayout(prev, next) ? prev : next));
+  });
+
+  // Before paint, so line numbers never trail an edit by a frame.
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const next = measureGutterLayout(textarea, content);
+    setLayout((prev) => (sameLayout(prev, next) ? prev : next));
+  }, [content]);
+
+  // Width changes (window or drag-resize) can re-wrap lines without a content change.
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     let frame = 0;
-    const measure = () => {
-      const next = measureGutterLayout(textarea, content);
-      setLayout((prev) => (sameLayout(prev, next) ? prev : next));
-    };
     // One measure per frame: a drag-resize fires the observer many times per frame.
     const observer = new ResizeObserver(() => {
       cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(measure);
+      frame = requestAnimationFrame(() => measureLatest());
     });
     observer.observe(textarea);
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [content]);
+  }, []);
 
   // Every render: a new layout or line count changes the gutter's height and
   // padding, which can leave its scroll offset behind the textarea's until the
@@ -192,10 +207,7 @@ export function SkillMarkdownEditor({
   // Runs only when the target changes, so typing never yanks the view back.
   useEffect(() => {
     const textarea = textareaRef.current;
-    const range =
-      highlightLine === undefined
-        ? null
-        : lineRange(normalizeLineEndings(initialContent), highlightLine);
+    const range = highlightLine === undefined ? null : lineRange(initialContent, highlightLine);
     if (!textarea || !range || highlightLine === undefined) return;
     const { heights, paddingTopPx } = measureGutterLayout(textarea, initialContent);
     const lineTop = heights.slice(0, highlightLine - 1).reduce((sum, height) => sum + height, 0);
@@ -217,7 +229,11 @@ export function SkillMarkdownEditor({
             <X size={14} />
             Cancel
           </Button>
-          <Button size="sm" onClick={() => onSave(content)} disabled={isSaving || !isDirty}>
+          <Button
+            size="sm"
+            onClick={() => onSave(contentForSave(content, initialContent))}
+            disabled={isSaving || !isDirty}
+          >
             <Save size={14} />
             {isSaving ? "Saving…" : saveLabel}
           </Button>
