@@ -9,9 +9,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use skill_studio_core::dto::{ListEventsRequest, RestoreRequest, ScanRequest, SplitRequest};
+use skill_studio_core::dto::{
+    ListEventsRequest, RestoreOutcome, RestoreRequest, ScanRequest, SplitRequest,
+};
+use skill_studio_core::error::{CoreError, ErrorCode};
 use skill_studio_core::harness::HarnessCatalog;
-use skill_studio_core::identity::{AgentId, BackingRelationship, DeploymentId, RootKind};
+use skill_studio_core::identity::{AgentId, BackingRelationship, DeploymentId, EventId, RootKind};
 use skill_studio_core::ops;
 use skill_studio_core::ports::{Ports, Runtime};
 use skill_studio_core::scope::RuntimeScope;
@@ -982,6 +985,190 @@ fn undo_split_removes_the_carried_codex_row_after_a_toggle_enabled_it() {
         std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
         before
     );
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Splits a Universal `gamma` that is off in Codex to Claude Code and Codex,
+/// then undoes the split. Returns the undo's event id.
+fn split_then_undo_with_codex_off(home: &Path, rt: &Runtime) -> EventId {
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(
+        home.join(".codex/config.toml"),
+        format!(
+            "[[skills.config]]\npath = \"{}\"\nenabled = false\n",
+            universal(home).join("SKILL.md").display()
+        ),
+    )
+    .unwrap();
+    let split = ops::split(
+        rt,
+        &ctx(),
+        &SplitRequest {
+            deployment_id: universal_deployment_id(rt),
+            harnesses: harnesses(&["claude-code", "codex"]),
+        },
+    )
+    .unwrap();
+    undo(rt, &split.event_id, false).unwrap().restore_event_id
+}
+
+fn undo(rt: &Runtime, event_id: &EventId, force: bool) -> Result<RestoreOutcome, CoreError> {
+    ops::restore_event(
+        rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: event_id.clone(),
+            force,
+        },
+    )
+}
+
+/// Flow: split to Claude Code and Codex with the skill off in Codex, undo the
+/// split, then undo that undo. Expect both copies back as real folders with
+/// their files, no Universal folder, no pi link, a Codex row for the copy,
+/// and a scan of two independent deployments. Fails when undoing the undo
+/// only removes the Universal folder, which leaves the skill nowhere.
+#[test]
+fn undoing_a_split_undo_brings_back_both_copies_and_drops_the_restored_links() {
+    let home = unique_temp_dir("split_undo_undo");
+    splittable_home(&home);
+    let rt = runtime_for(&home);
+    let undo_id = split_then_undo_with_codex_off(&home, &rt);
+    assert!(
+        std::fs::symlink_metadata(claude_copy(&home))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the first undo must put the Claude link back"
+    );
+
+    let outcome = undo(&rt, &undo_id, false).unwrap();
+
+    assert!(outcome.restored_paths.contains(&codex_copy(&home)));
+    for copy in [claude_copy(&home), codex_copy(&home)] {
+        assert!(
+            is_real_dir(&copy),
+            "{} must be a real folder",
+            copy.display()
+        );
+        assert_eq!(std::fs::read(copy.join("SKILL.md")).unwrap(), SKILL_MD);
+        assert_eq!(
+            std::fs::read(copy.join("refs/notes.md")).unwrap(),
+            b"notes\n"
+        );
+    }
+    assert!(std::fs::symlink_metadata(universal(&home)).is_err());
+    assert!(std::fs::symlink_metadata(pi_link(&home)).is_err());
+    let fs = RealFs::new();
+    let off = ops::codex_disabled_skill_md_paths(&fs, &home.join(".codex"));
+    assert!(
+        off.contains(&ops::codex_path_form(
+            &fs,
+            &codex_copy(&home).join("SKILL.md")
+        )),
+        "the Codex copy must be off again, off paths: {off:?}"
+    );
+    let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
+    let gamma = inventory
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "gamma")
+        .unwrap();
+    assert_eq!(gamma.deployments.len(), 2);
+    assert!(gamma
+        .deployments
+        .iter()
+        .all(|d| d.backing == BackingRelationship::Independent));
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: undo a split, edit the restored Universal `SKILL.md`, then undo the
+/// undo. Expect a refusal with the edit and the Universal folder untouched
+/// and no copy written; with force the undo goes through. Fails when the
+/// second undo overwrites the edit without being asked.
+#[test]
+fn undoing_a_split_undo_refuses_after_the_universal_folder_was_edited() {
+    let home = unique_temp_dir("split_undo_undo_edit");
+    splittable_home(&home);
+    let rt = runtime_for(&home);
+    let undo_id = split_then_undo_with_codex_off(&home, &rt);
+    std::fs::write(universal(&home).join("SKILL.md"), b"edited\n").unwrap();
+
+    let err = undo(&rt, &undo_id, false).unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::DriftConflict);
+    assert_eq!(
+        std::fs::read(universal(&home).join("SKILL.md")).unwrap(),
+        b"edited\n"
+    );
+    assert!(std::fs::symlink_metadata(claude_copy(&home))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(std::fs::symlink_metadata(codex_copy(&home)).is_err());
+
+    undo(&rt, &undo_id, true).unwrap();
+    assert!(is_real_dir(&codex_copy(&home)));
+    assert!(std::fs::symlink_metadata(universal(&home)).is_err());
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: undo a split, replace the restored pi link with a real folder, then
+/// undo the undo. Expect a refusal that leaves the folder and the copies
+/// alone. Fails when the second undo deletes or ignores a folder the user
+/// put where a link used to be.
+#[test]
+fn undoing_a_split_undo_refuses_when_a_restored_link_became_a_folder() {
+    let home = unique_temp_dir("split_undo_undo_link");
+    splittable_home(&home);
+    let rt = runtime_for(&home);
+    let undo_id = split_then_undo_with_codex_off(&home, &rt);
+    std::fs::remove_file(pi_link(&home)).unwrap();
+    std::fs::create_dir_all(pi_link(&home)).unwrap();
+    std::fs::write(pi_link(&home).join("SKILL.md"), b"mine\n").unwrap();
+
+    let err = undo(&rt, &undo_id, false).unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::DriftConflict);
+    assert!(is_real_dir(&pi_link(&home)));
+    assert!(std::fs::symlink_metadata(universal(&home)).is_ok());
+    assert!(std::fs::symlink_metadata(codex_copy(&home)).is_err());
+
+    undo(&rt, &undo_id, true).unwrap();
+    assert!(is_real_dir(&codex_copy(&home)));
+
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// Flow: split, undo, undo the undo, then undo that again. Expect the
+/// Universal folder and its Claude Code and pi links back, and both copies
+/// gone. Fails when a chain of undos stops replaying after the second step.
+#[test]
+fn a_third_undo_restores_the_universal_folder_and_its_links() {
+    let home = unique_temp_dir("split_undo_x3");
+    splittable_home(&home);
+    let rt = runtime_for(&home);
+    let undo_id = split_then_undo_with_codex_off(&home, &rt);
+    let second = undo(&rt, &undo_id, false).unwrap();
+
+    undo(&rt, &second.restore_event_id, false).unwrap();
+
+    assert_eq!(
+        std::fs::read(universal(&home).join("refs/notes.md")).unwrap(),
+        b"notes\n"
+    );
+    for link in [claude_copy(&home), pi_link(&home)] {
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            universal(&home),
+            "{} must link to the Universal folder",
+            link.display()
+        );
+    }
+    assert!(std::fs::symlink_metadata(codex_copy(&home)).is_err());
 
     std::fs::remove_dir_all(&home).ok();
 }

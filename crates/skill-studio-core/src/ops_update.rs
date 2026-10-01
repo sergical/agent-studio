@@ -50,6 +50,13 @@
 //! three back together. `install` refreshes every declared entry in that
 //! scope; entries without a `ref` float to their latest commit on any
 //! install - that is dotagents' own rule, not something this op adds.
+//!
+//! Because dotagents 3.1.0 has no targeted update, the row also backs up
+//! every other skill folder `agents.toml` declares or `agents.lock` lists
+//! under the Universal root, and records each one's post-write fingerprint
+//! (`secondary_post`) so undo refuses over a later edit. A folder the install
+//! creates is recorded for removal. Plugins and other runtime files that
+//! `install` may rewrite are outside the backup: undo does not restore them.
 
 use std::path::{Path, PathBuf};
 
@@ -115,6 +122,9 @@ struct DotagentsPlan {
     /// real file and the link survives.
     config: PathBuf,
     lock: PathBuf,
+    /// Names of the non-wildcard `[[skills]]` entries, which `install`
+    /// refreshes along with the one being updated.
+    declared: Vec<String>,
     /// `agents.toml` as read, written back when the install fails.
     original_config: String,
     /// The edited `agents.toml` text to write once the row is recorded;
@@ -165,6 +175,15 @@ fn plan_dotagents_update(
         )
         .at(&config)
     })?;
+    let declared: Vec<String> = doc
+        .get("skills")
+        .and_then(toml_edit::Item::as_array_of_tables)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("name").and_then(toml_edit::Item::as_str))
+        .filter(|name| *name != "*")
+        .map(str::to_string)
+        .collect();
     let entry = doc
         .get_mut("skills")
         .and_then(toml_edit::Item::as_array_of_tables_mut)
@@ -190,9 +209,82 @@ fn plan_dotagents_update(
     Ok(DotagentsPlan {
         config,
         lock: dir.join("agents.lock"),
+        declared,
         original_config: text,
         edited_config: pinned.map(|()| doc.to_string()),
     })
+}
+
+/// Every skill folder besides `destination` that `dotagents install` can
+/// rewrite: each non-wildcard `agents.toml` entry and each `agents.lock`
+/// row, as a path under `universal_root`. The lock is read before the
+/// install, so a row the install is about to drop is still named here.
+fn other_declared_folders(
+    fs: &dyn ScopeFs,
+    plan: &DotagentsPlan,
+    universal_root: &Path,
+    destination: &Path,
+) -> Vec<PathBuf> {
+    let locked = plan
+        .lock
+        .parent()
+        .and_then(|dir| crate::dotagents_ledger::read_dotagents_ledger(fs, dir).ok())
+        .into_iter()
+        .flatten()
+        .map(|skill| skill.name);
+    let mut folders: Vec<PathBuf> = Vec::new();
+    for name in plan.declared.iter().cloned().chain(locked) {
+        let is_plain_name =
+            !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\']);
+        let folder = universal_root.join(&name);
+        if is_plain_name && folder != destination && !folders.contains(&folder) {
+            folders.push(folder);
+        }
+    }
+    folders
+}
+
+/// Names of the skill-shaped entries directly under `universal_root`.
+fn skill_folder_names(fs: &dyn ScopeFs, universal_root: &Path) -> Vec<String> {
+    fs.read_dir(universal_root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(crate::ports::is_skill_shaped_entry)
+        .map(|entry| entry.name)
+        .collect()
+}
+
+/// Patches the update row's inverse with what only the finished install can
+/// say: each secondary path's post-write fingerprint (undo refuses when one
+/// was edited since), and each folder the install created, which undo
+/// removes.
+fn record_dotagents_side_effects(
+    session: &mut MutationSession,
+    fs: &dyn ScopeFs,
+    id: &crate::identity::EventId,
+    universal_root: &Path,
+    secondary: &[PathBuf],
+    folders_before: &[String],
+) -> Result<(), CoreError> {
+    let secondary_post = secondary
+        .iter()
+        .map(|path| Ok((path.clone(), fingerprint_path(fs, path)?)))
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    let mut created = Vec::new();
+    for name in skill_folder_names(fs, universal_root) {
+        let folder = universal_root.join(&name);
+        if folders_before.contains(&name) || secondary.contains(&folder) {
+            continue;
+        }
+        if let Some(fingerprint) = fingerprint_path(fs, &folder)? {
+            created.push((folder, fingerprint));
+        }
+    }
+    let patch = crate::events::with_remove_copies(
+        crate::events::with_secondary_post(serde_json::json!({}), &secondary_post),
+        &created,
+    );
+    session.store.patch_inverse(&session.guard, id, patch)
 }
 
 /// The `<command> failed: <detail>` error for a non-zero CLI exit: the last
@@ -627,9 +719,17 @@ fn update_body(
     // `restore_event` puts every other entry - `Dotagents`' `agents.toml`
     // and `agents.lock` - back beside it.
     let mut backup_targets = vec![destination.clone()];
+    let mut folders_before = Vec::new();
     if let Some(plan) = &dotagents {
         backup_targets.push(plan.config.clone());
         backup_targets.push(plan.lock.clone());
+        backup_targets.extend(other_declared_folders(
+            fs,
+            plan,
+            &universal_root,
+            &destination,
+        ));
+        folders_before = skill_folder_names(fs, &universal_root);
     }
     let manifest = session
         .store
@@ -697,6 +797,16 @@ fn update_body(
             &id,
             serde_json::json!({ "registry_undo": [entry] }),
         );
+    }
+    if dotagents.is_some() {
+        record_dotagents_side_effects(
+            &mut session,
+            fs,
+            &id,
+            &universal_root,
+            &backup_targets[1..],
+            &folders_before,
+        )?;
     }
     let tree_hash_after = crate::tree_hash::tree_hash(fs, &destination)?;
     // The post-fingerprint the row records, not `None`: `restore_event`

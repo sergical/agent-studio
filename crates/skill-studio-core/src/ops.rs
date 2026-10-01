@@ -2267,6 +2267,14 @@ fn codex_push_disabled_row(
     doc: &mut toml_edit::DocumentMut,
     skill_md_path: &Path,
 ) -> Result<(), CoreError> {
+    codex_push_row(doc, skill_md_path, false)
+}
+
+fn codex_push_row(
+    doc: &mut toml_edit::DocumentMut,
+    skill_md_path: &Path,
+    enabled: bool,
+) -> Result<(), CoreError> {
     let skills_item = doc
         .entry("skills")
         .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
@@ -2289,7 +2297,7 @@ fn codex_push_disabled_row(
     })?;
     let mut row = toml_edit::Table::new();
     row["path"] = toml_edit::value(skill_md_path.to_string_lossy().to_string());
-    row["enabled"] = toml_edit::value(false);
+    row["enabled"] = toml_edit::value(enabled);
     config_array.push(row);
     Ok(())
 }
@@ -2372,18 +2380,20 @@ pub(crate) fn codex_needs_carried_row(
     Ok(!new_off)
 }
 
-/// Appends the disabled row [`codex_needs_carried_row`] asked for, as its
+/// Appends the row [`codex_needs_carried_row`] asked for (`enabled` is false
+/// for a split, or the removed row's value when an undo puts it back), as its
 /// own row even when another row already names the path, so
 /// [`codex_remove_carried_row`] can take back exactly this one.
 pub(crate) fn codex_append_carried_row(
     rt: &Runtime,
     guard: &ExclusiveGuard,
     skill_md: &Path,
+    enabled: bool,
 ) -> Result<(), CoreError> {
     let fs = rt.ports.fs.as_ref();
     let codex_home = &rt.scope.codex_home;
     let mut doc = read_codex_config_document(fs, codex_home)?;
-    codex_push_disabled_row(&mut doc, skill_md).map_err(|e| e.at(codex_config_path(codex_home)))?;
+    codex_push_row(&mut doc, skill_md, enabled).map_err(|e| e.at(codex_config_path(codex_home)))?;
     codex_write_config_document(rt, fs, guard, codex_home, &doc)
 }
 
@@ -2392,27 +2402,36 @@ pub(crate) fn codex_append_carried_row(
 /// to `enabled = true`. Matches the text, never a resolved path, so a link
 /// still sitting at `skill_md`'s folder cannot lead it to another skill's
 /// row. Writes nothing when no row matches, as after the user deleted it.
+/// Returns the removed row's `enabled` (a row with no `enabled` key reads as
+/// true, Codex's default), `None` when nothing was removed.
 pub(crate) fn codex_remove_carried_row(
     rt: &Runtime,
     guard: &ExclusiveGuard,
     skill_md: &Path,
-) -> Result<(), CoreError> {
+) -> Result<Option<bool>, CoreError> {
     let fs = rt.ports.fs.as_ref();
     let codex_home = &rt.scope.codex_home;
     let mut doc = read_codex_config_document(fs, codex_home)?;
     let literal = skill_md.to_string_lossy();
-    let Some(idx) = codex_skills_config_rows(&doc)
+    let Some((idx, enabled)) = codex_skills_config_rows(&doc)
         .enumerate()
         .filter(|(_, row)| {
             row.get("path").and_then(toml_edit::Item::as_str) == Some(literal.as_ref())
         })
-        .map(|(idx, _)| idx)
+        .map(|(idx, row)| {
+            let enabled = row
+                .get("enabled")
+                .and_then(toml_edit::Item::as_bool)
+                .unwrap_or(true);
+            (idx, enabled)
+        })
         .last()
     else {
-        return Ok(());
+        return Ok(None);
     };
     codex_remove_rows(&mut doc, &[idx]);
-    codex_write_config_document(rt, fs, guard, codex_home, &doc)
+    codex_write_config_document(rt, fs, guard, codex_home, &doc)?;
+    Ok(Some(enabled))
 }
 
 fn codex_write_config_document(
@@ -4622,9 +4641,10 @@ pub(crate) fn recreate_link(
 /// under its own journal root (the same lease/journal primitives
 /// `ops::update`'s own `Copy` method uses) and swaps the staged folder into
 /// `path`, which - since a folder already sits there - quarantines the
-/// pre-restore tree the same way an update's own swap quarantines the
 /// pre-update tree. That quarantined copy is not itself wired to a further
-/// undo; restoring a restore is out of this op's scope.
+/// undo. Undoing a restore replays only what the restore's own inverse
+/// records (`write_back`, `remove_links`, `add_codex_rows`; see
+/// [`restore_event`]).
 pub(crate) fn restore_write_dir(
     rt: &Runtime,
     guard: &ExclusiveGuard,
@@ -4988,9 +5008,91 @@ fn restore_event_body(
         }
     }
 
+    // Mirrors of an earlier restore's own work (see `with_write_back`): the
+    // links it recreated must still be exactly those links, and the places
+    // its removed copies go back to must be empty or hold such a link.
+    let secondary_post = crate::events::parse_restore_secondary_post(inverse);
+    let remove_links = crate::events::parse_restore_remove_links(inverse);
+    let write_back = crate::events::parse_restore_write_back(inverse);
     if !req.force {
+        for (link, target) in &remove_links {
+            let intact = match fs.symlink_metadata(link) {
+                Err(_) => true,
+                Ok(facts) => {
+                    facts.kind == FileKind::Symlink
+                        && fs.read_link(link).ok().as_deref() == Some(target.as_path())
+                }
+            };
+            if !intact {
+                return Err(CoreError::new(
+                    ErrorCode::DriftConflict,
+                    "a link this restore created changed since; pass force to restore anyway",
+                )
+                .at(link));
+            }
+        }
+        for copy in &write_back {
+            let is_recorded_link = remove_links.iter().any(|(link, _)| link == copy);
+            if !is_recorded_link && fs.symlink_metadata(copy).is_ok() {
+                return Err(CoreError::new(
+                    ErrorCode::DriftConflict,
+                    "something now sits where this restore removed a copy; pass force to restore anyway",
+                )
+                .at(copy));
+            }
+        }
+        for (secondary, expected) in &secondary_post {
+            let live = crate::events::fingerprint_path(fs, secondary)?;
+            let live = live
+                .as_ref()
+                .map_or("absent", super::identity::Fingerprint::bare_hex);
+            if live != expected {
+                return Err(CoreError::new(
+                    ErrorCode::DriftConflict,
+                    "a file this event also changed was edited since; pass force to restore anyway",
+                )
+                .at(secondary));
+            }
+        }
         crate::ops_install::check_registry_drift(fs, inverse)?;
     }
+    let mut write_back_plans: Vec<(PathBuf, Vec<fsops::StageFile>)> = Vec::new();
+    if !write_back.is_empty() {
+        let backup_dir = target.backup_dir.as_deref().ok_or_else(|| {
+            CoreError::new(ErrorCode::Io, "a write_back inverse implies a backup_dir").at(&path)
+        })?;
+        let original_manifest = session.store.read_manifest(backup_dir)?;
+        for copy in &write_back {
+            let entry = original_manifest
+                .entries
+                .iter()
+                .find(|e| &e.original == copy && e.is_dir)
+                .ok_or_else(|| {
+                    CoreError::new(
+                        ErrorCode::Io,
+                        "the original event's manifest has no folder entry for this copy",
+                    )
+                    .at(copy)
+                })?;
+            let files = session
+                .store
+                .read_backup_files(backup_dir, &entry.relative)?;
+            write_back_plans.push((copy.clone(), files));
+        }
+    }
+    // What this restore takes down is recorded as what its own undo puts
+    // back: only links that are live links now, and the live target text.
+    let links_to_remove: Vec<(PathBuf, PathBuf)> = remove_links
+        .iter()
+        .filter_map(|(link, _)| {
+            let facts = fs.symlink_metadata(link).ok()?;
+            if facts.kind != FileKind::Symlink {
+                return None;
+            }
+            Some((link.clone(), fs.read_link(link).ok()?))
+        })
+        .collect();
+    let add_codex_rows = crate::events::parse_restore_add_codex_rows(inverse);
 
     let restore_id = rt.ports.ids.next_event_id();
     // Backs up the file's current bytes under the restore event's own id
@@ -4999,13 +5101,45 @@ fn restore_event_body(
     // own undo. Split copies about to be deleted are backed up with it.
     let mut restore_backup_targets = vec![path.clone()];
     restore_backup_targets.extend(remove_copies.iter().map(|(copy, _)| copy.clone()));
+    // The extra paths the event also changed are overwritten below, so a
+    // forced restore keeps their drifted bytes too.
+    restore_backup_targets.extend(
+        secondary_post
+            .iter()
+            .map(|(secondary, _)| secondary.clone()),
+    );
     let manifest =
         session
             .store
             .backup_paths(&session.guard, &restore_id, &restore_backup_targets)?;
     let restore_pre_fingerprint = manifest.entries.first().and_then(|e| e.fingerprint.clone());
-    let restore_inverse =
-        crate::events::restore_backup_inverse(&path, restore_pre_fingerprint.as_ref(), None);
+    // Copies this restore removes that the backup above holds as folders:
+    // its own undo writes them back.
+    let removed_copies: Vec<PathBuf> = remove_copies
+        .iter()
+        .map(|(copy, _)| copy)
+        .filter(|copy| {
+            manifest
+                .entries
+                .iter()
+                .any(|e| &e.original == *copy && e.is_dir)
+        })
+        .cloned()
+        .collect();
+    let add_codex_row_paths: Vec<PathBuf> =
+        add_codex_rows.iter().map(|(row, _)| row.clone()).collect();
+    let restore_inverse = crate::events::with_write_back(
+        crate::events::with_remove_codex_rows(
+            crate::events::restore_backup_inverse_with_links(
+                &path,
+                restore_pre_fingerprint.as_ref(),
+                None,
+                &links_to_remove,
+            ),
+            &add_codex_row_paths,
+        ),
+        &removed_copies,
+    );
     let draft = crate::events::EventDraft {
         kind: crate::events::EventKind::Restore,
         skill: target.skill.clone(),
@@ -5078,6 +5212,16 @@ fn restore_event_body(
             };
             for other in &original_manifest.entries {
                 if other.original == path {
+                    continue;
+                }
+                // A secondary path the event recorded as absent before and
+                // after its write is taken back out only when the event
+                // vouched for it with a `secondary_post` row; any other
+                // absent entry stays skipped, as before that field existed.
+                if other.fingerprint.is_none() {
+                    if secondary_post.iter().any(|(p, _)| p == &other.original) {
+                        extra_plans.push((other.original.clone(), RestorePlan::RemoveIfPresent));
+                    }
                     continue;
                 }
                 let other_plan = if other.is_dir {
@@ -5157,6 +5301,37 @@ fn restore_event_body(
         return Err(err);
     }
 
+    let mut copy_errors: Vec<String> = Vec::new();
+    let mut recreated_links: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut removed_rows: Vec<(PathBuf, bool)> = Vec::new();
+    // The mirror of an earlier restore, in the order that restore's own
+    // steps ran backwards: its links come down, its removed copies come
+    // back (possibly where a link was), then its removed Codex rows.
+    for (link, _) in &links_to_remove {
+        match crate::ports::confine(&rt.scope, fs, link) {
+            Ok(scoped) => {
+                if let Err(error) = fs.remove_file(&session.guard, &scoped) {
+                    copy_errors.push(format!("could not remove {}: {error}", link.display()));
+                }
+            }
+            Err(error) => copy_errors.push(error.message),
+        }
+    }
+    for (copy, files) in &write_back_plans {
+        let written = copy
+            .parent()
+            .map_or(Ok(()), |root| ensure_dir_all(rt, &session, fs, root));
+        let written = written.and_then(|()| restore_write_dir(rt, &session.guard, copy, files));
+        if let Err(error) = written {
+            copy_errors.push(error.message);
+        }
+    }
+    for (skill_md, enabled) in &add_codex_rows {
+        if let Err(error) = codex_append_carried_row(rt, &session.guard, skill_md, *enabled) {
+            copy_errors.push(error.message);
+        }
+    }
+
     // Best-effort, after the primary path is already restored and claimed:
     // a secondary path this cannot put back (a permissions error, a path no
     // longer confined to the scope) leaves the restore's own outcome
@@ -5164,17 +5339,17 @@ fn restore_event_body(
     // succeeded. See `extra_plans`' own comment above.
     for (other_path, other_plan) in &extra_plans {
         if let Ok(other_scoped) = crate::ports::confine_write_through(&rt.scope, fs, other_path) {
-            // `extra_plans` only ever receives `Write`/`WriteDir` (see the
-            // loop that builds it above, in the `Some(_pre_fingerprint)` arm
-            // of `match &pre`) - a secondary manifest entry is always a
-            // backed-up path, never one recorded as absent, so
-            // `RemoveIfPresent` has no case here to match.
             let result: Result<(), CoreError> = match other_plan {
-                RestorePlan::RemoveIfPresent => {
-                    unreachable!(
-                        "extra_plans never carries RemoveIfPresent - see the comment above"
-                    )
-                }
+                RestorePlan::RemoveIfPresent => match fs.symlink_metadata(other_path) {
+                    Ok(facts) if facts.kind == FileKind::Dir => {
+                        crate::ops_remove::remove_tree_best_effort(fs, other_path);
+                        Ok(())
+                    }
+                    Ok(_) => fs
+                        .remove_file(&session.guard, &other_scoped)
+                        .map_err(|e| CoreError::io(other_path, e)),
+                    Err(_) => Ok(()),
+                },
                 RestorePlan::Write(bytes) => fs
                     .write_atomic(&session.guard, &other_scoped, bytes)
                     .map_err(|e| CoreError::io(other_path, e)),
@@ -5185,10 +5360,11 @@ fn restore_event_body(
             let _ = result;
         }
     }
-    let mut copy_errors: Vec<String> = Vec::new();
     for skill_md in crate::events::parse_restore_remove_codex_rows(inverse) {
-        if let Err(error) = codex_remove_carried_row(rt, &session.guard, &skill_md) {
-            copy_errors.push(error.message);
+        match codex_remove_carried_row(rt, &session.guard, &skill_md) {
+            Ok(Some(enabled)) => removed_rows.push((skill_md, enabled)),
+            Ok(None) => {}
+            Err(error) => copy_errors.push(error.message),
         }
     }
     // Before the links below: a split copy can sit exactly where a link it
@@ -5233,8 +5409,30 @@ fn restore_event_body(
         if fs.symlink_metadata(&link_path).is_ok() {
             continue;
         }
-        let _ = recreate_link(rt, &session.guard, &link_path, &target);
+        if recreate_link(rt, &session.guard, &link_path, &target).is_ok() {
+            recreated_links.push((link_path, target));
+        }
     }
+    // What only the writes above can say: the restore's own undo takes back
+    // exactly the links it created and puts back exactly the rows it removed
+    // and the copies it wrote, so a chain of undos replays.
+    let written_back: Vec<(PathBuf, Fingerprint)> = write_back_plans
+        .iter()
+        .filter_map(|(copy, _)| {
+            let fingerprint = crate::events::fingerprint_path(fs, copy).ok().flatten()?;
+            Some((copy.clone(), fingerprint))
+        })
+        .collect();
+    let mirror_patch = crate::events::with_remove_copies(
+        crate::events::with_add_codex_rows(
+            crate::events::with_remove_links(serde_json::json!({}), &recreated_links),
+            &removed_rows,
+        ),
+        &written_back,
+    );
+    let _ = session
+        .store
+        .patch_inverse(&session.guard, &restore_id, mirror_patch);
     // The `.skill-lock.json` row `ops::remove` saved before the real CLI
     // dropped it (`SkillsSh` only - see `restore_backup_inverse_with_links_and_lock`'s
     // own doc), put back the same best-effort way as the harness links
@@ -5293,7 +5491,7 @@ fn restore_event_body(
     Ok(RestoreOutcome {
         restore_event_id: restore_id,
         reverted_event_id: target.id,
-        restored_paths: vec![path],
+        restored_paths: std::iter::once(path).chain(write_back).collect(),
     })
 }
 
