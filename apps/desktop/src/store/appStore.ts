@@ -316,6 +316,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       ),
       selectedSkillPaths: new Set(),
       selectionMode: false,
+      // A fresh open resolves the default copy again; only back/forward keep the pin.
+      pinnedDeployment: { skillName: undefined, path: undefined },
     }));
   },
   closeSkill: () => {

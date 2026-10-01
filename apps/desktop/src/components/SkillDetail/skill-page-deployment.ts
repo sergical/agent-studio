@@ -59,7 +59,8 @@ export function resolveSkillPageDeployment(
  * `pinned` unchanged unless the page must pick a default copy again. Another skill always resets
  * the pin, even when the caller requested a path, so a stale pin never outlives a visit elsewhere.
  * Within one skill, a requested `deploymentPath` leaves the pin alone, and without one the pin
- * moves only when its copy is gone from the skill.
+ * moves only when its copy is gone from the skill. The store clears the pin on every fresh
+ * `openSkill` (all but back/forward), so a new visit resolves the default copy again.
  */
 export function repinDeployment(
   pinned: PinnedDeployment,

@@ -20,7 +20,9 @@ export const EMPTY_NAV_HISTORY: NavHistory = { back: [], forward: [] };
 export type DefaultDeploymentPaths = ReadonlyMap<string, string>;
 
 /** The default copy a skill page settled on when it opened, kept so a rescan that changes which
- * copy carries warnings never moves the page (and its open editor) to another copy. */
+ * copy carries warnings never moves the page (and its open editor) to another copy. The pin
+ * resets when `openSkill` opens a page afresh (any open except back/forward), and when the page
+ * shows another skill; see `repinDeployment`. */
 export interface PinnedDeployment {
   skillName: string | undefined;
   path: string | undefined;

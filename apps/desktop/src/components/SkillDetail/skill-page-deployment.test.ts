@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
+import { useAppStore } from "../../store/appStore";
 import { repinDeployment, resolveSkillPageDeployment } from "./skill-page-deployment";
 
 const WARNING = "description exceeds 1024 characters";
@@ -215,5 +216,28 @@ describe("repinDeployment", () => {
       skillName: "find-bugs",
       path: undefined,
     });
+  });
+});
+
+describe("opening a skill afresh", () => {
+  it("open X, close, rescan makes B the default, open X with no path -> page resolves B, or a stale pin hides the error copy", () => {
+    const copyA = fixtureDeployment({ path: "/a" });
+    const copyB = fixtureDeployment({ path: "/b" });
+    const before = fixtureSkill([copyA, copyB]);
+    useAppStore.setState({ pinnedDeployment: { skillName: undefined, path: undefined } });
+    useAppStore.getState().openSkill(before.name);
+    const { pinnedDeployment } = useAppStore.getState();
+    useAppStore
+      .getState()
+      .setPinnedDeployment(repinDeployment(pinnedDeployment, before, undefined));
+    expect(useAppStore.getState().pinnedDeployment.path).toBe("/a");
+    useAppStore.getState().closeSkill();
+
+    const rescanned = fixtureSkill([copyA, { ...copyB, spec_violations: [ERROR] }]);
+    useAppStore.getState().openSkill(rescanned.name);
+
+    const pinned = useAppStore.getState().pinnedDeployment;
+    const shown = repinDeployment(pinned, rescanned, undefined);
+    expect(resolveSkillPageDeployment(rescanned, shown.path).deployment?.path).toBe("/b");
   });
 });
