@@ -35,6 +35,7 @@ use crate::error::{CoreError, ErrorCode};
 use crate::fsops;
 use crate::identity::{AgentId, RootScope, SkillDestination, SkillName, UNIVERSAL_ROOT_RELATIVE};
 use crate::ports::{FileKind, ScopeFs};
+use crate::scope::NormalizedScope;
 
 /// The `--agent` id for the shared `.agents/skills` folder alone - the
 /// `skills` CLI's `universal` pseudo agent.
@@ -254,10 +255,12 @@ impl InstallPlan {
 /// Builds the plan for `harnesses` (already passed through
 /// [`requested_harnesses`]) under `root`. Reads the disk only to find
 /// whole-folder links and missing project folders; writes nothing.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_install(
     fs: &dyn ScopeFs,
     root: &Path,
     scope: &RootScope,
+    normalized: &NormalizedScope,
     skill: &SkillName,
     harnesses: &[AgentId],
     mode: InstallLinkMode,
@@ -279,7 +282,10 @@ pub(crate) fn plan_install(
                 relative,
                 project_marker,
             } => {
-                let dir = root.join(relative);
+                let dir = match scope {
+                    RootScope::Global => normalized.global_root_path(Path::new(relative)),
+                    RootScope::Project(_) => root.join(relative),
+                };
                 let marker_missing = matches!(scope, RootScope::Project(_))
                     && project_marker.is_some_and(|m| fs.symlink_metadata(&root.join(m)).is_err());
                 if marker_missing {

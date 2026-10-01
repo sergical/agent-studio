@@ -33,7 +33,7 @@ pub fn resolve() -> (RuntimeScope, PathBuf) {
         let home = PathBuf::from(home);
         let data_root = home.join(".skill-studio");
         let history_root = data_root.join("history");
-        let codex_home = skill_studio_host::codex_home(&home);
+        let codex_home = home.join(".codex");
         let mut scope = RuntimeScope::live(home.clone(), history_root).with_codex_home(codex_home);
         if !projects.is_empty() {
             scope.projects = ProjectSelection::Explicit { paths: projects };
