@@ -200,8 +200,20 @@ describe("applySkillListFilter", () => {
     expect(names("have adhd")).toEqual(["i-have-adhd"]);
     expect(names("adhd have")).toEqual(["i-have-adhd"]);
     expect(names("ihave")).toEqual(["i-have-adhd"]);
-    expect(names("bugs regressions")).toEqual(["find-bugs"]);
     expect(names("adhd regressions")).toEqual([]);
+  });
+
+  it("description words must match as a phrase, so short words do not flood the list", () => {
+    const skills = [
+      fixtureSkill({ name: "ask-emil", description: "Pick a skill" }),
+      fixtureSkill({ name: "planner", description: "Ask a task, emil reviews it" }),
+      fixtureSkill({ name: "reviewer", description: "Runs a code-review pass" }),
+      fixtureSkill({ name: "linter", description: "Reviews code style" }),
+    ];
+    const names = (query: string) =>
+      applySkillListFilter(skills, { scope: "all", query }).map((s) => s.name);
+    expect(names("ask emil")).toEqual(["ask-emil"]);
+    expect(names("code review")).toEqual(["reviewer"]);
   });
 
   it("filters by invocation policy", () => {

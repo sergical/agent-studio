@@ -13,6 +13,11 @@ describe("rankItems", () => {
     expect(labels("i have")).toEqual(["i-have-adhd"]);
   });
 
+  it("ranks a multi-word query that starts at a word above a mid-word hit", () => {
+    const ranked = rankItems(["shave-adhd", "i-have-adhd"].map(skillItem), "have adhd");
+    expect(ranked.map((item) => item.label)).toEqual(["i-have-adhd", "shave-adhd"]);
+  });
+
   it("matches words in any order after the in-order matches", () => {
     expect(labels("have")).toEqual(["have-fun", "i-have-adhd"]);
     expect(labels("adhd have")).toEqual(["i-have-adhd"]);

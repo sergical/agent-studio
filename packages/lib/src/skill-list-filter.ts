@@ -60,22 +60,27 @@ function matchesHarness(skill: InstalledSkill, harness: string): boolean {
 /** Hyphens, underscores, slashes, dots, and spaces all count as one word break. */
 const WORD_BREAK = /[\s\-_/.]+/;
 
+function words(text: string): string[] {
+  return text.toLowerCase().split(WORD_BREAK).filter(Boolean);
+}
+
 /**
- * Whether `skill` matches `query`, case-insensitive. Every query word must appear somewhere in the
- * name, description, or source repo, in any order, so "i have" finds `i-have-adhd`. A query with
- * its breaks removed also matches the name with its breaks removed, so "ihave" finds it too.
+ * Whether `skill` matches `query`, case-insensitive. The name matches when the query, breaks
+ * removed, is inside the name with its breaks removed ("ihave", "have adhd"), or when every query
+ * word starts a name word in any order ("adhd have"). The description and source match the query
+ * as one phrase, with every word break treated alike. Word-level matching stays on the name only:
+ * across descriptions, short words like "ask" hit inside "task" and flood the list.
  */
 function matchesQuery(skill: InstalledSkill, query: string): boolean {
-  const words = query.toLowerCase().split(WORD_BREAK).filter(Boolean);
-  if (words.length === 0) return true;
-  const name = skill.name.toLowerCase();
-  if (name.split(WORD_BREAK).join("").includes(words.join(""))) return true;
-  const haystack = [name, skill.description ?? "", skill.source]
-    .join(" ")
-    .toLowerCase()
-    .split(WORD_BREAK)
-    .join(" ");
-  return words.every((word) => haystack.includes(word));
+  const queryWords = words(query);
+  if (queryWords.length === 0) return true;
+  const nameWords = words(skill.name);
+  if (nameWords.join("").includes(queryWords.join(""))) return true;
+  if (queryWords.every((q) => nameWords.some((n) => n.startsWith(q)))) return true;
+  const phrase = queryWords.join(" ");
+  return [skill.description ?? "", skill.source].some((field) =>
+    words(field).join(" ").includes(phrase),
+  );
 }
 
 /**
