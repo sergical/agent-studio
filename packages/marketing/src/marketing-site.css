@@ -107,6 +107,11 @@ html[data-site-theme="light"] :focus-visible:where(:not([data-surface="dark"] *)
   outline-color: rgba(0, 0, 0, 0.56);
 }
 
+/* A surface in the opposite colour to the page draws the ring in its own text colour. */
+html [data-surface="inverse"] :focus-visible {
+  outline-color: currentColor;
+}
+
 [id] {
   scroll-margin-top: 72px;
 }

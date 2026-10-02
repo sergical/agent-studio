@@ -219,6 +219,7 @@ function AppView({ runId, announce, undoFocusRef }: AppViewProps) {
       <div
         aria-hidden={!toast}
         inert={!toast}
+        data-surface="inverse"
         {...stylex.props(styles.toast, toast && styles.toastOn)}
       >
         <span aria-hidden="true">Parked {unusedCount} skills</span>
