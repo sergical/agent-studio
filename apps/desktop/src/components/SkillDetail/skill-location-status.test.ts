@@ -126,8 +126,17 @@ describe("buildScopeGroups", () => {
     expect(global.shared?.conditions[0].what).toContain("SKILL.md will not load:");
   });
 
-  it("treats a non-blocking violation as a soft warning that still loads", () => {
-    const shared = fixtureDeployment({ spec_violations: ["description is over 1024 characters"] });
+  it("gives a notes-only copy no spec condition, so a length note never raises a dot", () => {
+    const shared = fixtureDeployment({ spec_violations: ["description exceeds 1024 characters"] });
+    const skill = fixtureSkill({ deployments: [shared] });
+    const [global] = buildScopeGroups(skill);
+    expect(global.shared?.conditions).toEqual([]);
+  });
+
+  it("treats a warning-severity violation as a soft warning that still loads", () => {
+    const shared = fixtureDeployment({
+      spec_violations: ['name "other" does not match its directory name "find-bugs"'],
+    });
     const skill = fixtureSkill({ deployments: [shared] });
     const [global] = buildScopeGroups(skill);
     expect(global.shared?.level).toBe("warning");

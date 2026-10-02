@@ -6,6 +6,7 @@
 
 import {
   AGENT_MATRIX_LABELS,
+  describeSpecViolations,
   driftingCopies,
   HEALTH_ISSUE_SEVERITY,
   isBlockingSpecViolation,
@@ -31,6 +32,7 @@ type RowKind = "violation" | "rollup" | "update" | "parked" | "issue";
  * "N skills that fail to load", too long for a row's tooltip title. */
 const ISSUE_ROW_LABEL = {
   "spec-violation": "Spec violation",
+  "spec-warning": "Spec warning",
   "broken-symlink": "Broken link",
   "parked-but-reinstalled": "Parked and installed",
   duplicate: "Copies differ",
@@ -64,7 +66,7 @@ export function rowState(skill: InstalledSkill): RowState | null {
       kind: "violation",
       level: "error",
       label: "Blocking spec violation",
-      detail: blocking[0],
+      detail: describeSpecViolations(blocking),
       action: "Fix",
     };
   }

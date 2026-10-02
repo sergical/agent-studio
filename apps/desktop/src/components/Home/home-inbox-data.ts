@@ -86,7 +86,7 @@ export function homeRowState(
 /** The copy a Home issue row opens: a spec-violation issue opens the copy that has the violation
  * (the skill's first copy may be clean); other kinds open the skill's default copy. */
 export function issueDeploymentPath(issue: HealthIssue): string | undefined {
-  return issue.kind === "spec-violation"
+  return issue.kind === "spec-violation" || issue.kind === "spec-warning"
     ? deploymentWithSpecViolations(issue.skill)?.path
     : undefined;
 }
@@ -102,6 +102,7 @@ export function issueActionLabel(kind: HealthIssueKind): string {
       return "Convert to per-skill links";
     case "parked-but-reinstalled":
     case "spec-violation":
+    case "spec-warning":
     case "lock-only":
       return "Open";
   }

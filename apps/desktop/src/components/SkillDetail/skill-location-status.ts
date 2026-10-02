@@ -14,6 +14,7 @@ import {
   driftingCopies,
   homeRelativePath,
   isBlockingSpecViolation,
+  specViolationSeverity,
   locationSummary,
   parentDirectory,
 } from "@skill-studio/lib";
@@ -259,9 +260,11 @@ function liveElsewhere(skill: InstalledSkill): boolean {
 }
 
 /** "Missing description", "Missing name", etc, folded into the fixed sentence shapes from status-spec.md §5. */
-function specCondition(violations: string[], path: string): Condition {
-  const blocking = violations.some(isBlockingSpecViolation);
-  const sentence = describeSpecViolations(violations);
+function specCondition(violations: string[], path: string): Condition | null {
+  const relevant = violations.filter((v) => specViolationSeverity(v) !== "note");
+  if (relevant.length === 0) return null;
+  const blocking = relevant.some(isBlockingSpecViolation);
+  const sentence = describeSpecViolations(relevant);
   const editAndReveal: MenuEntry[] = [
     { label: "Edit SKILL.md", action: { kind: "edit-skill-md", path } },
     { label: "Reveal in Finder", action: { kind: "reveal", path, label: "the copy" } },
@@ -464,7 +467,8 @@ function deploymentConditions(deployment: Deployment, ctx: GroupContext): Condit
   }
 
   const violations = deployment.spec_violations ?? [];
-  if (violations.length > 0) out.push(specCondition(violations, deployment.path));
+  const spec = specCondition(violations, deployment.path);
+  if (spec) out.push(spec);
 
   if (ctx.driftSet.has(deployment)) out.push(driftCondition(deployment, ctx));
 
@@ -510,7 +514,8 @@ function sharedConditions(shared: Deployment, ctx: GroupContext): Condition[] {
     });
   }
   const violations = shared.spec_violations ?? [];
-  if (violations.length > 0) out.push(specCondition(violations, shared.path));
+  const spec = specCondition(violations, shared.path);
+  if (spec) out.push(spec);
   return out.sort((a, b) => RANK[b.level] - RANK[a.level]);
 }
 

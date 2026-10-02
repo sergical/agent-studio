@@ -9,11 +9,13 @@ import { AlertTriangle } from "lucide-react";
 import { Button } from "@skill-studio/ui";
 import {
   describeFrontmatterErrorLine,
+  describeSpecViolations,
   describeFrontmatterRepair,
   isBlockingSpecViolation,
   ownDeployments,
   parseYamlFrontmatterError,
   proposeFrontmatterQuoteRepair,
+  specViolationSeverity,
 } from "@skill-studio/lib";
 import type {
   Deployment,
@@ -71,7 +73,9 @@ export function InstalledSkillHeader({
   const noteSources = own.length > 0 ? own : skill.deployments;
   const nonBlockingNotes = [
     ...new Set(
-      noteSources.flatMap((d) => d.spec_violations.filter((v) => !isBlockingSpecViolation(v))),
+      noteSources.flatMap((d) =>
+        d.spec_violations.filter((v) => specViolationSeverity(v) === "note"),
+      ),
     ),
   ];
   const nonBlockingCount = nonBlockingNotes.length;
@@ -82,6 +86,12 @@ export function InstalledSkillHeader({
   const renderedDeployment = deployment ?? skill.deployments.find((d) => d.content_hash);
   const blockingViolations = (renderedDeployment?.spec_violations ?? []).filter(
     isBlockingSpecViolation,
+  );
+  const warningViolations = (renderedDeployment?.spec_violations ?? []).filter(
+    (v) => specViolationSeverity(v) === "warning" && v !== "conflicting invocation keys",
+  );
+  const nameFormatNote = (renderedDeployment?.spec_violations ?? []).find(
+    (v) => specViolationSeverity(v) === "note" && v.startsWith('name "'),
   );
   const yamlViolation = blockingViolations.find((violation) =>
     violation.startsWith("invalid YAML frontmatter at line "),
@@ -108,9 +118,17 @@ export function InstalledSkillHeader({
     yamlLocation && skillMdContent && canQuote
       ? describeFrontmatterErrorLine(skillMdContent, yamlLocation.line)
       : null;
+  const fixButtonOnWarning = blockingViolations.length === 0 && warningViolations.length > 0;
+  const fixButtonOnNote =
+    blockingViolations.length === 0 && warningViolations.length === 0 && Boolean(nameFormatNote);
+  const lineFixButton = lineRepair ? (
+    <Button size="sm" variant="outline" onClick={() => onFixRepair(lineRepair.kind)}>
+      Fix
+    </Button>
+  ) : null;
   const violationText = quoteRepair
     ? describeFrontmatterRepair(quoteRepair, yamlLocation?.column)
-    : (lineHint ?? blockingViolations.join("; "));
+    : (lineHint ?? describeSpecViolations(blockingViolations));
 
   return (
     <header className="flex flex-col gap-4">
@@ -165,6 +183,19 @@ export function InstalledSkillHeader({
               {lineRepair ? "Fix" : "Edit manually"}
             </Button>
           )}
+        </div>
+      )}
+      {warningViolations.length > 0 && (
+        <div className="flex items-center gap-2 text-small text-warning">
+          <AlertTriangle size={13} />
+          <span>{describeSpecViolations(warningViolations)}</span>
+          {fixButtonOnWarning && lineFixButton}
+        </div>
+      )}
+      {nameFormatNote && (
+        <div className="flex items-center gap-2 text-small text-text-tertiary">
+          <span>{describeSpecViolations([nameFormatNote])}</span>
+          {fixButtonOnNote && lineFixButton}
         </div>
       )}
       {conflictRepair && (

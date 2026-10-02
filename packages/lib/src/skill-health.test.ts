@@ -10,6 +10,8 @@ import {
   findLinkedRootIssues,
   findParkedButReinstalled,
   findSpecViolations,
+  findSpecWarnings,
+  specViolationSeverity,
   HEALTH_ISSUE_KIND_ORDER,
   isBlockingSpecViolation,
 } from "./skill-health";
@@ -57,63 +59,88 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
   };
 }
 
-describe("isBlockingSpecViolation", () => {
-  it("treats a missing required field as blocking", () => {
+const NAME_FORMAT =
+  'name "Bad Name" must be 1-64 lowercase a-z0-9 characters and hyphens, with no leading, trailing, or consecutive hyphens';
+const NAME_MISMATCH = 'name "other-name" does not match its directory name "agent-browser"';
+
+describe("specViolationSeverity", () => {
+  it.each([
+    "missing required frontmatter field: name",
+    "missing required frontmatter field: description",
+    "invalid YAML frontmatter at line 3, column 5: bad indent",
+  ])("rates %s an error, because at least one agent skips the skill", (violation) => {
+    expect(specViolationSeverity(violation)).toBe("error");
+  });
+
+  it.each([NAME_MISMATCH, "conflicting invocation keys"])(
+    "rates %s a warning, because agents disagree but all load it",
+    (violation) => {
+      expect(specViolationSeverity(violation)).toBe("warning");
+    },
+  );
+
+  it.each([
+    NAME_FORMAT,
+    "description exceeds 1024 characters",
+    "compatibility exceeds 500 characters",
+    "SKILL.md exceeds recommended 500 lines",
+  ])("rates %s a note, because every agent loads it unchanged", (violation) => {
+    expect(specViolationSeverity(violation)).toBe("note");
+  });
+
+  it("rates an unrecognised message a warning, so a new Rust message is never ignored", () => {
+    expect(specViolationSeverity("something new from the validator")).toBe("warning");
+  });
+
+  it("blocks only on errors, so a name mismatch does not turn a skill red", () => {
     expect(isBlockingSpecViolation("missing required frontmatter field: name")).toBe(true);
-    expect(isBlockingSpecViolation("missing required frontmatter field: description")).toBe(true);
-  });
-
-  it("treats an invalid name format as blocking", () => {
-    expect(
-      isBlockingSpecViolation(
-        'name "Bad Name" must be 1-64 lowercase a-z0-9 characters and hyphens, with no leading, trailing, or consecutive hyphens',
-      ),
-    ).toBe(true);
-  });
-
-  it("treats a name/directory mismatch as blocking", () => {
-    expect(
-      isBlockingSpecViolation(
-        'name "other-name" does not match its directory name "agent-browser"',
-      ),
-    ).toBe(true);
-  });
-
-  it("treats length and style notes as non-blocking", () => {
-    expect(isBlockingSpecViolation("description exceeds 1024 characters")).toBe(false);
-    expect(isBlockingSpecViolation("compatibility exceeds 500 characters")).toBe(false);
-    expect(isBlockingSpecViolation("SKILL.md exceeds recommended 500 lines")).toBe(false);
-    expect(isBlockingSpecViolation("conflicting invocation keys")).toBe(false);
+    expect(isBlockingSpecViolation(NAME_MISMATCH)).toBe(false);
+    expect(isBlockingSpecViolation(NAME_FORMAT)).toBe(false);
   });
 });
 
 describe("findSpecViolations", () => {
-  it("flags a skill with a blocking violation", () => {
+  it("flags a skill with an error violation and describes the agent impact", () => {
     const skill = fixtureSkill({
       spec_violations: ["missing required frontmatter field: description"],
     });
     const issues = findSpecViolations([skill]);
     expect(issues).toHaveLength(1);
     expect(issues[0].kind).toBe("spec-violation");
-    expect(issues[0].detail).toBe("missing required frontmatter field: description");
+    expect(issues[0].detail).toContain("Codex, OpenCode, and pi skip it.");
   });
 
-  it("does not flag a skill with only non-blocking violations", () => {
+  it("does not flag a skill with only warnings or notes, or a failure is hidden as red", () => {
     const skill = fixtureSkill({
-      spec_violations: ["description exceeds 1024 characters", "conflicting invocation keys"],
+      spec_violations: ["description exceeds 1024 characters", NAME_MISMATCH],
     });
     expect(findSpecViolations([skill])).toEqual([]);
   });
 
-  it("includes only the blocking violations in detail when both kinds are present", () => {
+  it("leaves warnings and notes out of the detail when an error is present", () => {
     const skill = fixtureSkill({
       spec_violations: [
         "missing required frontmatter field: name",
         "description exceeds 1024 characters",
       ],
     });
-    const issues = findSpecViolations([skill]);
-    expect(issues[0].detail).toBe("missing required frontmatter field: name");
+    expect(findSpecViolations([skill])[0].detail).not.toContain("1024");
+  });
+});
+
+describe("findSpecWarnings", () => {
+  it("returns a name-mismatch skill as spec-warning and keeps it out of findSpecViolations", () => {
+    const skill = fixtureSkill({ spec_violations: [NAME_MISMATCH] });
+    const issues = findSpecWarnings([skill]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe("spec-warning");
+    expect(issues[0].detail).toContain('Claude Code calls it "agent-browser"');
+    expect(findSpecViolations([skill])).toEqual([]);
+  });
+
+  it("ignores a notes-only skill, or a harmless length note would raise a warning", () => {
+    const skill = fixtureSkill({ spec_violations: [NAME_FORMAT] });
+    expect(findSpecWarnings([skill])).toEqual([]);
   });
 });
 
@@ -274,7 +301,7 @@ describe("findParkedButReinstalled", () => {
 
 describe("deploymentWithSpecViolations", () => {
   const WARNING = "description exceeds 1024 characters";
-  const ERROR = 'name "Find Bugs" is not a valid skill name';
+  const ERROR = "missing required frontmatter field: description";
   const plugin = {
     name: "p",
     version: null,
