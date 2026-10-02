@@ -31,7 +31,7 @@ import {
   restoreMovedDeployment,
   setHarnessEnabled,
   setPluginEnabled,
-  setSkillInvocation,
+  setSkillsInvocation,
   unparkSkill,
 } from "../../lib/skill-api";
 import {
@@ -305,19 +305,27 @@ export function useLocationActions(
 }
 
 /**
- * Sets `file`'s invocation policy, forking first when needed - the same rule
- * the SKILL.md editor uses: only the global Universal folder can need a fork
- * before editing (`fileEditability` keeps managed Project folders and copies
- * out of this branch). Shared by `SkillLocationsCard`'s segmented control and
- * the properties rail's Invocation select.
+ * Sets every file in `files` to `policy`, forking first when needed - the same rule the SKILL.md
+ * editor uses: only the global Universal folder can need a fork before editing (`fileEditability`
+ * keeps managed Project folders and copies out of this branch). The forks run one at a time, then
+ * one backend call writes every file, so the skill list refreshes once and nothing is still
+ * writing when this returns. Throws with the first file's error. Used by `SkillInvocationFooter`.
  */
-export async function setInvocationForFile(
+export async function setInvocationForFiles(
   skill: InstalledSkill,
-  file: InvocationFile,
+  files: InvocationFile[],
   policy: InvocationPolicy,
 ): Promise<void> {
-  await forkBeforeInvocationEdit(file);
-  await setSkillInvocation(skill.name, `${file.path}/SKILL.md`, policy);
+  for (const file of files) {
+    // react-doctor-disable-next-line react-doctor/async-await-in-loop -- each fork takes an exclusive lease, so the forks must not overlap
+    await forkBeforeInvocationEdit(file);
+  }
+  const results = await setSkillsInvocation(
+    files.map((file) => ({ name: skill.name, path: `${file.path}/SKILL.md` })),
+    policy,
+  );
+  const failed = results.find((result) => result.error !== null);
+  if (failed?.error) throw new Error(failed.error);
 }
 
 /** Forks a shared folder an update would write over, so the edit stays. Ambiguous and manual folders have no upstream, so they are edited in place. */

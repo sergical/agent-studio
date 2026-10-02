@@ -864,7 +864,7 @@ export function promoteToGlobal(groups: ScopeGroup[]): PromoteSource | null {
   return { path: source.path, agents };
 }
 
-/** The Invocation files of one skill, exactly as the properties rail lists them - the rail and the list's bulk Invocation action both edit these. */
+/** The Invocation files of one skill, exactly as the Locations card lists them - the card and the list's bulk Invocation action both edit these. */
 export function invocationFilesForSkill(skill: InstalledSkill): InvocationFile[] {
   return buildInvocationFiles(buildScopeGroups(skill));
 }
@@ -917,7 +917,7 @@ export function buildInvocationFiles(groups: ScopeGroup[]): InvocationFile[] {
   return files;
 }
 
-/** The footer's single note line, from status-spec.md §5: one file explains its own value; several files just point at "each file sets its own". */
+/** The footer's single note line, from status-spec.md §5: one file explains its own value; several files explain the "All locations" control. */
 export function invocationFooterNote(files: InvocationFile[], skillName: string): string {
   if (files.length > 1)
     return "All locations sets every file; a file can still differ. Symlinks follow the folder they point to.";

@@ -13,7 +13,7 @@ import { useAppStore } from "../../store/appStore";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { StatusIcon } from "../ui/StatusIcon";
 import { TooltipControl } from "../ui/TooltipControl";
-import { setInvocationForFile } from "./skill-location-actions";
+import { setInvocationForFiles } from "./skill-location-actions";
 import {
   INVOCATION_POLICY_OPTIONS,
   invocationFooterNote,
@@ -68,15 +68,24 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
   const [saving, setSaving] = useState<string | null>(null);
 
   const editableFiles = files.filter((file) => file.editable);
-  const policies = new Set(files.map((file) => file.invocation));
-  const sharedPolicy = policies.size === 1 ? files[0].invocation : null;
+  const lockedFiles = files.filter((file) => !file.editable);
+  // "All locations" can only change the editable files, so its pressed value follows those; a
+  // locked file that differs gets its own caption instead of keeping the control unpressed.
+  const policyFiles = editableFiles.length > 0 ? editableFiles : files;
+  const policies = new Set(policyFiles.map((file) => file.invocation));
+  const sharedPolicy = policies.size === 1 ? policyFiles[0].invocation : null;
+  let allCaption: string | null = null;
+  if (editableFiles.length > 0 && lockedFiles.length > 0) {
+    allCaption = `${lockedFiles.length} locked file${lockedFiles.length === 1 ? "" : "s"} not changed`;
+  } else if (sharedPolicy === null) {
+    allCaption = "Files differ";
+  }
 
   const save = async (key: string, targets: InvocationFile[], policy: InvocationPolicy) => {
     if (saving || targets.length === 0) return;
     setSaving(key);
     try {
-      // The files are independent writes, so they save in parallel rather than one at a time.
-      await Promise.all(targets.map((file) => setInvocationForFile(skill, file, policy)));
+      await setInvocationForFiles(skill, targets, policy);
     } catch (err) {
       // An `if`, not a conditional expression: the React Compiler can't compile a value block
       // directly inside a try/catch statement.
@@ -97,8 +106,8 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
           <span aria-hidden="true" />
           <span className="flex min-w-0 flex-col">
             <span className="truncate text-body font-medium text-text-primary">All locations</span>
-            {sharedPolicy === null && (
-              <span className="truncate text-caption text-text-tertiary">Files differ</span>
+            {allCaption && (
+              <span className="truncate text-caption text-text-tertiary">{allCaption}</span>
             )}
           </span>
           <InvocationToggle
