@@ -88,7 +88,6 @@ export type LocationAction =
   | { kind: "split"; target: LifecycleTarget; projectPath: string | null; readers: AgentId[] }
   | { kind: "remove-scope"; scopeLabel: string; projectPath: string | null }
   | { kind: "remove-deployment"; scopeLabel: string; deployment: Deployment }
-  | { kind: "update" }
   | { kind: "install-again" }
   | { kind: "remove-lock-entry" }
   | { kind: "promote-global"; source: string; agents: AgentId[] };
@@ -827,16 +826,15 @@ export function scopeGroupsHaveDrift(groups: ScopeGroup[]): boolean {
   return groups.some((g) => g.rows.some((r) => r.conditions.some((c) => c.status === "Differs")));
 }
 
-/** The card title's one right-aligned action link, precedence per status-spec.md §2: unpark > compare > install-again > enable-everywhere > update. */
+/** The card title's one right-aligned action link, precedence per status-spec.md §2: unpark > compare > install-again > enable-everywhere. Update stays in the page header: here it read as updating the locations. */
 export function titleLink(
   skill: InstalledSkill,
   hasDrift: boolean,
-): "Unpark" | "Compare copies" | "Install again" | "Enable everywhere" | "Update" | null {
+): "Unpark" | "Compare copies" | "Install again" | "Enable everywhere" | null {
   if (liveElsewhere(skill)) return "Unpark";
   if (hasDrift) return "Compare copies";
   if (skill.deployments.length === 0) return "Install again";
   if (skill.parked) return "Enable everywhere";
-  if (skill.update_owner_ids.length > 0) return "Update";
   return null;
 }
 
@@ -866,7 +864,7 @@ export function promoteToGlobal(groups: ScopeGroup[]): PromoteSource | null {
   return { path: source.path, agents };
 }
 
-/** The Invocation files of one skill, exactly as the properties rail lists them - the rail and the list's bulk Invocation action both edit these. */
+/** The Invocation files of one skill, exactly as the Locations card lists them - the card and the list's bulk Invocation action both edit these. */
 export function invocationFilesForSkill(skill: InstalledSkill): InvocationFile[] {
   return buildInvocationFiles(buildScopeGroups(skill));
 }
@@ -919,9 +917,10 @@ export function buildInvocationFiles(groups: ScopeGroup[]): InvocationFile[] {
   return files;
 }
 
-/** The footer's single note line, from status-spec.md §5: one file explains its own value; several files just point at "each file sets its own". */
+/** The footer's single note line, from status-spec.md §5: one file explains its own value; several files explain the "All locations" control. */
 export function invocationFooterNote(files: InvocationFile[], skillName: string): string {
-  if (files.length > 1) return "Each file sets its own. Symlinks follow the folder they point to.";
+  if (files.length > 1)
+    return "All locations sets every file; a file can still differ. Symlinks follow the folder they point to.";
   if (files.length !== 1) return "";
   switch (files[0].invocation) {
     case "both":

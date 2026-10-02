@@ -48,6 +48,18 @@ function sharedFolderDeployment(skill: InstalledSkill) {
 type AddToast = ReturnType<typeof useAppStore.getState>["addToast"];
 
 /**
+ * The header's update button: a fork pulls upstream, any other kind with an update runs the update.
+ * Any kind, not only dotagents/skills-sh: a skill with a plugin copy reports `plugin` as its kind
+ * while its skills.sh copy still has an update, and the header is the page's only Update.
+ */
+export function headerUpdateLabel(
+  skill: Pick<InstalledSkill, "source_kind" | "update_owner_ids">,
+): "Pull latest" | "Update" | null {
+  if (skill.update_owner_ids.length === 0) return null;
+  return skill.source_kind === "fork" ? "Pull latest" : "Update";
+}
+
+/**
  * The header Remove button's success toast: "Removed" plus the skill name,
  * not "Updated N deployments" (unit 3.9b) - `removeSkill` takes exactly one
  * deployment off disk, so a deployment count has nothing to count.
@@ -253,13 +265,11 @@ export function useSkillPageActions(
   };
 
   let primaryAction: SkillPageAction | null = null;
-  if (skill.source_kind === "fork" && skill.update_owner_ids.length > 0) {
-    primaryAction = { label: "Pull latest", run: doPullUpstream, busy: isPulling };
-  } else if (
-    (skill.source_kind === "dotagents" || skill.source_kind === "skills-sh") &&
-    skill.update_owner_ids.length > 0
-  ) {
-    primaryAction = { label: "Update", run: doUpdate, busy: isUpdating || guard.isResolving };
+  const updateLabel = headerUpdateLabel(skill);
+  if (updateLabel === "Pull latest") {
+    primaryAction = { label: updateLabel, run: doPullUpstream, busy: isPulling };
+  } else if (updateLabel === "Update") {
+    primaryAction = { label: updateLabel, run: doUpdate, busy: isUpdating || guard.isResolving };
   }
 
   let forkAction: SkillPageAction | null = null;

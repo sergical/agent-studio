@@ -547,9 +547,9 @@ describe("titleLink", () => {
     expect(titleLink(skill, false)).toBe("Enable everywhere");
   });
 
-  it("falls back to Update when nothing else applies", () => {
+  it("leaves Update to the page header, so the card title never reads as updating locations", () => {
     const skill = fixtureSkill({ has_update: true });
-    expect(titleLink(skill, false)).toBe("Update");
+    expect(titleLink(skill, false)).toBeNull();
   });
 
   it("returns null when there is nothing to fix", () => {
@@ -766,7 +766,7 @@ describe("buildInvocationFiles / invocationFooterNote", () => {
     const files = buildInvocationFiles(groups);
     expect(files).toHaveLength(2);
     expect(invocationFooterNote(files, skill.name)).toBe(
-      "Each file sets its own. Symlinks follow the folder they point to.",
+      "All locations sets every file; a file can still differ. Symlinks follow the folder they point to.",
     );
   });
 });
