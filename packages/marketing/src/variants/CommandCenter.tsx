@@ -7,9 +7,11 @@ import { Arrow } from "../MarketingBrand";
 import { SiteFooter, SiteHeader, siteLayout } from "../SiteChrome";
 import { lightSiteTheme, siteTokens, type SiteTheme } from "../SiteTheme.stylex";
 import { SidecarWalkthrough } from "../walkthrough/SidecarWalkthrough";
+import { ClosingFinale } from "../home/ClosingFinale";
+import { finaleCtaMarker } from "../home/ClosingFinale.stylex";
 import { FaqSection } from "../home/FaqSection";
 import { homeSectionStyles } from "../home/HomeSection.stylex";
-import { ProblemSection } from "../home/ProblemSection";
+import { MascotStage } from "../home/MascotStage";
 import { UsageSection } from "../home/UsageSection";
 import { DOCS_URL, DOWNLOAD_INTEL_URL, DOWNLOAD_URL, TRUST_LINE } from "../site-links";
 
@@ -31,9 +33,9 @@ const marqueeMove = stylex.keyframes({
   to: { transform: "translateX(-50%)" },
 });
 
-function DownloadButton({ theme }: { theme: SiteTheme }) {
+function DownloadButton({ theme, inFinale = false }: { theme: SiteTheme; inFinale?: boolean }) {
   return (
-    <a href={DOWNLOAD_URL} {...stylex.props(styles.primaryButton)}>
+    <a href={DOWNLOAD_URL} {...stylex.props(inFinale && finaleCtaMarker, styles.primaryButton)}>
       <span>Download for macOS</span>
       <span aria-hidden="true" {...stylex.props(styles.primaryButtonArrow)}>
         <Arrow inverse={theme === "dark"} />
@@ -45,11 +47,9 @@ function DownloadButton({ theme }: { theme: SiteTheme }) {
 function TrustLine() {
   return (
     <p {...stylex.props(styles.fineprint)}>
-      {TRUST_LINE}
-      <br />
-      Intel Mac?{" "}
+      {TRUST_LINE} ·{" "}
       <a href={DOWNLOAD_INTEL_URL} {...stylex.props(homeSectionStyles.textLink, styles.intelLink)}>
-        Download for Intel
+        Intel build
       </a>
     </p>
   );
@@ -63,14 +63,9 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
       <main>
         <section {...stylex.props(siteLayout.container, styles.hero)}>
           <div {...stylex.props(styles.copy)}>
-            <h1 {...stylex.props(styles.title)}>
-              Tidy up your
-              <br />
-              <span {...stylex.props(styles.titleAccent)}>agent skills.</span>
-            </h1>
+            <h1 {...stylex.props(styles.title)}>Tidy up your agent skills.</h1>
             <p {...stylex.props(styles.lede)}>
-              Skills pile up across your agents and projects. Skill Studio shows which are broken,
-              which are duplicates and which your agents never use, so you can clear them out with
+              Find the broken, duplicate and unused skills across all your agents. Park them, with
               undo.
             </p>
             <div {...stylex.props(styles.actions)}>
@@ -83,7 +78,11 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
             <TrustLine />
           </div>
 
-          <div id="product" {...stylex.props(styles.productWrap)}>
+          <MascotStage />
+        </section>
+
+        <section id="product" {...stylex.props(siteLayout.container, styles.productSection)}>
+          <div {...stylex.props(styles.productWrap)}>
             <div {...stylex.props(styles.productHalo)} aria-hidden="true" />
             <ProductMock theme={theme} onToggleTheme={onToggleTheme} />
           </div>
@@ -118,10 +117,6 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
           </div>
         </section>
 
-        <section id="problem" {...stylex.props(siteLayout.container, styles.problemSection)}>
-          <ProblemSection />
-        </section>
-
         <section id="how-it-works" {...stylex.props(siteLayout.container, styles.importSection)}>
           <SidecarWalkthrough theme={theme} />
         </section>
@@ -133,22 +128,32 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
         <section id="faq" {...stylex.props(siteLayout.container, homeSectionStyles.section)}>
           <FaqSection />
         </section>
+      </main>
 
-        <section id="download" {...stylex.props(siteLayout.container, styles.closingSection)}>
-          <h2 {...stylex.props(styles.closingTitle)}>Clear out your skills.</h2>
+      <ClosingFinale theme={theme}>
+        <section
+          id="download"
+          aria-labelledby="download-title"
+          {...stylex.props(siteLayout.container, styles.closingSection)}
+        >
+          <img
+            src="/skill-studio-logo.png"
+            alt=""
+            width={96}
+            height={96}
+            {...stylex.props(styles.closingMascot)}
+          />
+          <h2 id="download-title" {...stylex.props(styles.closingTitle)}>
+            Clear out your skills.
+          </h2>
           <p {...stylex.props(styles.closingCopy)}>
             Keep the ones your agents use and park the rest.
           </p>
-          <DownloadButton theme={theme} />
+          <DownloadButton theme={theme} inFinale />
           <TrustLine />
-          <p {...stylex.props(styles.trust)}>
-            Runs on your Mac. It sends anonymous crash reports, which you can turn off. They never
-            include skill names, files or paths.
-          </p>
         </section>
-      </main>
-
-      <SiteFooter page="home" />
+        <SiteFooter page="home" />
+      </ClosingFinale>
     </div>
   );
 }
@@ -157,37 +162,37 @@ const styles = stylex.create({
   hero: {
     alignItems: "center",
     display: "grid",
-    gap: "clamp(38px,5vw,74px)",
-    gridTemplateColumns: "minmax(460px,.78fr) minmax(0,1.22fr)",
-    paddingBlock: "20px 56px",
-    "@media (max-width: 1200px)": { gridTemplateColumns: "1fr", paddingTop: 40 },
-    "@media (max-width: 600px)": { gap: 52, paddingBlock: "52px 80px" },
+    gap: "clamp(32px,4vw,64px)",
+    gridTemplateColumns: "minmax(0,.9fr) minmax(0,1.1fr)",
+    paddingBlock: "40px 88px",
+    "@media (max-width: 1080px)": { gridTemplateColumns: "1fr", justifyItems: "center" },
+    "@media (max-width: 600px)": { gap: 20, paddingBlock: "28px 56px" },
   },
   copy: {
     maxWidth: 560,
-    "@media (max-width: 1200px)": {
+    "@media (max-width: 1080px)": {
       alignItems: "center",
       display: "flex",
       flexDirection: "column",
-      marginInline: "auto",
       textAlign: "center",
       width: "100%",
     },
   },
   title: {
-    fontSize: "clamp(58px,5.5vw,86px)",
+    fontSize: "clamp(48px,6vw,88px)",
     fontWeight: 720,
-    letterSpacing: "-.035em",
-    lineHeight: 0.9,
+    letterSpacing: "-.04em",
+    lineHeight: 0.95,
     margin: 0,
+    textWrap: "balance",
+    "@media (max-width: 1080px)": { maxWidth: "12ch" },
   },
-  titleAccent: { color: siteTokens.accent },
   lede: {
     color: siteTokens.muted,
     fontSize: 18,
     lineHeight: 1.6,
-    margin: "30px 0 28px",
-    maxWidth: "54ch",
+    margin: "26px 0 30px",
+    maxWidth: "46ch",
     textWrap: "pretty",
     "@media (max-width: 600px)": { maxWidth: "34ch" },
   },
@@ -196,7 +201,7 @@ const styles = stylex.create({
     display: "flex",
     flexWrap: "wrap",
     gap: 14,
-    "@media (max-width: 1200px)": { justifyContent: "center", width: "100%" },
+    "@media (max-width: 1080px)": { justifyContent: "center", width: "100%" },
   },
   fineprint: {
     color: siteTokens.muted,
@@ -206,13 +211,6 @@ const styles = stylex.create({
     textWrap: "balance",
   },
   intelLink: { fontSize: "inherit", minHeight: "auto" },
-  trust: {
-    color: siteTokens.muted,
-    fontSize: 13,
-    lineHeight: 1.6,
-    margin: "20px 0 0",
-    maxWidth: "52ch",
-  },
   primaryButton: {
     textDecoration: "none",
     alignItems: "center",
@@ -239,6 +237,7 @@ const styles = stylex.create({
       ":hover": {
         backgroundColor: siteTokens.accentHover,
         boxShadow: "0 1px 0 oklch(1 0 0 / .35) inset, 0 14px 38px oklch(0 0 0 / .38)",
+        transform: "translateY(-1px)",
       },
       ":hover:active": {
         boxShadow: "0 1px 0 oklch(1 0 0 / .18) inset, 0 4px 12px oklch(0 0 0 / .24)",
@@ -284,14 +283,8 @@ const styles = stylex.create({
     ":active": { transform: "scale(.96)" },
     "@media (max-width: 600px)": { minHeight: 48 },
   },
-  productWrap: {
-    minWidth: 0,
-    position: "relative",
-    // Wider than its column on purpose: the page clips the overflow at the viewport edge,
-    // so the demo keeps its real size instead of shrinking to fit.
-    "@media (min-width: 1201px)": { width: "max(100%, 960px)" },
-    "@media (max-width: 680px)": { marginInline: "auto", maxWidth: 430, width: "100%" },
-  },
+  productSection: { paddingBottom: 96, "@media (max-width: 600px)": { paddingBottom: 64 } },
+  productWrap: { marginInline: "auto", maxWidth: 1100, position: "relative" },
   productHalo: {
     backgroundColor: siteTokens.accentSoft,
     borderRadius: "50%",
@@ -376,24 +369,32 @@ const styles = stylex.create({
     whiteSpace: "nowrap",
     width: 1,
   },
-  problemSection: {
-    paddingTop: 112,
-    "@media (max-width: 600px)": { paddingTop: 72 },
-  },
   importSection: {
     paddingBlock: "124px 24px",
     "@media (max-width: 600px)": { paddingBlock: "86px 24px" },
   },
   closingSection: {
-    alignItems: "flex-start",
+    alignItems: "center",
     display: "flex",
     flexDirection: "column",
-    paddingBlock: "124px 142px",
-    "@media (max-width: 600px)": {
-      alignItems: "center",
-      paddingBlock: "86px 100px",
-      textAlign: "center",
+    paddingBlock: "124px 96px",
+    textAlign: "center",
+    "@media (max-width: 600px)": { paddingBlock: "86px 64px" },
+  },
+  closingMascot: {
+    filter: "drop-shadow(0 18px 32px oklch(0.45 0.2 293 / .4))",
+    height: "auto",
+    marginBottom: 28,
+    // The mascot perks up while the download button below it is hovered.
+    transform: {
+      default: "none",
+      "@media (hover: hover) and (pointer: fine)": {
+        [stylex.when.anySibling(":hover", finaleCtaMarker)]: "translateY(-6px) rotate(-6deg)",
+      },
     },
+    transition: "transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1)",
+    width: 96,
+    "@media (max-width: 600px)": { width: 80 },
   },
   closingTitle: {
     fontSize: "clamp(42px,5vw,68px)",
@@ -409,5 +410,6 @@ const styles = stylex.create({
     lineHeight: 1.6,
     margin: "24px 0 30px",
     maxWidth: "48ch",
+    textWrap: "balance",
   },
 });

@@ -102,8 +102,30 @@ html[data-site-theme="light"] ::selection {
   outline-offset: 2px;
 }
 
+/* A surface that stays dark in the light theme keeps the white ring. */
+html[data-site-theme="light"] :focus-visible:where(:not([data-surface="dark"] *)) {
+  outline-color: rgba(0, 0, 0, 0.56);
+}
+
+/* A surface in the opposite colour to the page draws the ring in its own text colour. */
+html [data-surface="inverse"] :focus-visible {
+  outline-color: currentColor;
+}
+
 [id] {
   scroll-margin-top: 72px;
+}
+
+/* Registered so the closing finale's dither glow can transition (see home/ClosingFinale.tsx). */
+@property --finale-glow-alpha {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0.3;
+}
+@property --finale-glow-reach {
+  syntax: "<percentage>";
+  inherits: true;
+  initial-value: 60%;
 }
 
 @media (prefers-reduced-motion: reduce) {

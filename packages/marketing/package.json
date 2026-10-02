@@ -15,6 +15,7 @@
     "deploy": "node scripts/check-npm-release.mjs && npm run build && wrangler deploy"
   },
   "dependencies": {
+    "@paper-design/shaders-react": "0.0.81",
     "@stylexjs/stylex": "0.19.0",
     "lucide-react": "^1.37.0",
     "react": "19.2.8",
