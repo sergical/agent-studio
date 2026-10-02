@@ -1,4 +1,9 @@
-import { agentIdFromDeploymentLabel, parentDirectory } from "@skill-studio/lib";
+import {
+  agentIdFromDeploymentLabel,
+  basename,
+  homeRelativePath,
+  parentDirectory,
+} from "@skill-studio/lib";
 import type {
   Deployment,
   InstalledSkill,
@@ -22,6 +27,10 @@ export interface SkillRemovalPreview {
   target: LifecycleTarget;
   managedDeployments: Deployment[];
   linkedDeployments: Deployment[];
+  /** Links the removal deletes that point somewhere other than the removed folder. */
+  otherLinks: Deployment[];
+  /** Copies in the same scope that this removal leaves alone. */
+  staying: Deployment[];
 }
 
 type SkillRemovalAvailability =
@@ -115,31 +124,73 @@ function deploymentsInScope(
   );
 }
 
+/** Where a folder's bytes really are: its own path unless the scan resolved it elsewhere. */
+function realPath(deployment: Deployment): string {
+  return deployment.resolved_path ?? deployment.path;
+}
+
+/**
+ * The links the backend deletes together with `folder` (`find_all_links` in
+ * `skill-studio-core`): per-skill links whose target is that folder. A
+ * whole-directory link is the folder itself, so it is not one of them.
+ */
+function linksRemovedWith(skill: Pick<SkillLifecycleView, "deployments">, folder: Deployment) {
+  return skill.deployments.filter(
+    (deployment) =>
+      deployment.backing.kind === "linked-to" &&
+      !deployment.shared_via_whole_dir_link &&
+      deployment.symlink_target === realPath(folder),
+  );
+}
+
+/**
+ * Why Skill Studio will not remove anything in a scope whose deployments are
+ * all read-only. The backend only removes copies it owns.
+ */
+function readOnlyScopeReason(skillName: string, inScope: Deployment[]): string {
+  if (inScope.some((deployment) => deployment.owner_kind === "in-repo")) {
+    return `${skillName} is part of a repository, so Skill Studio will not delete it. Delete it in the repository.`;
+  }
+  if (inScope.some((deployment) => deployment.plugin)) {
+    return `${skillName} comes with a plugin. Uninstall the plugin from Locations.`;
+  }
+  if (inScope.some((deployment) => deployment.owner_kind === "manual")) {
+    return `Skill Studio did not install ${skillName}, so it will not delete it. Use Reveal in Finder on its row and delete the folder yourself.`;
+  }
+  return `${skillName} is read-only here, so Skill Studio cannot remove it.`;
+}
+
 /** Resolve an aggregate skill only when one mutable owner matches the requested scope. */
 export function lifecycleTargetForSkill(
   skill: SkillLifecycleView,
   scope: "global" | "project",
   projectPath?: string | null,
 ): LifecycleTarget {
-  const deployments = deploymentsInScope(skill, scope, projectPath).filter(
-    (deployment) => deployment.mutability === "mutable",
-  );
+  const inScope = deploymentsInScope(skill, scope, projectPath);
+  const deployments = inScope.filter((deployment) => deployment.mutability === "mutable");
+  if (deployments.length === 0 && inScope.length > 0) {
+    throw new Error(readOnlyScopeReason(skill.name, inScope));
+  }
   const ownerIds = [...new Set(deployments.flatMap((deployment) => deployment.owner_id ?? []))];
   if (ownerIds.length === 1) return { owner_id: ownerIds[0] };
   if (ownerIds.length > 1) {
-    throw new Error(`${skill.name} has multiple lifecycle owners in this scope`);
+    throw new Error(
+      `${skill.name} is installed from more than one source here. Manage each copy in Locations.`,
+    );
   }
   const canonicalDeployments = deployments.filter(
-    (deployment) => deployment.backing.kind === "canonical",
+    (deployment) =>
+      deployment.backing.kind === "canonical" && deployment.destination === "universal",
   );
   if (canonicalDeployments.length === 1) {
     return lifecycleTargetForDeployment(canonicalDeployments[0]);
   }
-  if (deployments.length === 1) return lifecycleTargetForDeployment(deployments[0]);
   if (skill.deployments.length === 0 && skill.source_kind === "skills-sh" && scope === "global") {
     return { owner_id: `owner:v1/global/${skill.name}` };
   }
-  throw new Error(`${skill.name} has no unambiguous mutable deployment in this scope`);
+  throw new Error(
+    `${skill.name} has no single Universal folder here that Skill Studio can remove. Its copies are separate agent folders; use Reveal in Finder on each row and delete them yourself.`,
+  );
 }
 
 /** Resolve aggregate removal without throwing during render. */
@@ -152,10 +203,7 @@ export function skillRemovalAvailability(
   } catch (error) {
     return {
       available: false,
-      reason:
-        error instanceof Error
-          ? `${error.message}. Manage each independent Copy deployment in Locations.`
-          : "Manage each independent Copy deployment in Locations.",
+      reason: error instanceof Error ? error.message : "Remove each separate copy from Locations.",
     };
   }
 }
@@ -294,7 +342,7 @@ export function skillUpdateAvailability(
   if (ownerIds.size > 1) {
     return {
       available: false,
-      reason: `${skill.name} has multiple lifecycle owners in this scope. Update a specific deployment in Locations.`,
+      reason: `${skill.name} is installed from more than one source here. Update each copy in Locations.`,
     };
   }
   const ownerId = ownerIds.values().next().value;
@@ -529,57 +577,121 @@ export function skillUpdateToast(
   };
 }
 
+/**
+ * Whether `npx skills remove` deletes whatever sits at this folder's path. Skills CLI 1.7.0
+ * (`removeCommand`) runs `rm -rf <skills dir>/<name>` for every agent's skills directory:
+ * all six first-class agents' plural `skills` folders in the global scope, and in a project
+ * only Claude Code, Grok Build and pi, because Codex, Cursor and OpenCode read the project's
+ * `.agents/skills` there. It never touches OpenCode's singular `skill` folder. The folder is
+ * judged by agent, scope and its parent folder's name, so a moved config home still matches.
+ * The CLI also clears folders of agents that are not first-class: a project's `skills`,
+ * `agent/skills` and `data/skills`, Eve's subagent folders, and `~/agent/skills`. The backend
+ * refuses a removal that would delete a real folder there (`refuse_unbacked_cli_deletions`).
+ */
+function skillsCliRemovesFolderAt(deployment: Deployment): boolean {
+  if (deployment.plugin || basename(parentDirectory(deployment.path)) !== "skills") return false;
+  const agent = agentIdFromDeploymentLabel(deployment.agent);
+  if (deployment.scope === "global") {
+    return agent !== null && agent !== "shared";
+  }
+  return agent === "claude-code" || agent === "grok-build" || agent === "pi";
+}
+
 /** Describe the managed deployment group and linked locations removed by one exact target. */
 export function skillRemovalPreview(
   skill: SkillLifecycleView,
   selection: SkillLifecycleScopeSelection,
 ): SkillRemovalPreview {
   const target = lifecycleTargetForSkill(skill, selection.scope, selection.projectPath);
-  const targeted = skill.deployments.filter((deployment) =>
-    target.owner_id
-      ? deployment.owner_id === target.owner_id
-      : deployment.id === target.deployment_id,
-  );
-  const managedDeployments = targeted.filter(
-    (deployment) => deployment.backing.kind !== "linked-to",
-  );
-  const targetedIds = new Set(targeted.map((deployment) => deployment.id));
-  const backingIds = new Set(managedDeployments.map((deployment) => deployment.id));
-  const removesDotagentsOwner = managedDeployments.some(
-    (deployment) => deployment.owner_kind === "dotagents",
-  );
-  const linkedDeployments = skill.deployments.filter(
+  const managedDeployments = skill.deployments.filter(
     (deployment) =>
-      deployment.backing.kind === "linked-to" &&
-      (targetedIds.has(deployment.id) || backingIds.has(deployment.backing.deployment_id)) &&
-      (!removesDotagentsOwner ||
-        (agentIdFromDeploymentLabel(deployment.agent) === "claude-code" &&
-          !deployment.shared_via_whole_dir_link)),
+      (target.owner_id
+        ? deployment.owner_id === target.owner_id
+        : deployment.id === target.deployment_id) && deployment.backing.kind !== "linked-to",
   );
-  return { target, managedDeployments, linkedDeployments };
+  const linkedDeployments = managedDeployments.flatMap((folder) => linksRemovedWith(skill, folder));
+  const otherLinks: Deployment[] = [];
+  const removed = new Set([...managedDeployments, ...linkedDeployments]);
+  let staying = deploymentsInScope(skill, selection.scope, selection.projectPath).filter(
+    (deployment) => !removed.has(deployment),
+  );
+  if (managedDeployments.some((deployment) => deployment.owner_kind === "skills-sh")) {
+    const cleaned = staying.filter(skillsCliRemovesFolderAt);
+    const managedRealPaths = new Set(managedDeployments.map(realPath));
+    const sameFolder = (deployment: Deployment) =>
+      !deployment.is_symlink &&
+      deployment.shared_via_whole_dir_link &&
+      managedRealPaths.has(realPath(deployment));
+    const lost = cleaned.filter((deployment) => !deployment.is_symlink && !sameFolder(deployment));
+    if (lost.length > 0) {
+      const paths = lost.map((copy) => homeRelativePath(copy.path)).join(", ");
+      throw new Error(
+        `Removing would also delete the separate ${lost.length === 1 ? "copy" : "copies"} at ${paths}, and Undo could not bring ${lost.length === 1 ? "it" : "them"} back. Delete or move ${lost.length === 1 ? "that copy" : "those copies"} first.`,
+      );
+    }
+    // A link to a folder elsewhere is deleted too; only the link goes, so nothing is lost.
+    // A link reached through a whole-folder link can still point at the removed folder.
+    const symlinks = cleaned.filter((deployment) => deployment.is_symlink);
+    const pointsAtRemoved = (deployment: Deployment) =>
+      managedRealPaths.has(deployment.symlink_target ?? realPath(deployment));
+    linkedDeployments.push(...symlinks.filter(pointsAtRemoved));
+    otherLinks.push(...symlinks.filter((deployment) => !pointsAtRemoved(deployment)));
+    const handled = new Set(symlinks);
+    staying = staying.filter((deployment) => !handled.has(deployment));
+  }
+  return {
+    target,
+    managedDeployments,
+    linkedDeployments,
+    otherLinks,
+    staying: staying.filter((deployment) => !deployment.shared_via_whole_dir_link),
+  };
 }
 
-/** Preview one selected deployment and links verified as backed by it. */
-export function skillDeploymentRemovalPreview(
+/**
+ * Preview one selected copy. The backend removes only a Universal folder that
+ * holds its own bytes, so any other copy has no Remove.
+ */
+export function skillDeploymentRemovalAvailability(
   skill: SkillLifecycleView,
   deployment: Deployment,
-): SkillRemovalPreview {
-  const linkedDeployments = skill.deployments.filter(
-    (candidate) =>
-      candidate.backing.kind === "linked-to" && candidate.backing.deployment_id === deployment.id,
-  );
+): SkillRemovalAvailability {
+  if (deployment.destination !== "universal" || deployment.backing.kind !== "canonical") {
+    return {
+      available: false,
+      reason: `Skill Studio can only remove a Universal folder. Use Reveal in Finder and delete ${deployment.path} yourself.`,
+    };
+  }
   return {
-    target: lifecycleTargetForDeployment(deployment),
-    managedDeployments: [deployment],
-    linkedDeployments,
+    available: true,
+    preview: {
+      target: lifecycleTargetForDeployment(deployment),
+      managedDeployments: [deployment],
+      linkedDeployments: linksRemovedWith(skill, deployment),
+      otherLinks: [],
+      staying: [],
+    },
   };
 }
 
 /** Describe the owner group and verified links that the target removes. */
 export function skillRemovalDescription(preview: SkillRemovalPreview): string {
-  const deploymentCount = preview.managedDeployments.length;
+  const folderCount = preview.managedDeployments.length;
   const linkCount = preview.linkedDeployments.length;
-  return `This removes ${deploymentCount} managed deployment${deploymentCount === 1 ? "" : "s"} and ${linkCount} verified dependent link${linkCount === 1 ? "" : "s"}. Independent copies outside this group remain. This cannot be undone.`;
+  const removes = `This removes ${folderCount} folder${folderCount === 1 ? "" : "s"} and ${linkCount} link${linkCount === 1 ? "" : "s"} to ${folderCount === 1 ? "it" : "them"}.`;
+  const stays =
+    preview.staying.length > 0
+      ? `The separate ${preview.staying.length === 1 ? "copy" : "copies"} at ${preview.staying.map((copy) => homeRelativePath(copy.path)).join(", ")} stay${preview.staying.length === 1 ? "s" : ""}.`
+      : "Separate copies elsewhere stay.";
+  const otherLinks = preview.otherLinks
+    .map((link) => {
+      const deleted = `It also deletes the link at ${homeRelativePath(link.path)}.`;
+      return link.symlink_target && !link.symlink_is_broken
+        ? `${deleted} The folder it points to, ${homeRelativePath(link.symlink_target)}, stays.`
+        : deleted;
+    })
+    .join(" ");
+  return [removes, otherLinks, stays, "This cannot be undone."].filter(Boolean).join(" ");
 }
 
 function parkableDeployment(skill: SkillLifecycleView): Deployment | undefined {
@@ -613,7 +725,7 @@ export function lifecycleTargetForPark(skill: SkillLifecycleView): LifecycleTarg
   const canonical = parkableDeployment(skill);
   if (!canonical) {
     throw new Error(
-      `${skill.name} has no Global Universal folder to park. Project and Per harness copies stay independent.`,
+      `${skill.name} has no Global Universal folder to park. Project and per-agent copies stay separate.`,
     );
   }
   return { deployment_id: canonical.id };

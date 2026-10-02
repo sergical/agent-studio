@@ -64,7 +64,7 @@ export function Splits({
     <>
       {filter.harness === "all" && harnesses.length > 0 && (
         <div className="flex flex-col gap-2.5">
-          <PanelLabel>Harness</PanelLabel>
+          <PanelLabel>Agent</PanelLabel>
           {harnesses.map(([id, n]) => (
             <BarRow
               key={id}

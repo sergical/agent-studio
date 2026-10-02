@@ -58,6 +58,7 @@ export function CommandPalette({ snapshot, requestRescan }: CommandPaletteProps)
   const openAddSkillSheet = useAppStore((state) => state.openAddSkillSheet);
   const requestSkillSearchFocus = useAppStore((state) => state.requestSkillSearchFocus);
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
+  const addToast = useAppStore((state) => state.addToast);
   const setTheme = useAppStore((state) => state.setTheme);
   const goBack = useAppStore((state) => state.goBack);
   const goForward = useAppStore((state) => state.goForward);
@@ -114,7 +115,20 @@ export function CommandPalette({ snapshot, requestRescan }: CommandPaletteProps)
         section: "actions",
         label: SHORTCUTS.sync.label,
         icon: <RefreshCw size={14} />,
-        run: () => void requestRescan(),
+        run: () => {
+          addToast({
+            type: "info",
+            title: "Rescanning skills…",
+            message: "The list updates when it finishes.",
+          });
+          requestRescan().catch((err) =>
+            addToast({
+              type: "error",
+              title: "Couldn't rescan",
+              message: err instanceof Error ? err.message : "Unknown error",
+            }),
+          );
+        },
       },
       {
         id: "action-filter-skills",

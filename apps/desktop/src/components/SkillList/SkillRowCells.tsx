@@ -87,7 +87,7 @@ function TokensTooltip({ skill }: { skill: InstalledSkill }) {
           {skill.description_tokens.toLocaleString()} tokens · prompt cost
         </span>
         <span className="text-caption text-text-tertiary">
-          name + description, loaded every turn by every harness that reaches it
+          name + description, loaded every turn by every agent that reaches it
         </span>
       </div>
       <div className="flex flex-col gap-0.5">

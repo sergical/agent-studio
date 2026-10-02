@@ -98,7 +98,7 @@ const SECTION_LABEL_CLASS =
 const ALL_METHODS = ["skills-sh", "dotagents", "copy"] as const satisfies AddMethod[];
 
 const DOTAGENTS_HARNESS_REASON =
-  "dotagents sets the folders itself, so you cannot change the harnesses for it.";
+  "dotagents sets the folders itself, so you cannot change the agents for it.";
 
 /**
  * "Pack" isn't a real `AddMethod` - it doesn't run `addSkill`, it runs

@@ -94,7 +94,7 @@ fn split_body(
     if deployment.root.kind != RootKind::Universal {
         return Err(CoreError::new(
             ErrorCode::Unsupported,
-            "only a Universal skill can be split; parked, plugin, and per-harness skills cannot",
+            "only a Universal skill can be split; parked, plugin, and per-agent skills cannot",
         )
         .at(&deployment.path));
     }
@@ -114,7 +114,7 @@ fn split_body(
     if harnesses.is_empty() {
         return Err(CoreError::new(
             ErrorCode::InvalidRequest,
-            "pick at least one harness to keep the skill; to drop it everywhere, use remove",
+            "pick at least one agent to keep the skill; to drop it everywhere, use remove",
         ));
     }
 
@@ -124,7 +124,7 @@ fn split_body(
         .path
         .parent()
         .ok_or_else(|| {
-            CoreError::new(ErrorCode::Io, "a Universal deployment path has no parent")
+            CoreError::new(ErrorCode::Io, "a Universal folder copy path has no parent")
                 .at(&deployment.path)
         })?
         .to_path_buf();

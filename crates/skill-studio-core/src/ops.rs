@@ -3994,7 +3994,7 @@ fn capabilities_body(
     if let Some(unknown) = req.harnesses.iter().find(|id| catalog.get(id).is_none()) {
         return Err(CoreError::new(
             ErrorCode::InvalidRequest,
-            format!("no catalog row for harness `{}`", unknown.as_str()),
+            format!("no catalog row for agent `{}`", unknown.as_str()),
         ));
     }
     let step_start = clock.monotonic();
@@ -4131,11 +4131,11 @@ fn resolve_deployment<'a>(
         (Some(one), None) => Ok(one),
         (None, _) => Err(CoreError::new(
             ErrorCode::AmbiguousTarget,
-            format!("no deployment matches {}", id.as_str()),
+            format!("no copy matches {}", id.as_str()),
         )),
         (Some(_), Some(_)) => Err(CoreError::new(
             ErrorCode::AmbiguousTarget,
-            format!("more than one deployment matches {}", id.as_str()),
+            format!("more than one copy matches {}", id.as_str()),
         )),
     }
 }
@@ -4265,7 +4265,7 @@ fn preview_frontmatter_repair_body(
     if !desktop_repair_apply_modes(deployment).contains(&RepairApplyMode::ApplyFix) {
         return Err(CoreError::new(
             ErrorCode::Unsupported,
-            "this deployment is not repairable by this core build",
+            "this copy is not repairable by this core build",
         )
         .at(&deployment.path));
     }
@@ -4362,7 +4362,7 @@ fn apply_frontmatter_repair_body(
     if deployment.owner_id != preview.owner_id || deployment.owner_kind != preview.owner_kind {
         return Err(CoreError::new(
             ErrorCode::OwnershipChanged,
-            "the deployment's owner changed since the preview",
+            "the copy's owner changed since the preview",
         )
         .at(&deployment.path));
     }
@@ -4373,7 +4373,7 @@ fn apply_frontmatter_repair_body(
     if !desktop_repair_apply_modes(deployment).contains(&RepairApplyMode::ApplyFix) {
         return Err(CoreError::new(
             ErrorCode::Unsupported,
-            "this deployment is not repairable by this core build",
+            "this copy is not repairable by this core build",
         )
         .at(&deployment.path));
     }
@@ -5532,7 +5532,7 @@ pub(crate) fn resolve_skill<'a>(
         .ok_or_else(|| {
             CoreError::new(
                 ErrorCode::AmbiguousTarget,
-                format!("no deployment matches {}", deployment_id.as_str()),
+                format!("no copy matches {}", deployment_id.as_str()),
             )
         })
 }
@@ -5605,14 +5605,14 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
     if deployment.root.kind != RootKind::Universal {
         return Err(CoreError::new(
             ErrorCode::Unsupported,
-            "only a universal deployment can be parked",
+            "only a universal folder copy can be parked",
         )
         .at(&deployment.path));
     }
     if deployment.backing != BackingRelationship::Canonical {
         return Err(CoreError::new(
             ErrorCode::Unsupported,
-            "only the deployment holding the bytes can be parked, not a link",
+            "only the copy holding the bytes can be parked, not a link",
         )
         .at(&deployment.path));
     }
@@ -5651,7 +5651,7 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
     if fs.symlink_metadata(&parked_dir).is_ok() {
         return Err(CoreError::new(
             ErrorCode::InvalidRequest,
-            "a parked deployment already exists for this skill",
+            "a parked copy already exists for this skill",
         )
         .at(&parked_dir));
     }
@@ -5779,11 +5779,10 @@ fn unpark_body(
 
     let deployment = session.resolve_exact(&req.deployment_id)?.clone();
     if deployment.root.kind != RootKind::Parked {
-        return Err(CoreError::new(
-            ErrorCode::Unsupported,
-            "only a parked deployment can be unparked",
-        )
-        .at(&deployment.path));
+        return Err(
+            CoreError::new(ErrorCode::Unsupported, "only a parked copy can be unparked")
+                .at(&deployment.path),
+        );
     }
     let skill = resolve_skill(&session.fresh, &deployment.id)?.clone();
 
@@ -5826,7 +5825,7 @@ fn unpark_body(
     if fs.symlink_metadata(&restored_dir).is_ok() {
         return Err(CoreError::new(
             ErrorCode::InvalidRequest,
-            "a universal deployment already exists for this skill",
+            "a universal folder copy already exists for this skill",
         )
         .at(&restored_dir));
     }
@@ -6034,7 +6033,7 @@ fn set_harness_enabled_body(
             return Err(CoreError::new(
                 ErrorCode::Unsupported,
                 format!(
-                    "{other} has no native per-skill switch; Park the skill to turn it off for every harness"
+                    "{other} has no native per-skill switch; Park the skill to turn it off for every agent"
                 ),
             ))
         }

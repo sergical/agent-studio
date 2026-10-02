@@ -85,6 +85,32 @@ cargo mutants -p skill-studio-core --all-features --file crates/skill-studio-cor
 cat mutants.out/missed.txt
 ```
 
+### Worktrees and Disk Use
+
+A Rust `target/` folder takes 9 to 17 GB. In two weeks, 15 worktrees with their
+own `target/` filled 155 GB of the user's disk. These rules are firm:
+
+- **Share one build folder.** In any worktree under `.claude/worktrees/`, build
+  with the main checkout's `target/`. Never create a second one:
+
+  ```bash
+  export CARGO_TARGET_DIR="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/target"
+  ```
+
+  Cargo locks the folder, so two builds at the same time wait for each other.
+  That is the expected cost.
+
+- **Clean up when the work is done.** When a worktree's PR merges or closes, or
+  the session ends with its work pushed, run `git worktree remove <path>`. If
+  the worktree has uncommitted changes, keep it, delete its `target/` and
+  `node_modules/`, and tell the user it is still there.
+- **No stray copies.** Do not clone the repo or run `npm ci` in `.scratch/`, the
+  scratchpad or `/tmp` unless the task needs it, and delete the copy in the same
+  session.
+- **Check before you report.** Before the final message of a session that
+  created worktrees or builds, run
+  `du -sh .claude/worktrees .scratch 2>/dev/null` and say what is left and why.
+
 ### Frontend Commands
 
 ```bash

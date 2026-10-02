@@ -7,6 +7,7 @@
 // under react-doctor's line cap.
 // ============================================================================
 
+import { Loader2 } from "lucide-react";
 import { Button } from "@skill-studio/ui";
 import { MaterializeRootDialog } from "../ui/MaterializeRootDialog";
 import { MakeIndependentCopyDialog } from "./MakeIndependentCopyDialog";
@@ -43,6 +44,17 @@ const TITLE_LINK_ACTIONS = {
   "Enable everywhere": { kind: "unpark" },
 } satisfies Record<NonNullable<ReturnType<typeof titleLink>>, LocationActionForTitle>;
 
+/** A small spinner after a title link's text while its action runs. The link stays enabled, so it keeps keyboard focus. */
+function PendingSpinner() {
+  return (
+    <Loader2
+      size={12}
+      className="ml-1 animate-spin text-text-tertiary motion-reduce:animate-none"
+      aria-label="Working"
+    />
+  );
+}
+
 /**
  * "Where it lives": Global first, then one block per project, each folded to
  * its own rollup dot until opened, plus the Invocation footer. A dotagents/skills.sh-managed
@@ -70,9 +82,10 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
           <Button
             variant="link"
             className="h-auto p-0 text-small font-normal"
-            onClick={() => actions.run(TITLE_LINK_ACTIONS[link])}
+            onClick={() => void actions.run(TITLE_LINK_ACTIONS[link])}
           >
             {link}
+            {actions.busyKinds.includes(TITLE_LINK_ACTIONS[link].kind) && <PendingSpinner />}
           </Button>
         )}
         {promote && (
@@ -81,7 +94,7 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
               variant="link"
               className="h-auto p-0 text-small font-normal"
               onClick={() =>
-                actions.run({
+                void actions.run({
                   kind: "promote-global",
                   source: promote.path,
                   agents: promote.agents,
@@ -89,6 +102,7 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
               }
             >
               Promote to global
+              {actions.busyKinds.includes("promote-global") && <PendingSpinner />}
             </Button>
           </TooltipControl>
         )}

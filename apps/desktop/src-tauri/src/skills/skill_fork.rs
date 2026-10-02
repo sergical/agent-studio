@@ -159,7 +159,7 @@ pub fn skills_sh_universal_add_args(
     spec: &SkillInstallSpec,
 ) -> Result<(Vec<String>, Option<PathBuf>), String> {
     if spec.destination != SkillDestination::Universal {
-        return Err("skills.sh Universal argv is only for the Universal destination".to_string());
+        return Err("That install option is only for the shared Universal folder".to_string());
     }
     let mut args = vec![
         "skills".to_string(),
@@ -1210,10 +1210,10 @@ pub async fn fork_skill(
         let id = target
             .deployment_id
             .as_deref()
-            .ok_or("Fork needs one Global Universal deployment_id")?;
+            .ok_or("Fork needs one Global Universal folder copy")?;
         if target.owner_id.is_some() {
             return Err(
-                "Fork targets one Global Universal deployment, not an owner group".to_string(),
+                "Fork targets one Global Universal folder, not a group of copies".to_string(),
             );
         }
         let (skill, deployment) = super::skill_lifecycle::find_deployment(&snapshot, id)?;
@@ -1708,11 +1708,10 @@ fn resolve_recorded_fork_target(
     let id = target
         .deployment_id
         .as_deref()
-        .ok_or("Fork lifecycle needs one Global Universal deployment_id")?;
+        .ok_or("Fork lifecycle needs one Global Universal folder copy")?;
     if target.owner_id.is_some() {
         return Err(
-            "Fork lifecycle targets one Global Universal deployment, not an owner group"
-                .to_string(),
+            "Fork lifecycle targets one Global Universal folder, not a group of copies".to_string(),
         );
     }
     let (skill, deployment) = super::skill_lifecycle::find_deployment(snapshot, id)?;
@@ -1735,8 +1734,7 @@ fn resolve_recorded_fork_target(
         || Path::new(&deployment.path) != expected_path
     {
         return Err(
-            "The fork record does not belong to the selected Global Universal deployment"
-                .to_string(),
+            "The fork record does not belong to the selected Global Universal folder".to_string(),
         );
     }
     Ok((skill.name.clone(), record))

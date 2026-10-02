@@ -84,6 +84,7 @@ describe("InstalledSkillLifecycleActions update selection", () => {
       projectPath: null,
     });
     expect(availability.available).toBe(false);
-    if (!availability.available) expect(availability.reason).toContain("specific deployment");
+    if (!availability.available)
+      expect(availability.reason).toContain("Update each copy in Locations");
   });
 });

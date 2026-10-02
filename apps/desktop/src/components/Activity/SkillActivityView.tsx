@@ -42,7 +42,7 @@ export function SkillActivityView({ snapshot, onSelectSkill }: SkillActivityView
   return (
     <PageShell
       title="Activity"
-      subtitle="From every harness turned on in Settings"
+      subtitle="From every agent turned on in Settings"
       toolbar={
         <ActivityFilters
           stats={stats}

@@ -8,6 +8,7 @@
 // a link issue and shows the raw message otherwise.
 // ============================================================================
 
+import { useState } from "react";
 import { useAppStore } from "../../store/appStore";
 import { useGuardedSkillUpdate } from "../../hooks/useGuardedSkillUpdate";
 import { fixSkill, openConflictPaths, parkSkill, unparkSkill } from "../../lib/skill-api";
@@ -65,14 +66,45 @@ export async function reportFixOutcome(
   });
 }
 
+/** The row's pending text for each menu verb that does work; other verbs only open the skill. */
+function busyLabelFor(label: string): string | null {
+  switch (label) {
+    case "Park":
+      return "Parking…";
+    case "Unpark":
+      return "Unparking…";
+    case "Fix":
+      return "Fixing…";
+    case "Pull latest":
+      return "Updating…";
+    default:
+      return null;
+  }
+}
+
 export function useSkillListAct(
   onSelectSkill: (name: string, deploymentPath?: string) => void,
   deploymentPathForSkill: ((skill: InstalledSkill) => string | undefined) | undefined,
 ) {
   const addToast = useAppStore((state) => state.addToast);
   const guard = useGuardedSkillUpdate();
+  // Skill name -> what its row is doing now. The row shows a spinner until the action ends.
+  const [busy, setBusy] = useState<ReadonlyMap<string, string>>(new Map());
 
-  async function handleAct(label: string, skill: InstalledSkill) {
+  function handleAct(label: string, skill: InstalledSkill): Promise<void> {
+    const busyLabel = busyLabelFor(label);
+    if (busyLabel === null) return runAct(label, skill);
+    setBusy((current) => new Map(current).set(skill.name, busyLabel));
+    return runAct(label, skill).finally(() =>
+      setBusy((current) => {
+        const next = new Map(current);
+        next.delete(skill.name);
+        return next;
+      }),
+    );
+  }
+
+  async function runAct(label: string, skill: InstalledSkill) {
     if (label === "Pull latest") {
       await guard.pullLatest(skill);
       return;
@@ -112,5 +144,10 @@ export function useSkillListAct(
     }
   }
 
-  return { handleAct, dialog: guard.dialog };
+  return {
+    handleAct,
+    pendingLabelFor: (skill: InstalledSkill) =>
+      busy.get(skill.name) ?? (guard.resolvingSkills.has(skill.name) ? "Updating…" : undefined),
+    dialog: guard.dialog,
+  };
 }

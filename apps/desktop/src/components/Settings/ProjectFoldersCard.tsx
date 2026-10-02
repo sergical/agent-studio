@@ -102,7 +102,7 @@ function FolderSecondaryText({
   }
   return (
     <>
-      {isDiscovered ? "Found in harness history" : "Added by you"}
+      {isDiscovered ? "Found in agent history" : "Added by you"}
       {" · "}
       <span className="tabular-nums">
         {skillCount} {skillCount === 1 ? "skill" : "skills"}
@@ -200,7 +200,7 @@ function FolderList({
     return (
       <p className="m-0 rounded-md border border-border-subtle px-3 py-2 text-small text-text-tertiary">
         {enabledLabels.length === 0
-          ? "Search is off for every harness, so only folders you add appear here."
+          ? "Search is off for every agent, so only folders you add appear here."
           : `No project folders with skills yet. Skill Studio searched the history of ${joinWithAnd(
               enabledLabels,
             )}. If your project is somewhere else, add it by hand.`}
@@ -369,7 +369,7 @@ export function ProjectFoldersCard({ snapshot }: ProjectFoldersCardProps) {
     <SettingsCard
       icon={<FolderOpen size={15} className="text-text-tertiary" />}
       title="Project folders"
-      description="Skill Studio finds project folders in the history of the harnesses below and shows the skills inside them. Add a folder it missed, or stop tracking one you don't need."
+      description="Skill Studio finds project folders in the history of the agents below and shows the skills inside them. Add a folder it missed, or stop tracking one you don't need."
       action={
         <MenuControl
           triggerClassName={buttonVariants({ variant: "outline", size: "sm" })}

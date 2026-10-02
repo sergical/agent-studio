@@ -59,11 +59,11 @@ function restoreDescription(event: SkillEvent): string {
   const skillPart = event.skill ? `${event.skill}` : (event.harness ?? "this item");
   switch (event.kind) {
     case "unlink_harness":
-      return `Restore ${skillPart}'s link for ${event.harness ?? "its harness"}`;
+      return `Restore ${skillPart}'s link for ${event.harness ?? "its agent"}`;
     case "explode_shared_dir":
-      return `Restore ${event.harness ?? "the harness"}'s whole-folder link`;
+      return `Restore ${event.harness ?? "the agent"}'s whole-folder link`;
     case "distribute_from_shared":
-      return `Move ${skillPart} back into the Universal folder and remove the per-harness copies`;
+      return `Move ${skillPart} back into the Universal folder and remove the per-agent copies`;
     case "make_independent_copy":
       return `Restore ${skillPart}'s exact Universal link`;
     case "move_aside_disable":

@@ -60,7 +60,7 @@ impl AgentId {
         } else {
             Err(CoreError::new(
                 ErrorCode::InvalidRequest,
-                format!("`{raw}` is not a kebab-case harness id"),
+                format!("`{raw}` is not a kebab-case agent id"),
             ))
         }
     }
@@ -266,7 +266,7 @@ impl DeploymentId {
         } else {
             Err(CoreError::new(
                 ErrorCode::InvalidRequest,
-                format!("`{raw}` is not a deployment id"),
+                format!("`{raw}` is not a copy id"),
             ))
         }
     }

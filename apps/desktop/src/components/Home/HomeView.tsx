@@ -157,7 +157,7 @@ function HomeStatTiles({
         </Button>
         <span className="absolute top-3.5 right-3.5 opacity-0 group-hover/stat:opacity-100 group-focus-within/stat:opacity-100 has-[[aria-expanded=true]]:opacity-100">
           <InfoPopover label="About warnings" title="Broken and warnings" onLearnMore={onLearnMore}>
-            Everything still loads, but the state drifted: copies that differ between harnesses,
+            Everything still loads, but the state drifted: copies that differ between agents,
             lock-file entries with no folder on disk.
           </InfoPopover>
         </span>

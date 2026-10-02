@@ -1459,11 +1459,11 @@ impl MutationSession {
             (Some(one), None) => Ok(one),
             (None, _) => Err(CoreError::new(
                 ErrorCode::AmbiguousTarget,
-                format!("no deployment matches {}", id.as_str()),
+                format!("no copy matches {}", id.as_str()),
             )),
             (Some(_), Some(_)) => Err(CoreError::new(
                 ErrorCode::AmbiguousTarget,
-                format!("more than one deployment matches {}", id.as_str()),
+                format!("more than one copy matches {}", id.as_str()),
             )),
         }
     }

@@ -84,7 +84,7 @@ function FirstRunScreenBody({ onComplete }: FirstRunScreenProps) {
             {error != null && <p className="text-sm text-destructive">{error}</p>}
 
             {rows == null && error == null && (
-              <p className="text-sm text-muted-foreground">Detecting harnesses...</p>
+              <p className="text-sm text-muted-foreground">Detecting agents...</p>
             )}
 
             {rows != null && (

@@ -40,7 +40,9 @@ use crate::error::{CoreError, ErrorCode};
 use crate::events::{EventDraft, EventKind, EventStatus};
 use crate::identity::{BackingRelationship, LifecycleOwnerKind, RootKind, RootScope};
 use crate::ops::Operation;
-use crate::ports::{ExclusiveGuard, MutationSession, OpContext, ProcessSpec, Runtime, ScopeFs};
+use crate::ports::{
+    ExclusiveGuard, FileKind, MutationSession, OpContext, ProcessSpec, Runtime, ScopeFs,
+};
 
 /// The `npx` package `req`'s owner kind shells out to, or `None` for
 /// `Copy`/`Fork` (which never call `npx`) - mirrors `ops_install_cli`'s own
@@ -62,14 +64,17 @@ fn cli_package(owner_kind: LifecycleOwnerKind) -> Option<&'static str> {
 /// kinds here get the project path as their process cwd for a project
 /// scope - `commands.rs`'s `remove_skill` sets `command.current_dir(path)`
 /// whenever `project_path` is `Some`, for both CLI kinds alike; `remove`
-/// itself has no `--project`/`--cwd` flag of its own either.
+/// itself has no `--project`/`--cwd` flag of its own either. A global
+/// scope runs in `home`, not the caller's folder: for agents with no global
+/// skills folder the CLI deletes `<cwd>/agent/skills/<name>` and similar paths.
 fn remove_cli_args_and_cwd(
     owner_kind: LifecycleOwnerKind,
     name: &str,
     scope: &RootScope,
+    home: &Path,
 ) -> (Vec<String>, Option<PathBuf>) {
     let cwd = match scope {
-        RootScope::Global => None,
+        RootScope::Global => Some(home.to_path_buf()),
         RootScope::Project(project) => Some(project.0.clone()),
     };
     match owner_kind {
@@ -98,6 +103,125 @@ fn remove_cli_args_and_cwd(
     }
 }
 
+/// Folders, relative to a project, that `npx skills remove` of skills.sh CLI 1.7.0 deletes in
+/// project scope on top of the agents' own skills folders: the openclaw, eve and astrbot
+/// agents, whether or not they are installed. A skill-authoring repo keeps its source in
+/// `skills/<name>`, so the CLI would delete it, and the backup of a CLI removal does not
+/// cover it. Issue #382 replaces this guard with a backup.
+const CLI_PROJECT_EXTRA_SKILL_DIRS: [&str; 3] = ["skills", "agent/skills", "data/skills"];
+
+/// The CLI's `sanitizeName` (1.7.0, `dist/cli.mjs`): the folder name it deletes for a skill.
+fn cli_sanitize_name(name: &str) -> String {
+    let mut out = String::new();
+    let mut in_run = false;
+    for ch in name.to_lowercase().chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '.' || ch == '_' {
+            out.push(ch);
+            in_run = false;
+        } else if !in_run {
+            out.push('-');
+            in_run = true;
+        }
+    }
+    let trimmed: String = out
+        .trim_matches(|c| c == '.' || c == '-')
+        .chars()
+        .take(255)
+        .collect();
+    if trimmed.is_empty() {
+        "unnamed-skill".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// The `skills` folder of every Eve subagent under `<base>/agent/subagents`: the CLI deletes
+/// `<sanitizeName(subagent)>/skills/<name>` for each real directory there.
+fn eve_subagent_skill_paths(fs: &dyn ScopeFs, base: &Path, name: &str) -> Vec<PathBuf> {
+    let subagents = base.join("agent/subagents");
+    let Ok(entries) = fs.read_dir(&subagents) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter(|entry| entry.kind == FileKind::Dir)
+        .map(|entry| {
+            subagents
+                .join(cli_sanitize_name(&entry.name))
+                .join("skills")
+                .join(name)
+        })
+        .collect()
+}
+
+/// The folders skills CLI 1.7.0 deletes for a skills.sh removal beyond the first-class agents'
+/// own skills folders (the desktop's `skillsCliRemovesFolderAt` covers those). It is the
+/// folders known to hold data worth keeping, not every folder the CLI touches (it also clears
+/// the global skills folders of agents that are not first-class): in a project the three
+/// folders above plus each Eve subagent's `skills` folder; in the global scope Eve's
+/// `<home>/agent/skills`, which it falls back to because Eve has no global skills folder, plus
+/// each subagent's `skills` folder under `<home>`, where the CLI runs.
+fn cli_extra_deletion_paths(
+    fs: &dyn ScopeFs,
+    home: &Path,
+    scope: &RootScope,
+    name: &str,
+) -> Vec<PathBuf> {
+    let name = cli_sanitize_name(name);
+    match scope {
+        RootScope::Global => {
+            let mut paths = vec![home.join("agent/skills").join(&name)];
+            paths.extend(eve_subagent_skill_paths(fs, home, &name));
+            paths
+        }
+        RootScope::Project(project) => {
+            let mut paths: Vec<PathBuf> = CLI_PROJECT_EXTRA_SKILL_DIRS
+                .iter()
+                .map(|relative| project.0.join(relative).join(&name))
+                .collect();
+            paths.extend(eve_subagent_skill_paths(fs, &project.0, &name));
+            paths
+        }
+    }
+}
+
+/// Refuses a skills.sh removal that the CLI would turn into the loss of a real folder it does
+/// not back up. A symlink is fine: the CLI deletes only the link. A folder that is the removed
+/// folder itself, reached through a directory link, is fine too.
+fn refuse_unbacked_cli_deletions(
+    fs: &dyn ScopeFs,
+    home: &Path,
+    owner_kind: LifecycleOwnerKind,
+    name: &str,
+    scope: &RootScope,
+    removed: &Path,
+) -> Result<(), CoreError> {
+    if owner_kind != LifecycleOwnerKind::SkillsSh {
+        return Ok(());
+    }
+    let removed_real = fs.canonicalize(removed).ok();
+    for path in cli_extra_deletion_paths(fs, home, scope, name) {
+        let is_real_folder = fs
+            .symlink_metadata(&path)
+            .is_ok_and(|facts| facts.kind == FileKind::Dir);
+        if !is_real_folder {
+            continue;
+        }
+        if removed_real.is_some() && fs.canonicalize(&path).ok() == removed_real {
+            continue;
+        }
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            format!(
+                "Removing would also delete the folder at {}, and Undo could not bring it back. Move that folder first.",
+                path.display()
+            ),
+        )
+        .at(&path));
+    }
+    Ok(())
+}
+
 /// Runs `owner_kind`'s `remove` argv through the spawner port and checks
 /// `path` no longer exists - mirrors `ops_install_cli::install_via_cli`'s
 /// own post-call check, in reverse.
@@ -121,12 +245,15 @@ fn remove_via_cli(
             "this host build has no process spawner; dotagents/skills.sh removal is not available",
         )
     })?;
-    let (args, cwd) = remove_cli_args_and_cwd(owner_kind, name, scope);
+    let (args, cwd) = remove_cli_args_and_cwd(owner_kind, name, scope, &rt.scope.home.lexical);
     let spec = ProcessSpec {
         program: "npx".to_string(),
         args,
         cwd,
-        env: Vec::new(),
+        env: vec![(
+            "HOME".to_string(),
+            rt.scope.home.lexical.display().to_string(),
+        )],
         timeout_ms: 120_000,
     };
     let output = spawner.run(&spec, ctx.cancel.as_ref())?;
@@ -396,26 +523,34 @@ fn remove_body(
     if deployment.root.kind != RootKind::Universal {
         return Err(CoreError::new(
             ErrorCode::Unsupported,
-            "only a universal deployment can be removed",
+            "only a universal folder copy can be removed",
         )
         .at(&deployment.path));
     }
     if deployment.backing != BackingRelationship::Canonical {
         return Err(CoreError::new(
             ErrorCode::Unsupported,
-            "only the deployment holding the bytes can be removed, not a link",
+            "only the copy holding the bytes can be removed, not a link",
         )
         .at(&deployment.path));
     }
     if !deployment.owner_kind.is_mutable() {
         return Err(CoreError::new(
             ErrorCode::Unsupported,
-            "this deployment's owner kind does not allow Skill Studio to remove it",
+            "this copy's owner kind does not allow Skill Studio to remove it",
         )
         .at(&deployment.path));
     }
     let skill = crate::ops::resolve_skill(&session.fresh, &deployment.id)?.clone();
     let fs = rt.ports.fs.as_ref();
+    refuse_unbacked_cli_deletions(
+        fs,
+        &rt.scope.home.lexical,
+        deployment.owner_kind,
+        &skill.name.0,
+        &deployment.root.scope,
+        &deployment.path,
+    )?;
     let tree_hash_before = crate::tree_hash::tree_hash(fs, &deployment.path)?;
     // Every harness's link, not just Claude Code's - `RemoveRequest` has no
     // `harnesses` field to restrict this to (see `dto::RemoveRequest`), so
@@ -445,7 +580,7 @@ fn remove_body(
         .path
         .parent()
         .ok_or_else(|| {
-            CoreError::new(ErrorCode::Io, "a universal deployment path has no parent")
+            CoreError::new(ErrorCode::Io, "a universal folder copy path has no parent")
                 .at(&deployment.path)
         })?
         .to_path_buf();
@@ -656,7 +791,7 @@ fn remove_and_link(
         _ => {
             return Err(CoreError::new(
                 ErrorCode::Unsupported,
-                "this owner kind is not mutable and was already refused before this step",
+                "this owner kind is not editable and was already refused before this step",
             ))
         }
     }
@@ -692,6 +827,28 @@ mod tests {
     use super::*;
     use crate::identity::ProjectRef;
 
+    /// `cli_sanitize_name` against the values skills CLI 1.7.0's own `sanitizeName`
+    /// (`dist/cli.mjs`) returned for the same inputs, run with node. A wrong value here means
+    /// the guard checks a folder the CLI never deletes, or misses one it does.
+    #[test]
+    fn cli_sanitize_name_matches_the_skills_cli_sanitize_name_or_names_the_diverging_input() {
+        let long_with_dash = format!("{}-y", "x".repeat(254));
+        let cases: Vec<(String, String)> = vec![
+            ("My Skill".into(), "my-skill".into()),
+            ("--a..b--".into(), "a..b".into()),
+            ("a--b".into(), "a-b".into()),
+            (".a.".into(), "a".into()),
+            ("_a_b_".into(), "_a_b_".into()),
+            ("!!!".into(), "unnamed-skill".into()),
+            ("\u{c4}B".into(), "b".into()),
+            ("a".repeat(300), "a".repeat(255)),
+            (long_with_dash, format!("{}-", "x".repeat(254))),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(cli_sanitize_name(&input), expected, "input {input:?}");
+        }
+    }
+
     /// `remove_cli_args_and_cwd_matches_the_desktop_builders_verbatim_or_names_the_drifted_argv`:
     /// table test over {global, project} x {`SkillsSh`, `Dotagents`} -
     /// mirrors `ops_install_cli`'s own drift check, this time against
@@ -717,7 +874,7 @@ mod tests {
                 LifecycleOwnerKind::SkillsSh,
                 &RootScope::Global,
                 vec!["skills", "remove", "alpha", "--yes", "--global"],
-                None,
+                Some(PathBuf::from("/home")),
             ),
             (
                 "skills.sh project",
@@ -731,7 +888,7 @@ mod tests {
                 LifecycleOwnerKind::Dotagents,
                 &RootScope::Global,
                 vec!["-y", "@sentry/dotagents", "remove", "alpha"],
-                None,
+                Some(PathBuf::from("/home")),
             ),
             (
                 "dotagents project",
@@ -742,7 +899,8 @@ mod tests {
             ),
         ];
         for (label, owner_kind, scope, expected_args, expected_cwd) in cases {
-            let (args, cwd) = remove_cli_args_and_cwd(owner_kind, "alpha", scope);
+            let (args, cwd) =
+                remove_cli_args_and_cwd(owner_kind, "alpha", scope, Path::new("/home"));
             let expected_args: Vec<String> = expected_args.into_iter().map(String::from).collect();
             assert_eq!(args, expected_args, "{label}: argv");
             assert_eq!(cwd, expected_cwd, "{label}: cwd");

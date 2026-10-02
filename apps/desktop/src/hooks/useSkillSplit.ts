@@ -24,7 +24,7 @@ export function useSkillSplit(skillName: string, projectPath: string | null, har
         if (ignore) return;
         addToast({
           type: "error",
-          title: "Couldn't find the harness folders",
+          title: "Couldn't find the agent folders",
           message: err instanceof Error ? err.message : String(err),
         });
       });

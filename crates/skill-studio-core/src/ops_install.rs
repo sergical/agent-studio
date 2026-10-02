@@ -426,7 +426,7 @@ fn install_body(
     if per_harness && req.method != InstallMethod::Copy {
         return Err(CoreError::new(
             ErrorCode::InvalidRequest,
-            "a per-harness destination needs the Copy method: the CLIs write the shared folder",
+            "a per-agent destination needs the Copy method: the CLIs write the shared folder",
         ));
     }
     let harnesses = install_targets::requested_harnesses(&req.harnesses);
@@ -476,7 +476,7 @@ fn install_body(
         .ok_or_else(|| {
             CoreError::new(
                 ErrorCode::InvalidRequest,
-                "the chosen harnesses leave nothing to write",
+                "the chosen agents leave nothing to write",
             )
         })?
         .to_path_buf();
@@ -487,7 +487,7 @@ fn install_body(
     {
         return Err(CoreError::new(
             ErrorCode::InvalidRequest,
-            "a deployment already exists at this destination; install does not overwrite one",
+            "a copy already exists at this destination; install does not overwrite one",
         )
         .at(existing));
     }
@@ -740,7 +740,7 @@ fn install_and_link(
                 } else if fs.symlink_metadata(path).is_err() {
                     return Err(CoreError::new(
                         ErrorCode::Io,
-                        "the CLI did not create the expected harness copy",
+                        "the CLI did not create the expected agent copy",
                     )
                     .at(path));
                 }
