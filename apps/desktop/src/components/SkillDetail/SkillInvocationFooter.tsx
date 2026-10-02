@@ -103,7 +103,7 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
         Invocation
       </span>
       {files.length > 1 && (
-        <div className="grid h-8 grid-cols-[16px_minmax(0,1fr)_auto] items-center gap-2.5 border-b border-border-subtle pb-1.5">
+        <div className="grid min-h-8 grid-cols-[16px_minmax(0,1fr)_auto] items-center gap-2.5 border-b border-border-subtle pb-2">
           <span aria-hidden="true" />
           <span className="flex min-w-0 flex-col">
             <span className="truncate text-body font-medium text-text-primary">All locations</span>
@@ -123,7 +123,7 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
       {files.map((file) => (
         <div
           key={file.path}
-          className="grid h-8 grid-cols-[16px_minmax(0,1fr)_auto_auto] items-center gap-2.5"
+          className="grid min-h-8 grid-cols-[16px_minmax(0,1fr)_auto_auto] items-center gap-2.5"
         >
           <StatusIcon
             icon={<HarnessIcon harness={file.harness} size={16} />}
