@@ -250,7 +250,10 @@ fn remove_via_cli(
         program: "npx".to_string(),
         args,
         cwd,
-        env: Vec::new(),
+        env: vec![(
+            "HOME".to_string(),
+            rt.scope.home.lexical.display().to_string(),
+        )],
         timeout_ms: 120_000,
     };
     let output = spawner.run(&spec, ctx.cancel.as_ref())?;

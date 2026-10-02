@@ -54,7 +54,7 @@ const CODEX_ROOT_RELATIVE: &str = ".codex/skills";
 /// CLI trace parity test below rely on.
 struct FakeNpxSpawner {
     home: PathBuf,
-    recorded: Mutex<Vec<(Vec<String>, Option<PathBuf>)>>,
+    recorded: Mutex<Vec<(Vec<String>, Option<PathBuf>, Vec<(String, String)>)>>,
     /// Set by [`FakeNpxSpawner::fail_next_call`]: the next `run` call
     /// returns a nonzero exit before touching disk, simulating an `npx`
     /// process crashing before it deletes anything - the CLI-based
@@ -86,7 +86,7 @@ impl ProcessSpawner for FakeNpxSpawner {
         self.recorded
             .lock()
             .unwrap()
-            .push((spec.args.clone(), spec.cwd.clone()));
+            .push((spec.args.clone(), spec.cwd.clone(), spec.env.clone()));
         if self.fail_next.swap(false, Ordering::SeqCst) {
             return Ok(ProcessOutput {
                 status: Some(1),
@@ -1542,7 +1542,7 @@ fn cli_remove_matches_the_npx_skills_remove_trace_byte_for_byte_apart_from_times
         1,
         "remove_via_cli must call npx exactly once"
     );
-    let (args, cwd) = &recorded[0];
+    let (args, cwd, env) = &recorded[0];
     assert_eq!(
         args, &trace.args,
         "remove_via_cli's argv drifted from the recorded skills.sh trace"
@@ -1553,6 +1553,13 @@ fn cli_remove_matches_the_npx_skills_remove_trace_byte_for_byte_apart_from_times
         cwd,
         &trace.cwd.clone().or_else(|| Some(home.clone())),
         "remove_via_cli's cwd drifted from the recorded skills.sh trace"
+    );
+    // The CLI reads its home from `$HOME`, so a `--home` run must point it at
+    // the same home the guard checked, not the user's real one.
+    assert_eq!(
+        env,
+        &vec![("HOME".to_string(), home.display().to_string())],
+        "remove_via_cli must run the CLI with HOME set to the scope home"
     );
 
     assert!(
