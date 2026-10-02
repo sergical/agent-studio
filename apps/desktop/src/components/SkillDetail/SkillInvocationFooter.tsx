@@ -6,7 +6,7 @@
 // still differ from the rest.
 // ============================================================================
 
-import { useState } from "react";
+import { useRef } from "react";
 import { ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 import { useAppStore } from "../../store/appStore";
@@ -21,8 +21,6 @@ import {
 } from "./skill-location-status";
 import type { InvocationFile } from "./skill-location-status";
 import type { InstalledSkill, InvocationPolicy } from "@skill-studio/lib";
-
-const ALL_FILES = "all";
 
 interface InvocationToggleProps {
   label: string;
@@ -64,8 +62,9 @@ interface SkillInvocationFooterProps {
 
 export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterProps) {
   const addToast = useAppStore((state) => state.addToast);
-  /** A file path, or `ALL_FILES` while the "All locations" control saves. */
-  const [saving, setSaving] = useState<string | null>(null);
+  // A save in flight drops further clicks rather than disabling the items: a disabled item loses
+  // keyboard focus, and the pressed value only moves once the snapshot refresh arrives.
+  const isSaving = useRef(false);
 
   const editableFiles = files.filter((file) => file.editable);
   const lockedFiles = files.filter((file) => !file.editable);
@@ -74,16 +73,18 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
   const policyFiles = editableFiles.length > 0 ? editableFiles : files;
   const policies = new Set(policyFiles.map((file) => file.invocation));
   const sharedPolicy = policies.size === 1 ? policyFiles[0].invocation : null;
-  let allCaption: string | null = null;
-  if (editableFiles.length > 0 && lockedFiles.length > 0) {
-    allCaption = `${lockedFiles.length} locked file${lockedFiles.length === 1 ? "" : "s"} not changed`;
-  } else if (sharedPolicy === null) {
-    allCaption = "Files differ";
-  }
+  const allCaption = [
+    sharedPolicy === null ? "Files differ" : null,
+    editableFiles.length > 0 && lockedFiles.length > 0
+      ? `${lockedFiles.length} locked file${lockedFiles.length === 1 ? "" : "s"} not changed`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
-  const save = async (key: string, targets: InvocationFile[], policy: InvocationPolicy) => {
-    if (saving || targets.length === 0) return;
-    setSaving(key);
+  const save = async (targets: InvocationFile[], policy: InvocationPolicy) => {
+    if (isSaving.current || targets.length === 0) return;
+    isSaving.current = true;
     try {
       await setInvocationForFiles(skill, targets, policy);
     } catch (err) {
@@ -93,7 +94,7 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
       if (err instanceof Error) message = err.message;
       addToast({ type: "error", title: "Couldn't change invocation policy", message });
     }
-    setSaving(null);
+    isSaving.current = false;
   };
 
   return (
@@ -113,9 +114,9 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
           <InvocationToggle
             label="Invocation for all locations"
             value={sharedPolicy}
-            locked={editableFiles.length === 0 || saving !== null}
+            locked={editableFiles.length === 0}
             lockedReason={editableFiles.length === 0 ? files[0].disabledReason : undefined}
-            onSelect={(policy) => void save(ALL_FILES, editableFiles, policy)}
+            onSelect={(policy) => void save(editableFiles, policy)}
           />
         </div>
       )}
@@ -149,9 +150,9 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
           <InvocationToggle
             label={`Invocation for ${file.name}`}
             value={file.invocation}
-            locked={!file.editable || saving === file.path || saving === ALL_FILES}
+            locked={!file.editable}
             lockedReason={file.editable ? undefined : file.disabledReason}
-            onSelect={(policy) => void save(file.path, [file], policy)}
+            onSelect={(policy) => void save([file], policy)}
           />
         </div>
       ))}

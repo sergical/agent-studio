@@ -309,7 +309,7 @@ export function useLocationActions(
  * editor uses: only the global Universal folder can need a fork before editing (`fileEditability`
  * keeps managed Project folders and copies out of this branch). The forks run one at a time, then
  * one backend call writes every file, so the skill list refreshes once and nothing is still
- * writing when this returns. Throws with the first file's error. Used by `SkillInvocationFooter`.
+ * writing when this returns. Throws with how many files changed and the first failure. Used by `SkillInvocationFooter`.
  */
 export async function setInvocationForFiles(
   skill: InstalledSkill,
@@ -324,8 +324,16 @@ export async function setInvocationForFiles(
     files.map((file) => ({ name: skill.name, path: `${file.path}/SKILL.md` })),
     policy,
   );
-  const failed = results.find((result) => result.error !== null);
-  if (failed?.error) throw new Error(failed.error);
+  // A missing result counts as a failure, the same as the list's bulk Invocation action.
+  const failures = files.flatMap((file, index) => {
+    const error = results[index] ? results[index].error : "The batch returned no result.";
+    return error === null ? [] : [{ path: file.path, error }];
+  });
+  if (failures.length === 0) return;
+  const [first] = failures;
+  if (files.length === 1) throw new Error(first.error);
+  const changed = files.length - failures.length;
+  throw new Error(`Changed ${changed} of ${files.length} files. ${first.path}: ${first.error}`);
 }
 
 /** Forks a shared folder an update would write over, so the edit stays. Ambiguous and manual folders have no upstream, so they are edited in place. */
