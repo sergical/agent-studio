@@ -99,6 +99,7 @@ own `target/` filled 155 GB of the user's disk. These rules are firm:
 
   Cargo locks the folder, so two builds at the same time wait for each other.
   That is the expected cost.
+
 - **Clean up when the work is done.** When a worktree's PR merges or closes, or
   the session ends with its work pushed, run `git worktree remove <path>`. If
   the worktree has uncommitted changes, keep it, delete its `target/` and
