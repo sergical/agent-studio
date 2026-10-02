@@ -547,9 +547,9 @@ describe("titleLink", () => {
     expect(titleLink(skill, false)).toBe("Enable everywhere");
   });
 
-  it("falls back to Update when nothing else applies", () => {
+  it("leaves Update to the page header, so the card title never reads as updating locations", () => {
     const skill = fixtureSkill({ has_update: true });
-    expect(titleLink(skill, false)).toBe("Update");
+    expect(titleLink(skill, false)).toBeNull();
   });
 
   it("returns null when there is nothing to fix", () => {

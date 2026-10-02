@@ -2,8 +2,9 @@
 // SkillLocationsCard - "Where it lives": one scope block per Global/project,
 // each with the shared-folder accordion (if any) plus every harness's own
 // entry as a flat sibling row, an uppercase scope eyebrow when the skill
-// lives in a project, and an Invocation footer - one segmented Both/User
-// only/Model only control per file. Row rendering lives in
+// lives in a project, and, when the skill has two or more SKILL.md files, an
+// Invocation footer - one segmented Both/User only/Model only control per
+// file. A single file is set from the properties rail alone. Row rendering lives in
 // SkillLocationScope/SkillLocationRow so this file stays under
 // react-doctor's line cap.
 // ============================================================================
@@ -42,7 +43,7 @@ interface SkillLocationsCardProps {
 }
 
 interface LocationActionForTitle {
-  kind: "unpark" | "compare" | "install-again" | "update";
+  kind: "unpark" | "compare" | "install-again";
 }
 
 const TITLE_LINK_ACTIONS = {
@@ -50,13 +51,12 @@ const TITLE_LINK_ACTIONS = {
   "Compare copies": { kind: "compare" },
   "Install again": { kind: "install-again" },
   "Enable everywhere": { kind: "unpark" },
-  Update: { kind: "update" },
 } satisfies Record<NonNullable<ReturnType<typeof titleLink>>, LocationActionForTitle>;
 
 /**
  * "Where it lives": Global first, then one block per project, each folded to
- * its own rollup dot until opened, plus an Invocation footer - one file, one
- * segmented control. A dotagents/skills.sh-managed skill's shared file forks
+ * its own rollup dot until opened, plus an Invocation footer for two or more
+ * files - one file, one segmented control. A dotagents/skills.sh-managed skill's shared file forks
  * first, same rule as the SKILL.md editor, so an invocation change sticks.
  */
 export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCardProps) {
@@ -140,7 +140,7 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
         </div>
       )}
 
-      {files.length > 0 && (
+      {files.length > 1 && (
         <div className="mt-3 flex flex-col gap-1.5 border-t border-border-subtle pt-3">
           <span className="text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
             Invocation
@@ -251,7 +251,6 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
           onClose={actions.closePluginUninstallRequest}
         />
       )}
-      {actions.updateDialog}
     </div>
   );
 }

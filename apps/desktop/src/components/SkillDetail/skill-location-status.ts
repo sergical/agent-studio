@@ -88,7 +88,6 @@ export type LocationAction =
   | { kind: "split"; target: LifecycleTarget; projectPath: string | null; readers: AgentId[] }
   | { kind: "remove-scope"; scopeLabel: string; projectPath: string | null }
   | { kind: "remove-deployment"; scopeLabel: string; deployment: Deployment }
-  | { kind: "update" }
   | { kind: "install-again" }
   | { kind: "remove-lock-entry" }
   | { kind: "promote-global"; source: string; agents: AgentId[] };
@@ -827,16 +826,15 @@ export function scopeGroupsHaveDrift(groups: ScopeGroup[]): boolean {
   return groups.some((g) => g.rows.some((r) => r.conditions.some((c) => c.status === "Differs")));
 }
 
-/** The card title's one right-aligned action link, precedence per status-spec.md §2: unpark > compare > install-again > enable-everywhere > update. */
+/** The card title's one right-aligned action link, precedence per status-spec.md §2: unpark > compare > install-again > enable-everywhere. Update stays in the page header: here it read as updating the locations. */
 export function titleLink(
   skill: InstalledSkill,
   hasDrift: boolean,
-): "Unpark" | "Compare copies" | "Install again" | "Enable everywhere" | "Update" | null {
+): "Unpark" | "Compare copies" | "Install again" | "Enable everywhere" | null {
   if (liveElsewhere(skill)) return "Unpark";
   if (hasDrift) return "Compare copies";
   if (skill.deployments.length === 0) return "Install again";
   if (skill.parked) return "Enable everywhere";
-  if (skill.update_owner_ids.length > 0) return "Update";
   return null;
 }
 
