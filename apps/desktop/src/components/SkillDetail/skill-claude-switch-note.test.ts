@@ -25,7 +25,9 @@ describe("claudeCodeSwitchToast", () => {
       false,
     );
     expect(toast.title).toBe("tdd is off for Claude Code");
-    expect(toast.message).toBe(`${CLAUDE_CODE_SWITCH_NOTE} It reaches alpha, beta.`);
+    expect(toast.message).toBe(
+      "Claude Code turns skills off by name, so this also applies in alpha, beta.",
+    );
   });
 
   it("a skill with no project copy gets the note without a project list", () => {

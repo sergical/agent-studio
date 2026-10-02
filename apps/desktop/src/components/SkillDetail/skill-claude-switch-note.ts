@@ -30,7 +30,7 @@ export function claudeCodeSwitchToast(
   const projects = claudeCodeProjectNames(skill.deployments);
   const note =
     projects.length > 0
-      ? `${CLAUDE_CODE_SWITCH_NOTE} It reaches ${projects.join(", ")}.`
+      ? `Claude Code turns skills off by name, so this also applies in ${projects.join(", ")}.`
       : CLAUDE_CODE_SWITCH_NOTE;
   return {
     type: "success",
