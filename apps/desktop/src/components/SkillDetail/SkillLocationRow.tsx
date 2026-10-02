@@ -5,13 +5,15 @@
 // menu. Status never lives in the name or the chip - see status-spec.md §1.
 // ============================================================================
 
-import { Link2, Puzzle } from "lucide-react";
+import { Link2, Loader2, Puzzle } from "lucide-react";
+import { useOptimisticAction } from "../../hooks/useOptimisticAction";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { StatusIcon } from "../ui/StatusIcon";
 import { SwitchControl } from "../ui/SwitchControl";
 import { TooltipControl } from "../ui/TooltipControl";
 import { homeRelativePath } from "@skill-studio/lib";
 import { SkillLocationMenu } from "./SkillLocationMenu";
+import { CLAUDE_CODE_SWITCH_NOTE } from "./skill-claude-switch-note";
 import { rowMenu, tipLines } from "./skill-location-status";
 import type { LocationAction, LocationRow } from "./skill-location-status";
 
@@ -37,26 +39,55 @@ function LocationRowSwitch({
   onAction,
 }: {
   row: LocationRow;
-  onAction: (action: LocationAction) => void;
+  onAction: (action: LocationAction) => Promise<boolean>;
 }) {
+  // The switch is never disabled while pending: a disabled control loses keyboard focus.
+  const optimistic = useOptimisticAction(row.switchOn);
+
   if (row.hasSwitch) {
-    return (
+    const switchControl = (
       <SwitchControl
-        checked={row.switchOn}
+        checked={optimistic.value}
         onCheckedChange={(next) =>
-          onAction(
-            row.kind === "reader"
-              ? {
-                  kind: "set-reader-enabled",
-                  target: row.lifecycleTarget,
-                  agent: row.harness,
-                  enabled: next,
-                }
-              : { kind: "set-enabled", deployment: row.deployment!, enabled: next },
+          void optimistic.run(
+            next,
+            () =>
+              onAction(
+                row.kind === "reader"
+                  ? {
+                      kind: "set-reader-enabled",
+                      target: row.lifecycleTarget,
+                      agent: row.harness,
+                      enabled: next,
+                    }
+                  : { kind: "set-enabled", deployment: row.deployment!, enabled: next },
+              ),
+            next ? "Couldn't enable" : "Couldn't disable",
           )
         }
         ariaLabel={`Enabled for ${row.harnessLabel}`}
       />
+    );
+    return (
+      <span className="relative flex items-center">
+        {/* Out of flow, so rows with and without a live switch keep their columns aligned. */}
+        <span className="absolute right-full mr-1.5 flex size-3 items-center" aria-live="polite">
+          {optimistic.pending && (
+            <Loader2
+              size={12}
+              className="animate-spin text-text-tertiary motion-reduce:animate-none"
+              aria-label="Saving"
+            />
+          )}
+        </span>
+        {row.harness === "claude-code" ? (
+          <TooltipControl content={CLAUDE_CODE_SWITCH_NOTE}>
+            <span className="inline-flex">{switchControl}</span>
+          </TooltipControl>
+        ) : (
+          switchControl
+        )}
+      </span>
     );
   }
 
@@ -131,7 +162,7 @@ export function SkillLocationRow({
 }: {
   row: LocationRow;
   scopeLabel: string;
-  onAction: (action: LocationAction) => void;
+  onAction: (action: LocationAction) => Promise<boolean>;
 }) {
   const menu = rowMenu(row, scopeLabel);
   const tip = tipLines(row.conditions);

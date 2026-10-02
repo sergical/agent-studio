@@ -35,7 +35,7 @@ export function SkillLocationScope({
 }: {
   group: ScopeGroup;
   showEyebrow: boolean;
-  onAction: (action: LocationAction) => void;
+  onAction: (action: LocationAction) => Promise<boolean>;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const { shared } = group;
@@ -127,7 +127,7 @@ export function SkillLocationScope({
             disabled={switchPolicy.disabled}
             onCheckedChange={(next) => {
               const action = switchPolicy.actionForCheckedChange(next);
-              if (action) onAction(action);
+              if (action) void onAction(action);
             }}
             ariaLabel={group.isGlobal ? "Enabled everywhere" : `Enabled in ${group.label}`}
           />

@@ -184,10 +184,11 @@ export function SkillListTable({
     syncSelectionMode,
     handleRowCheckboxClick,
   } = useSkillListSelection(rows, rowPath);
-  const { handleAct, dialog: updateDialog } = useSkillListAct(
-    onSelectSkill,
-    deploymentPathForSkill,
-  );
+  const {
+    handleAct,
+    pendingLabelFor,
+    dialog: updateDialog,
+  } = useSkillListAct(onSelectSkill, deploymentPathForSkill);
   const { scrollElement, scrollMargin, setGridElement } = useSkillListScrollMargin();
 
   /** The flat item list the virtualizer measures, and each group's offset/size in that same
@@ -337,6 +338,7 @@ export function SkillListTable({
         glyphSize={GLYPH_SIZE}
         rowRef={rowRef(skill.name)}
         onOpen={() => onSelectSkill(skill.name, deploymentPathForSkill?.(skill))}
+        busyLabel={pendingLabelFor(skill)}
         onAct={(label) => void handleAct(label, skill)}
         onCheckedChange={(shiftKey) => handleRowCheckboxClick(index, shiftKey)}
         onMenuOpenChange={(open) => {

@@ -5,6 +5,7 @@
 // ============================================================================
 
 import type { CSSProperties } from "react";
+import { Loader2 } from "lucide-react";
 import type { InstalledSkill } from "@skill-studio/lib";
 import { HarnessStack } from "./HarnessStack";
 import {
@@ -36,6 +37,8 @@ interface SkillListRowProps {
   glyphSize: number;
   rowRef: (el: HTMLDivElement | null) => void;
   onOpen: () => void;
+  /** What the row is doing now ("Parking…"), or undefined when idle. */
+  busyLabel?: string;
   onAct: (label: string) => void;
   onCheckedChange: (shiftKey: boolean) => void;
   onMenuOpenChange: (open: boolean) => void;
@@ -56,6 +59,7 @@ export function SkillListRow({
   glyphSize,
   rowRef,
   onOpen,
+  busyLabel,
   onAct,
   onCheckedChange,
   onMenuOpenChange,
@@ -66,6 +70,7 @@ export function SkillListRow({
       role="row"
       aria-rowindex={index + 1}
       aria-selected={checked}
+      aria-busy={busyLabel !== undefined}
       tabIndex={tabIndex}
       style={style}
       // `scroll-mt-7` (28px, `HEADER_HEIGHT`) keeps a row scrolled to by `scrollIntoView` from
@@ -90,13 +95,21 @@ export function SkillListRow({
       {/* Not `contents`: `LeadingCell` renders nothing for a healthy row, and a `contents`
           wrapper around no children drops out of the grid, shifting every column after it. */}
       <div role="gridcell" className="flex items-center justify-center">
-        <LeadingCell
-          skill={skill}
-          state={state}
-          glyphSize={glyphSize}
-          onOpen={onOpen}
-          onAct={onAct}
-        />
+        {busyLabel ? (
+          <Loader2
+            size={glyphSize}
+            className="animate-spin text-text-tertiary motion-reduce:animate-none"
+            aria-label={busyLabel}
+          />
+        ) : (
+          <LeadingCell
+            skill={skill}
+            state={state}
+            glyphSize={glyphSize}
+            onOpen={onOpen}
+            onAct={onAct}
+          />
+        )}
       </div>
       <div role="gridcell" className="contents">
         <SkillNameCell skill={skill} />

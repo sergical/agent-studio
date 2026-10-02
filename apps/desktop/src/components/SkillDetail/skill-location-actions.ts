@@ -41,12 +41,16 @@ import {
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import { canOfferHarnessSwitch } from "./skill-location-helpers";
+import { claudeCodeSwitchToast } from "./skill-claude-switch-note";
 import { hasUpstreamOwner } from "./skill-location-status";
 import type { InvocationFile, LocationAction } from "./skill-location-status";
 
 interface UseLocationActionsResult {
-  run: (action: LocationAction) => void;
+  /** Resolves `true` when the action succeeded or only opened a dialog, `false` after its error toast. */
+  run: (action: LocationAction) => Promise<boolean>;
   isBusy: boolean;
+  /** The kind of every action still running, for a control that shows its own pending state. */
+  busyKinds: LocationAction["kind"][];
   /** Set while a "Convert to per-skill links…" action is pending confirmation. */
   materializeRequest: MaterializeLocationRequest | null;
   closeMaterializeRequest: () => void;
@@ -119,7 +123,7 @@ export function useLocationActions(
   onCompareCopies?: () => void,
 ): UseLocationActionsResult {
   const addToast = useAppStore((state) => state.addToast);
-  const [isBusy, setIsBusy] = useState(false);
+  const [busyKinds, setBusyKinds] = useState<LocationAction["kind"][]>([]);
   const [materializeRequest, setMaterializeRequest] = useState<MaterializeLocationRequest | null>(
     null,
   );
@@ -135,52 +139,58 @@ export function useLocationActions(
   const [pluginUninstallRequest, setPluginUninstallRequest] = useState<Deployment | null>(null);
   const [splitRequest, setSplitRequest] = useState<SplitLocationRequest | null>(null);
 
-  const runWithErrorToast = (title: string, fn: () => Promise<void>) => {
-    setIsBusy(true);
-    fn()
-      .catch((err) => {
+  /** Resolves `true` when `fn` succeeded, `false` after showing its error toast. Never rejects. */
+  const runWithErrorToast = (
+    title: string,
+    fn: () => Promise<void>,
+    onSuccess?: () => void,
+  ): Promise<boolean> =>
+    fn().then(
+      () => {
+        onSuccess?.();
+        return true;
+      },
+      (err) => {
         addToast({
           type: "error",
           title,
           message: err instanceof Error ? err.message : "Unknown error",
         });
-      })
-      .finally(() => setIsBusy(false));
-  };
+        return false;
+      },
+    );
 
-  const run = (action: LocationAction) => {
+  const dispatch = (action: LocationAction): Promise<boolean> => {
     switch (action.kind) {
       case "relink":
-        runWithErrorToast("Couldn't relink", () =>
+        return runWithErrorToast("Couldn't relink", () =>
           repairSkillLink(action.deployment.path, "relink"),
         );
-        return;
       case "remove-link":
-        runWithErrorToast("Couldn't remove link", () =>
+        return runWithErrorToast("Couldn't remove link", () =>
           repairSkillLink(action.deployment.path, "remove"),
         );
-        return;
       case "edit-skill-md":
       case "open-editor":
-        runWithErrorToast("Couldn't open in your editor", () =>
+        return runWithErrorToast("Couldn't open in your editor", () =>
           openSkillPath(action.path, "editor"),
         );
-        return;
       case "reveal":
-        runWithErrorToast("Couldn't reveal in Finder", () => openSkillPath(action.path, "reveal"));
-        return;
+        return runWithErrorToast("Couldn't reveal in Finder", () =>
+          openSkillPath(action.path, "reveal"),
+        );
       case "compare":
         onCompareCopies?.();
-        return;
+        return Promise.resolve(true);
       case "convert-root":
         setMaterializeRequest(materializeRequestForLocationAction(action));
-        return;
+        return Promise.resolve(true);
       case "make-independent-copy":
         setIndependentCopyRequest({
           deployment: action.deployment,
           scopeLabel: action.scopeLabel,
         });
-        return;
+        return Promise.resolve(true);
       case "set-enabled": {
         const { deployment, enabled } = action;
         const readerAgent = agentIdFromDeploymentLabel(deployment.agent);
@@ -188,33 +198,42 @@ export function useLocationActions(
         // (see `canOfferHarnessSwitch`). Both the rail and the Locations card disable the
         // control for any row that fails this check, so the rejection below is a
         // defense-in-depth backstop, not the normal path.
-        runWithErrorToast(enabled ? "Couldn't enable" : "Couldn't disable", () =>
-          deployment.disabled_by === "studio-moved"
-            ? restoreMovedDeployment({ deployment_id: deployment.id })
-            : readerAgent && readerAgent !== "shared" && canOfferHarnessSwitch(deployment)
-              ? setHarnessEnabled({ deployment_id: deployment.id }, readerAgent, enabled)
-              : Promise.reject(new Error("This copy has no off switch")),
+        return runWithErrorToast(
+          enabled ? "Couldn't enable" : "Couldn't disable",
+          () =>
+            deployment.disabled_by === "studio-moved"
+              ? restoreMovedDeployment({ deployment_id: deployment.id })
+              : readerAgent && readerAgent !== "shared" && canOfferHarnessSwitch(deployment)
+                ? setHarnessEnabled({ deployment_id: deployment.id }, readerAgent, enabled)
+                : Promise.reject(new Error("This copy has no off switch")),
+          () => {
+            if (readerAgent === "claude-code") addToast(claudeCodeSwitchToast(skill, enabled));
+          },
         );
-        return;
       }
       case "set-reader-enabled":
-        runWithErrorToast(action.enabled ? "Couldn't enable" : "Couldn't disable", () =>
-          setHarnessEnabled(action.target, action.agent, action.enabled),
+        return runWithErrorToast(
+          action.enabled ? "Couldn't enable" : "Couldn't disable",
+          () => setHarnessEnabled(action.target, action.agent, action.enabled),
+          () => {
+            if (action.agent === "claude-code") {
+              addToast(claudeCodeSwitchToast(skill, action.enabled));
+            }
+          },
         );
-        return;
       case "set-plugin-enabled": {
         const { deployment, enabled } = action;
-        runWithErrorToast(enabled ? "Couldn't enable plugin" : "Couldn't disable plugin", () =>
-          setPluginEnabled(deployment.plugin!.id, deployment.agent, enabled),
+        return runWithErrorToast(
+          enabled ? "Couldn't enable plugin" : "Couldn't disable plugin",
+          () => setPluginEnabled(deployment.plugin!.id, deployment.agent, enabled),
         );
-        return;
       }
       case "uninstall-plugin":
         setPluginUninstallRequest(action.deployment);
-        return;
+        return Promise.resolve(true);
       case "promote-global": {
         const { source, agents } = action;
-        runWithErrorToast("Couldn't promote to global", async () => {
+        return runWithErrorToast("Couldn't promote to global", async () => {
           await addSkill({
             source: toWireParsedSkillSource({ kind: "local", localPath: source }),
             method: "copy",
@@ -231,35 +250,34 @@ export function useLocationActions(
             message: "Copied to ~/.agents/skills. Every project reads it from there.",
           });
         });
-        return;
       }
       case "park":
-        runWithErrorToast("Couldn't park skill", () => parkSkill(lifecycleTargetForPark(skill)));
-        return;
+        return runWithErrorToast("Couldn't park skill", () =>
+          parkSkill(lifecycleTargetForPark(skill)),
+        );
       case "unpark":
-        runWithErrorToast("Couldn't unpark skill", () =>
+        return runWithErrorToast("Couldn't unpark skill", () =>
           unparkSkill(lifecycleTargetForPark(skill)),
         );
-        return;
       case "split":
         setSplitRequest({
           target: action.target,
           projectPath: action.projectPath,
           readers: action.readers,
         });
-        return;
+        return Promise.resolve(true);
       case "remove-scope":
         setRemoveRequest({ scopeLabel: action.scopeLabel, projectPath: action.projectPath });
-        return;
+        return Promise.resolve(true);
       case "remove-deployment":
         setRemoveRequest({
           scopeLabel: action.scopeLabel,
           projectPath: action.deployment.project_path ?? null,
           deployment: action.deployment,
         });
-        return;
+        return Promise.resolve(true);
       case "install-again":
-        runWithErrorToast("Couldn't reinstall", async () => {
+        return runWithErrorToast("Couldn't reinstall", async () => {
           const source = parseSkillSource(skill.source);
           if ("error" in source || source.kind !== "github" || !source.repo) {
             throw new Error(`Cannot reinstall ${skill.name}: no GitHub repository is recorded.`);
@@ -279,18 +297,27 @@ export function useLocationActions(
             project_path: null,
           });
         });
-        return;
       case "remove-lock-entry":
-        runWithErrorToast("Couldn't remove lock entry", async () => {
+        return runWithErrorToast("Couldn't remove lock entry", async () => {
           await removeSkill(lifecycleTargetForSkill(skill, "global"));
         });
-        return;
     }
+  };
+
+  const run = (action: LocationAction): Promise<boolean> => {
+    setBusyKinds((kinds) => [...kinds, action.kind]);
+    return dispatch(action).finally(() =>
+      setBusyKinds((kinds) => {
+        const index = kinds.indexOf(action.kind);
+        return kinds.filter((_, i) => i !== index);
+      }),
+    );
   };
 
   return {
     run,
-    isBusy,
+    isBusy: busyKinds.length > 0,
+    busyKinds,
     materializeRequest,
     closeMaterializeRequest: () => setMaterializeRequest(null),
     independentCopyRequest,

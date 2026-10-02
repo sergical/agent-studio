@@ -7,9 +7,11 @@
 // ============================================================================
 
 import { useRef } from "react";
+import { Loader2 } from "lucide-react";
 import { ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
+import { useOptimisticAction } from "../../hooks/useOptimisticAction";
+import type { OptimisticAction } from "../../hooks/useOptimisticAction";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
-import { useAppStore } from "../../store/appStore";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { StatusIcon } from "../ui/StatusIcon";
 import { TooltipControl } from "../ui/TooltipControl";
@@ -29,30 +31,52 @@ interface InvocationToggleProps {
   /** Locks every item except the pressed one. */
   locked: boolean;
   lockedReason?: string;
-  onSelect: (policy: InvocationPolicy) => void;
+  /** Gets the control's optimistic state so the save can show the new value at once. */
+  onSelect: (
+    policy: InvocationPolicy,
+    optimistic: OptimisticAction<InvocationPolicy | null>,
+  ) => void;
 }
 
 function InvocationToggle({ label, value, locked, lockedReason, onSelect }: InvocationToggleProps) {
+  const optimistic = useOptimisticAction(value);
+  const shown = optimistic.value;
   const group = (
     <ToggleGroup
       variant="segmented"
       aria-label={label}
-      value={value ? [value] : []}
-      onValueChange={(next) => singleSelectToggleValue<InvocationPolicy>(next, onSelect)}
+      value={shown ? [shown] : []}
+      onValueChange={(next) =>
+        singleSelectToggleValue<InvocationPolicy>(next, (policy) => onSelect(policy, optimistic))
+      }
     >
       {INVOCATION_POLICY_OPTIONS.map((option) => (
         <ToggleGroupItem
           key={option.value}
           value={option.value}
           className="h-[26px] px-3 text-small"
-          disabled={locked && value !== option.value}
+          disabled={locked && shown !== option.value}
         >
           {option.label}
         </ToggleGroupItem>
       ))}
     </ToggleGroup>
   );
-  return lockedReason ? <TooltipControl content={lockedReason}>{group}</TooltipControl> : group;
+  return (
+    <span className="flex items-center gap-1.5">
+      {/* A fixed slot, so the control does not shift when the spinner appears. */}
+      <span className="flex size-3 items-center justify-center" aria-live="polite">
+        {optimistic.pending && (
+          <Loader2
+            size={12}
+            className="animate-spin text-text-tertiary motion-reduce:animate-none"
+            aria-label="Saving"
+          />
+        )}
+      </span>
+      {lockedReason ? <TooltipControl content={lockedReason}>{group}</TooltipControl> : group}
+    </span>
+  );
 }
 
 interface SkillInvocationFooterProps {
@@ -61,9 +85,9 @@ interface SkillInvocationFooterProps {
 }
 
 export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterProps) {
-  const addToast = useAppStore((state) => state.addToast);
   // A save in flight drops further clicks rather than disabling the items: a disabled item loses
-  // keyboard focus, and the pressed value only moves once the snapshot refresh arrives.
+  // keyboard focus. The pressed value moves at once (`useOptimisticAction`) and settles when the
+  // snapshot refresh arrives.
   const isSaving = useRef(false);
 
   const editableFiles = files.filter((file) => file.editable);
@@ -82,18 +106,18 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
     .filter(Boolean)
     .join(" · ");
 
-  const save = async (targets: InvocationFile[], policy: InvocationPolicy) => {
+  const save = async (
+    optimistic: OptimisticAction<InvocationPolicy | null>,
+    targets: InvocationFile[],
+    policy: InvocationPolicy,
+  ) => {
     if (isSaving.current || targets.length === 0) return;
     isSaving.current = true;
-    try {
-      await setInvocationForFiles(skill, targets, policy);
-    } catch (err) {
-      // An `if`, not a conditional expression: the React Compiler can't compile a value block
-      // directly inside a try/catch statement.
-      let message = "Unknown error";
-      if (err instanceof Error) message = err.message;
-      addToast({ type: "error", title: "Couldn't change invocation policy", message });
-    }
+    await optimistic.run(
+      policy,
+      () => setInvocationForFiles(skill, targets, policy),
+      "Couldn't change invocation policy",
+    );
     isSaving.current = false;
   };
 
@@ -116,7 +140,7 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
             value={sharedPolicy}
             locked={editableFiles.length === 0}
             lockedReason={editableFiles.length === 0 ? files[0].disabledReason : undefined}
-            onSelect={(policy) => void save(editableFiles, policy)}
+            onSelect={(policy, optimistic) => void save(optimistic, editableFiles, policy)}
           />
         </div>
       )}
@@ -152,7 +176,7 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
             value={file.invocation}
             locked={!file.editable}
             lockedReason={file.editable ? undefined : file.disabledReason}
-            onSelect={(policy) => void save([file], policy)}
+            onSelect={(policy, optimistic) => void save(optimistic, [file], policy)}
           />
         </div>
       ))}

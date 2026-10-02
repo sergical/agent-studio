@@ -241,7 +241,7 @@ describe("buildScopeGroups", () => {
         createElement(SkillLocationRow, {
           row: pi,
           scopeLabel: global.label,
-          onAction: () => undefined,
+          onAction: () => Promise.resolve(true),
         }),
       ),
     );
@@ -492,7 +492,7 @@ describe("buildScopeGroups", () => {
         createElement(SkillLocationRow, {
           row: copyRow,
           scopeLabel: project.label,
-          onAction: () => undefined,
+          onAction: () => Promise.resolve(true),
         }),
       ),
     );
