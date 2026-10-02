@@ -9,7 +9,7 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } fr
 import { Button, Collapsible, CollapsiblePanel, Progress } from "@skill-studio/ui";
 import { formatRelativeTime, formatTokens, shortSha } from "@skill-studio/lib";
 import type { HealthIssue, InstalledSkill, RecentlyUsedSkill } from "@skill-studio/lib";
-import { parkSkill, pullForkUpstream, skillLocalEdits } from "../../lib/skill-api";
+import { parkSkill, skillLocalEdits } from "../../lib/skill-api";
 import {
   conflictedSkillsNote,
   lifecycleTargetForPark,
@@ -149,35 +149,15 @@ function ShowAllLink({
   );
 }
 
-/**
- * "Pull latest" for one Updates row: a fork pulls upstream via
- * `pullForkUpstream`, any other managed skill re-syncs through the guarded update.
- */
+/** "Pull latest" for one Updates row - see `useGuardedSkillUpdate`'s `pullLatest`. */
 function PullLatestButton({ skill }: { skill: InstalledSkill }) {
   const [isPulling, setIsPulling] = useState(false);
-  const addToast = useAppStore((state) => state.addToast);
   const guard = useGuardedSkillUpdate();
 
   const handlePull = async () => {
     setIsPulling(true);
-    try {
-      if (skill.source_kind === "fork") {
-        const result = await pullForkUpstream(lifecycleTargetForPark(skill));
-        // Hoisted out of the `??`: the React Compiler can't compile a value block
-        // (conditional/logical/optional-chaining) directly inside a try/catch statement.
-        let title = result.message;
-        if (!title) title = `Merged ${skill.name}`;
-        addToast({ type: "success", title });
-      } else {
-        await guard.requestUpdate(skill);
-      }
-      setIsPulling(false);
-    } catch (err) {
-      let message = "Unknown error";
-      if (err instanceof Error) message = err.message;
-      addToast({ type: "error", title: "Update failed", message });
-      setIsPulling(false);
-    }
+    await guard.pullLatest(skill);
+    setIsPulling(false);
   };
 
   return (

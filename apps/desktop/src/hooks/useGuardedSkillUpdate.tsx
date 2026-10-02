@@ -5,11 +5,12 @@
 // fork and merge, overwrite, or cancel.
 // ============================================================================
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { forkSkill, pullForkUpstream, skillLocalEdits, updateSkill } from "../lib/skill-api";
 import {
   forkEditedAndUpdate,
   forkableDeployment,
+  lifecycleTargetForPark,
   pullUpstreamToast,
   skillUpdateToast,
   skillsWithLocalEdits,
@@ -55,6 +56,7 @@ export function useGuardedSkillUpdate() {
   const addToast = useAppStore((state) => state.addToast);
   const [pending, setPending] = useState<PendingUpdate | null>(null);
   const [isResolving, setIsResolving] = useState(false);
+  const updating = useRef(new Set<string>());
 
   const overwriteFor =
     (skill: InstalledSkill, { scopeTarget, onFinished }: UpdateRequestOptions) =>
@@ -101,6 +103,7 @@ export function useGuardedSkillUpdate() {
     setPending(null);
     if (!update) return;
     setIsResolving(true);
+    updating.current.add(update.skill.name);
     try {
       await run(update);
     } catch (error) {
@@ -110,6 +113,7 @@ export function useGuardedSkillUpdate() {
         message: error instanceof Error ? error.message : "Unknown error",
       });
     }
+    updating.current.delete(update.skill.name);
     setIsResolving(false);
   };
 
@@ -137,5 +141,29 @@ export function useGuardedSkillUpdate() {
     />
   );
 
-  return { requestUpdate, isResolving, dialog };
+  /** "Pull latest" for one row: a fork merges upstream, any other skill takes the guarded update.
+   * Reports the outcome as a toast and never throws, so a row menu can fire and forget. A second
+   * pull of the same skill while one runs, here or from the dialog, is dropped: the menu closes at
+   * once, so a user who sees nothing happen picks it again, and two `npx skills update` runs on one
+   * folder race. */
+  const pullLatest = async (skill: InstalledSkill) => {
+    if (updating.current.has(skill.name)) return;
+    updating.current.add(skill.name);
+    try {
+      if (skill.source_kind === "fork") {
+        addToast(pullUpstreamToast(await pullForkUpstream(lifecycleTargetForPark(skill))));
+      } else {
+        await requestUpdate(skill);
+      }
+    } catch (error) {
+      // An `if`, not a conditional expression: the React Compiler can't compile a value block
+      // directly inside a try/catch statement.
+      let message = "Unknown error";
+      if (error instanceof Error) message = error.message;
+      addToast({ type: "error", title: "Update failed", message });
+    }
+    updating.current.delete(skill.name);
+  };
+
+  return { requestUpdate, pullLatest, isResolving, dialog };
 }
