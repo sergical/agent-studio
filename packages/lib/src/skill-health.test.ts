@@ -302,6 +302,8 @@ describe("findParkedButReinstalled", () => {
 describe("deploymentWithSpecViolations", () => {
   const WARNING = "description exceeds 1024 characters";
   const ERROR = "missing required frontmatter field: description";
+  const NOTE = WARNING;
+  const MISMATCH = 'name "other" does not match its directory name "find-bugs"';
   const plugin = {
     name: "p",
     version: null,
@@ -318,6 +320,27 @@ describe("deploymentWithSpecViolations", () => {
       ],
     });
     expect(deploymentWithSpecViolations(skill)?.path).toBe("/b");
+  });
+
+  it("a_warning_copy_beats_an_earlier_note_only_copy_or_the_page_opens_a_copy_with_nothing_to_act_on", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/a", spec_violations: [NOTE] }),
+        fixtureDeployment({ path: "/b", spec_violations: [MISMATCH] }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)?.path).toBe("/b");
+  });
+
+  it("a_warning_severity_request_skips_an_earlier_errored_copy_for_the_warning_copy_or_the_spec_warning_row_opens_the_wrong_copy", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/a", spec_violations: [ERROR] }),
+        fixtureDeployment({ path: "/b", spec_violations: [MISMATCH] }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)?.path).toBe("/a");
+    expect(deploymentWithSpecViolations(skill, "warning")?.path).toBe("/b");
   });
 
   it("a_skill_with_no_violations_returns_undefined_so_callers_keep_their_default", () => {

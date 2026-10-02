@@ -272,10 +272,10 @@ function specCondition(violations: string[], path: string): Condition | null {
   return blocking
     ? {
         level: "error",
-        status: "Won't load",
-        phrase: "won't load",
-        plural: "won't load",
-        what: `SKILL.md will not load: ${sentence}`,
+        status: "Skipped by some agents",
+        phrase: "skipped by some agents",
+        plural: "skipped by some agents",
+        what: `SKILL.md: ${sentence}`,
         fix: "Edit SKILL.md.",
         menu: editAndReveal,
       }

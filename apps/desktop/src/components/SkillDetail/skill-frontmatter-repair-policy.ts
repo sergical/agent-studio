@@ -50,6 +50,32 @@ export function frontmatterRepairKindsFor(
   return kinds.has("colon-scalar") ? ["colon-scalar"] : [...kinds];
 }
 
+/** The header line a repair's Fix button sits on: the one whose violation the repair targets. */
+export type FixLine = "error" | "warning" | "note";
+
+/**
+ * Which header line carries the Fix for `lineKind` (the repair that is not the invocation
+ * conflict). YAML repair belongs to the red line; a name repair belongs to the yellow mismatch line,
+ * or to the grey name-format note when no mismatch line is shown. `null` means no line has a Fix.
+ */
+export function fixLineFor(state: {
+  lineKind: FrontmatterRepairKind | undefined;
+  hasMismatchLine: boolean;
+  hasNameFormatNote: boolean;
+}): FixLine | null {
+  switch (state.lineKind) {
+    case "colon-scalar":
+      return "error";
+    case "name-mismatch":
+      return state.hasMismatchLine ? "warning" : null;
+    case "name-format":
+      if (state.hasMismatchLine) return "warning";
+      return state.hasNameFormatNote ? "note" : null;
+    default:
+      return null;
+  }
+}
+
 export const INVOCATION_CONFLICT_OPTIONS: ReadonlyArray<{
   choice: InvocationConflictChoice;
   label: string;

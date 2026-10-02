@@ -31,7 +31,7 @@ export function describeSpecViolationImpact(violation: string): string {
   if (violation.startsWith("invalid YAML frontmatter")) {
     return "pi skips it. Claude Code, Codex, and OpenCode repair it and load it.";
   }
-  const mismatch = /^name "(.*)" does not match its directory name "(.*)"$/.exec(violation);
+  const mismatch = /^name "(.*)" does not match its directory name "(.*)"$/s.exec(violation);
   if (mismatch) {
     return `Claude Code calls it "${mismatch[2]}". Codex, OpenCode, and pi call it "${mismatch[1]}".`;
   }
@@ -65,6 +65,20 @@ export function describeSpecViolations(violations: string[]): string {
     sentences.push(`SKILL.md has no ${andList(missingFields)} in its frontmatter.`);
   }
   sentences.push(...others.map(asSentence));
-  const impacts = new Set(violations.map(describeSpecViolationImpact).filter(Boolean));
+  const missingName = violations.includes("missing required frontmatter field: name");
+  const missingDescription = violations.includes("missing required frontmatter field: description");
+  // Said separately, the two impacts contradict each other (Claude Code "uses the folder name" vs "still loads it").
+  const bothMissing = missingName && missingDescription;
+  const impacts = new Set(
+    violations
+      .filter((v) => !(bothMissing && v.startsWith("missing required frontmatter field: ")))
+      .map(describeSpecViolationImpact)
+      .filter(Boolean),
+  );
+  if (bothMissing) {
+    impacts.add(
+      "Codex, OpenCode, and pi skip it. Claude Code still loads it, under the folder name.",
+    );
+  }
   return [...sentences, ...impacts].join(" ");
 }

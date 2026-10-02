@@ -25,7 +25,12 @@ import type {
   InstalledSkill,
 } from "@skill-studio/lib";
 import { TooltipControl } from "../ui/TooltipControl";
-import { canOfferLocalQuote, frontmatterRepairKindsFor } from "./skill-frontmatter-repair-policy";
+import {
+  canOfferLocalQuote,
+  fixLineFor,
+  frontmatterRepairKindForViolation,
+  frontmatterRepairKindsFor,
+} from "./skill-frontmatter-repair-policy";
 
 interface InstalledSkillHeaderProps {
   skill: InstalledSkill;
@@ -87,8 +92,12 @@ export function InstalledSkillHeader({
   const blockingViolations = (renderedDeployment?.spec_violations ?? []).filter(
     isBlockingSpecViolation,
   );
+  const conflictRepair = frontmatterRepairs.find((repair) => repair.kind === "invocation-conflict");
+  // With a repair, the conflict has its own red line and Fix below; without one, it shows here.
   const warningViolations = (renderedDeployment?.spec_violations ?? []).filter(
-    (v) => specViolationSeverity(v) === "warning" && v !== "conflicting invocation keys",
+    (v) =>
+      specViolationSeverity(v) === "warning" &&
+      !(v === "conflicting invocation keys" && conflictRepair),
   );
   const nameFormatNote = (renderedDeployment?.spec_violations ?? []).find(
     (v) => specViolationSeverity(v) === "note" && v.startsWith('name "'),
@@ -104,7 +113,6 @@ export function InstalledSkillHeader({
     (kind) => kind !== "invocation-conflict",
   );
   const lineRepair = frontmatterRepairs.find((repair) => repair.kind === lineKind);
-  const conflictRepair = frontmatterRepairs.find((repair) => repair.kind === "invocation-conflict");
   // A backend "Fix" preview wins; the local quote repair covers what it declines.
   const canQuote = canOfferLocalQuote({
     isPreviewSettled: isFrontmatterPreviewSettled,
@@ -118,9 +126,13 @@ export function InstalledSkillHeader({
     yamlLocation && skillMdContent && canQuote
       ? describeFrontmatterErrorLine(skillMdContent, yamlLocation.line)
       : null;
-  const fixButtonOnWarning = blockingViolations.length === 0 && warningViolations.length > 0;
-  const fixButtonOnNote =
-    blockingViolations.length === 0 && warningViolations.length === 0 && Boolean(nameFormatNote);
+  const fixLine = fixLineFor({
+    lineKind,
+    hasMismatchLine: warningViolations.some(
+      (v) => frontmatterRepairKindForViolation(v) === "name-mismatch",
+    ),
+    hasNameFormatNote: Boolean(nameFormatNote),
+  });
   const lineFixButton = lineRepair ? (
     <Button size="sm" variant="outline" onClick={() => onFixRepair(lineRepair.kind)}>
       Fix
@@ -170,32 +182,31 @@ export function InstalledSkillHeader({
               Quote the {quoteRepair.key}
             </Button>
           )}
-          {(hasMalformedYaml || lineRepair) && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={
-                lineRepair
-                  ? () => onFixRepair(lineRepair.kind)
-                  : () => onEditManually(yamlLocation?.line)
-              }
-            >
-              {lineRepair ? "Fix" : "Edit manually"}
-            </Button>
-          )}
+          {hasMalformedYaml &&
+            (fixLine === "error" && lineRepair ? (
+              lineFixButton
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onEditManually(yamlLocation?.line)}
+              >
+                Edit manually
+              </Button>
+            ))}
         </div>
       )}
       {warningViolations.length > 0 && (
         <div className="flex items-center gap-2 text-small text-warning">
           <AlertTriangle size={13} />
           <span>{describeSpecViolations(warningViolations)}</span>
-          {fixButtonOnWarning && lineFixButton}
+          {fixLine === "warning" && lineFixButton}
         </div>
       )}
       {nameFormatNote && (
         <div className="flex items-center gap-2 text-small text-text-tertiary">
           <span>{describeSpecViolations([nameFormatNote])}</span>
-          {fixButtonOnNote && lineFixButton}
+          {fixLine === "note" && lineFixButton}
         </div>
       )}
       {conflictRepair && (

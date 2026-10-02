@@ -39,21 +39,29 @@ describe("describeSpecViolations", () => {
     );
   });
 
-  it("states who skips a skill with no name and no description, once each", () => {
-    const text = describeSpecViolations([
-      "missing required frontmatter field: name",
-      "missing required frontmatter field: description",
-    ]);
-    expect(text).toContain("Codex, OpenCode, and pi skip it. Claude Code still loads it.");
-    expect(text).toContain("OpenCode skips it without a warning.");
-  });
-
   it("repeats an impact sentence once when two violations share it", () => {
     const text = describeSpecViolations([
       "compatibility exceeds 500 characters",
       "SKILL.md exceeds recommended 500 lines",
     ]);
     expect(text.match(/Every agent still loads it\./g)).toHaveLength(1);
+  });
+
+  it("says one combined impact when name and description are both missing, or the two sentences contradict each other", () => {
+    expect(
+      describeSpecViolations([
+        "missing required frontmatter field: name",
+        "missing required frontmatter field: description",
+      ]),
+    ).toBe(
+      "SKILL.md has no name and description in its frontmatter. Codex, OpenCode, and pi skip it. Claude Code still loads it, under the folder name.",
+    );
+  });
+
+  it("matches a mismatch whose name holds a newline, or the impact sentence is dropped", () => {
+    expect(describeSpecViolations(['name "a\nb" does not match its directory name "c"'])).toContain(
+      'Claude Code calls it "c".',
+    );
   });
 
   it("returns an empty string when there is nothing to report", () => {

@@ -251,12 +251,23 @@ export function isSpecWarning(violation: string): boolean {
  * with any own copy (readable or not) only considers its own copies (editable first), so a plugin copy's
  * problems never pull the page onto a read-only file; a plugin-only skill (or the plugin view,
  * which narrows to plugin copies) considers its plugin copies. A broken symlink has no readable
- * SKILL.md to show, so it never wins on violations alone.
+ * SKILL.md to show, so it never wins on violations alone. With `severity: "warning"` (a spec-warning
+ * issue), a copy with a warning comes first, so the page opens the copy the issue is about.
  */
-export function deploymentWithSpecViolations(skill: InstalledSkill): Deployment | undefined {
+export function deploymentWithSpecViolations(
+  skill: InstalledSkill,
+  severity?: "warning",
+): Deployment | undefined {
   const own = [...editableDeployments(skill), ...ownDeployments(skill)];
   const pool = ownDeployments(skill).length > 0 ? own : skill.deployments;
   const readable = pool.filter((d) => !isUnresolvedDeployment(d));
+  if (severity === "warning") {
+    return (
+      readable.find((d) => d.spec_violations.some(isSpecWarning)) ??
+      readable.find((d) => d.spec_violations.some(isBlockingSpecViolation)) ??
+      readable.find((d) => d.spec_violations.length > 0)
+    );
+  }
   return (
     readable.find((d) => d.spec_violations.some(isBlockingSpecViolation)) ??
     readable.find((d) => d.spec_violations.some(isSpecWarning)) ??

@@ -11,6 +11,7 @@ import {
   frontmatterRepairKindForViolation,
   frontmatterRepairKindsFor,
   frontmatterRepairActionLabels,
+  fixLineFor,
   hasMalformedYamlWarning,
 } from "./skill-frontmatter-repair-policy";
 import violationMessages from "../../../../../crates/skill-studio-core/tests/fixtures/frontmatter-violation-messages.json";
@@ -171,5 +172,40 @@ describe("frontmatterRepairCopy", () => {
     expect(frontmatterRepairCopy("name-mismatch").success).toBe("Name fixed");
     expect(frontmatterRepairCopy("name-format").success).toBe("Name fixed");
     expect(frontmatterRepairCopy("invocation-conflict").success).toBe("Invocation fixed");
+  });
+});
+
+describe("fixLineFor", () => {
+  it("puts_the_name_fix_on_the_yellow_mismatch_line_not_the_red_missing_field_line_or_the_button_opens_a_preview_that_does_not_match_the_line", () => {
+    expect(
+      fixLineFor({ lineKind: "name-mismatch", hasMismatchLine: true, hasNameFormatNote: false }),
+    ).toBe("warning");
+  });
+
+  it("puts_the_name_format_fix_on_the_grey_note_when_an_error_exists_and_no_mismatch_line_shows_or_the_error_line_steals_it", () => {
+    expect(
+      fixLineFor({ lineKind: "name-format", hasMismatchLine: false, hasNameFormatNote: true }),
+    ).toBe("note");
+  });
+
+  it("puts_the_name_format_fix_on_the_mismatch_line_when_both_show_or_the_button_renders_twice", () => {
+    expect(
+      fixLineFor({ lineKind: "name-format", hasMismatchLine: true, hasNameFormatNote: true }),
+    ).toBe("warning");
+  });
+
+  it("puts_the_yaml_fix_on_the_red_line_or_malformed_yaml_loses_its_repair", () => {
+    expect(
+      fixLineFor({ lineKind: "colon-scalar", hasMismatchLine: false, hasNameFormatNote: false }),
+    ).toBe("error");
+  });
+
+  it("offers_no_fix_line_without_a_repair_kind_or_without_a_line_to_hold_it", () => {
+    expect(
+      fixLineFor({ lineKind: undefined, hasMismatchLine: true, hasNameFormatNote: true }),
+    ).toBeNull();
+    expect(
+      fixLineFor({ lineKind: "name-mismatch", hasMismatchLine: false, hasNameFormatNote: false }),
+    ).toBeNull();
   });
 });
