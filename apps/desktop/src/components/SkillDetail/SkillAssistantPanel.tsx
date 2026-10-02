@@ -1223,8 +1223,8 @@ export function SkillAssistantPanel({
         <SkillAgentTranscript state={state} />
       ) : (
         <p className="m-0 text-pretty text-small leading-normal text-text-tertiary">
-          Ask the harness anything about this skill. It runs in a scratch folder with only this
-          skill installed.
+          Ask the agent anything about this skill. It runs in a scratch folder with only this skill
+          installed.
         </p>
       )}
 

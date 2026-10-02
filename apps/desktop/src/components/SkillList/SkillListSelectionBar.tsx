@@ -200,8 +200,8 @@ export function SkillListSelectionBar({
               {removePlan.applicable.length === 1 ? "" : "s"}?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              This removes each skill's managed deployments and their verified dependent links.
-              Independent copies outside those groups remain. This cannot be undone.
+              This removes each skill's folders and the links to them. Separate copies elsewhere
+              stay. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <ul className="m-0 max-h-48 list-none overflow-y-auto p-0 text-small text-text-primary">

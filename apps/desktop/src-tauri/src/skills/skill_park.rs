@@ -40,7 +40,7 @@ fn deployment_id_from_target(
     let raw = target
         .deployment_id
         .as_deref()
-        .ok_or_else(|| format!("{action} requires a deployment id"))?;
+        .ok_or_else(|| format!("{action} requires a copy id"))?;
     DeploymentId::parse(raw).map_err(|e| e.message)
 }
 

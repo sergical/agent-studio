@@ -81,6 +81,16 @@ export function RemoveDeploymentsDialog({
               ? skillRemovalDescription(removalAvailability.preview)
               : removalAvailability.reason}
           </AlertDialogDescription>
+          {removalAvailability.available && (
+            <ul className="max-h-40 overflow-auto font-mono text-xs break-all">
+              {[
+                ...removalAvailability.preview.linkedDeployments,
+                ...removalAvailability.preview.managedDeployments,
+              ].map((item) => (
+                <li key={item.id || item.path}>{item.path}</li>
+              ))}
+            </ul>
+          )}
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={onClose} disabled={isRemoving}>

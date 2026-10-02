@@ -206,7 +206,7 @@ fn run_independent_copy(
         let materialize_event_id = payload
             .get("materialize_event_id")
             .and_then(Value::as_str)
-            .ok_or("Independent copy event has no reserved materialize event id")?;
+            .ok_or("Independent copy event has no reserved conversion id")?;
         super::skill_materialize::explode_shared_dir_with_event_id_and_hook(
             store,
             parent,
@@ -434,10 +434,10 @@ fn rollback_unstarted_whole_root(
     }
     let materialize_event = store
         .get(event_id)?
-        .ok_or_else(|| format!("Connected materialize event {event_id} was not recorded"))?;
+        .ok_or_else(|| format!("Connected conversion {event_id} was not recorded"))?;
     if materialize_event.status != "done" {
         return Err(
-            "Connected materialize did not complete; preserved the current root unchanged"
+            "Connected conversion did not complete; preserved the current root unchanged"
                 .to_string(),
         );
     }
@@ -481,7 +481,7 @@ fn independent_copy_event_data(event: &EventRow) -> Result<IndependentCopyEventD
             .payload
             .get("copy_deployment_id")
             .and_then(Value::as_str)
-            .ok_or("Independent copy event has no Copy deployment identity")?
+            .ok_or("Independent copy event has no copy identity")?
             .to_string(),
         expected_root: event_path(event, "expected_root")?,
         expected_real_root: optional_event_path(event, "expected_real_root"),
@@ -527,7 +527,10 @@ pub fn validate_independent_copy_restore(event: &EventRow) -> Result<(), String>
         .root_inode
         .ok_or("Independent copy restore refused: the per-skill root was never recorded")?;
     if data.deployment_path.parent() != Some(data.expected_root.as_path()) {
-        return Err("Independent copy restore refused: the deployment is outside its recorded per-skill root".to_string());
+        return Err(
+            "Independent copy restore refused: the copy is outside its recorded per-skill root"
+                .to_string(),
+        );
     }
     let metadata = fs::symlink_metadata(&data.expected_root).map_err(|error| {
         format!(

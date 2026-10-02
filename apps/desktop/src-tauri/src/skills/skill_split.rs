@@ -33,7 +33,7 @@ pub async fn split_skill(
         let raw = target
             .deployment_id
             .as_deref()
-            .ok_or("Split requires a deployment id")?;
+            .ok_or("Split requires a copy id")?;
         let deployment_id = DeploymentId::parse(raw).map_err(|e| e.message)?;
         let harnesses = parse_harnesses(&harnesses)?;
         let rt = super::core_runtime::build_runtime_write()?;
