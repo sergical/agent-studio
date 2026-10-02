@@ -1,0 +1,6 @@
+{
+  "colon-scalar": "invalid YAML frontmatter at line 3, column 25: mapping values are not allowed in this context",
+  "name-mismatch": "name \"other\" does not match its directory name \"sample\"",
+  "name-format": "name \"Sample Skill\" must be 1-64 lowercase a-z0-9 characters and hyphens, with no leading, trailing, or consecutive hyphens",
+  "invocation-conflict": "conflicting invocation keys"
+}

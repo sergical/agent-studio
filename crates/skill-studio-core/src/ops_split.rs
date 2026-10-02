@@ -29,23 +29,19 @@ pub const SPLIT_UPDATE_NOTE: &str =
 /// the home default: the core reads no environment variable, and neither
 /// `CLAUDE_CONFIG_DIR` nor `GROK_HOME` reaches it through the scope.
 pub fn split_target_root(rt: &Runtime, scope: &RootScope, harness: &AgentId) -> Option<PathBuf> {
-    let home = &rt.scope.home.lexical;
     match scope {
-        RootScope::Global => Some(match harness.as_str() {
-            AgentId::CLAUDE_CODE => home.join(".claude").join("skills"),
-            AgentId::CODEX => rt.scope.codex_home.join("skills"),
-            AgentId::OPEN_CODE => rt
-                .scope
-                .raw
-                .opencode_config_root
-                .clone()
-                .unwrap_or_else(|| home.join(".config").join("opencode"))
-                .join("skills"),
-            AgentId::PI => home.join(".pi").join("agent").join("skills"),
-            AgentId::CURSOR => home.join(".cursor").join("skills"),
-            AgentId::GROK_BUILD => home.join(".grok").join("skills"),
-            _ => return None,
-        }),
+        RootScope::Global => {
+            let relative = match harness.as_str() {
+                AgentId::CLAUDE_CODE => ".claude/skills",
+                AgentId::CODEX => ".codex/skills",
+                AgentId::OPEN_CODE => ".config/opencode/skills",
+                AgentId::PI => ".pi/agent/skills",
+                AgentId::CURSOR => ".cursor/skills",
+                AgentId::GROK_BUILD => ".grok/skills",
+                _ => return None,
+            };
+            Some(rt.scope.global_root_path(Path::new(relative)))
+        }
         RootScope::Project(project) => {
             let dir = match harness.as_str() {
                 AgentId::CLAUDE_CODE => ".claude",
@@ -90,7 +86,7 @@ fn split_body(
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
     let step_start = clock.monotonic();
-    let session = MutationSession::begin(rt, ctx);
+    let session = MutationSession::begin_for_deployment(rt, ctx, &req.deployment_id);
     ctx.take_timing();
     let mut session = session?;
 
@@ -397,7 +393,7 @@ fn write_split(
         crate::ops::restore_write_dir(rt, &session.guard, &copy.path, writes.files)?;
         let skill_md = copy.path.join("SKILL.md");
         if writes.codex_rows.contains(&skill_md) {
-            crate::ops::codex_append_carried_row(rt, &session.guard, &skill_md)?;
+            crate::ops::codex_append_carried_row(rt, &session.guard, &skill_md, false)?;
             appended_codex_rows.push(skill_md);
         }
     }

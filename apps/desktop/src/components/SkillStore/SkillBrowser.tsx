@@ -5,7 +5,7 @@
 import { Download, Check, ArrowUp, Link2, FileCheck2, AlertTriangle } from "lucide-react";
 import { Button } from "@skill-studio/ui";
 import type { SkillWithStatus } from "@skill-studio/lib";
-import { SOURCE_KIND_LABELS } from "@skill-studio/lib";
+import { SOURCE_KIND_LABELS, specViolationSeverity } from "@skill-studio/lib";
 
 /**
  * The Browse tab pages through skills.sh and shows an install indicator per
@@ -142,6 +142,9 @@ function InstalledSkillTags({
 }: {
   installedInfo: NonNullable<SkillWithStatus["installed_info"]>;
 }) {
+  const specProblems = installedInfo.spec_violations.filter(
+    (v) => specViolationSeverity(v) !== "note",
+  );
   return (
     <div className="flex flex-wrap items-center gap-1">
       <span
@@ -158,10 +161,10 @@ function InstalledSkillTags({
           spec
         </span>
       )}
-      {installedInfo.spec_violations.length > 0 && (
+      {specProblems.length > 0 && (
         <span
           className="inline-flex items-center gap-[3px] rounded-sm bg-warning-soft px-1.5 py-0.5 text-caption text-warning"
-          title={installedInfo.spec_violations.join("\n")}
+          title={specProblems.join("\n")}
         >
           <AlertTriangle size={11} />
           spec issues

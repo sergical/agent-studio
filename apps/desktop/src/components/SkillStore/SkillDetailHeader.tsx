@@ -14,7 +14,7 @@ import {
   Link2,
 } from "lucide-react";
 import type { SkillWithStatus } from "@skill-studio/lib";
-import { SOURCE_KIND_LABELS } from "@skill-studio/lib";
+import { SOURCE_KIND_LABELS, specViolationSeverity } from "@skill-studio/lib";
 import { Button } from "@skill-studio/ui";
 import { TooltipControl } from "../ui/TooltipControl";
 
@@ -59,6 +59,9 @@ function safeHostname(url: string): string | null {
 }
 
 export function SkillDetailHeader({ skill, resolvedTopSource, onClose }: SkillDetailHeaderProps) {
+  const specProblems = (skill.installed_info?.spec_violations ?? []).filter(
+    (v) => specViolationSeverity(v) !== "note",
+  );
   return (
     <>
       <div className="flex items-start justify-between gap-3 border-b border-border p-5">
@@ -91,7 +94,7 @@ export function SkillDetailHeader({ skill, resolvedTopSource, onClose }: SkillDe
               spec
             </span>
           )}
-          {skill.installed_info && skill.installed_info.spec_violations.length > 0 && (
+          {specProblems.length > 0 && (
             <span
               className={`${BADGE_CLASS} bg-warning-soft text-warning`}
               title="SKILL.md doesn't fully match the agentskills.io spec"
@@ -130,13 +133,13 @@ export function SkillDetailHeader({ skill, resolvedTopSource, onClose }: SkillDe
         </div>
       )}
 
-      {skill.installed_info && skill.installed_info.spec_violations.length > 0 && (
+      {specProblems.length > 0 && (
         <div className="p-5 pt-0">
           <h4 className="m-0 mb-3 text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
             Spec violations
           </h4>
           <ul className="m-0 flex flex-col gap-1.5 pl-4.5">
-            {skill.installed_info.spec_violations.map((violation) => (
+            {specProblems.map((violation) => (
               <li key={violation} className="text-small text-warning">
                 {violation}
               </li>

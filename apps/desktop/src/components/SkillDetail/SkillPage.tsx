@@ -14,7 +14,12 @@ import {
 import { lifecycleTargetForDeployment } from "../../lib/skill-lifecycle-target";
 import { isFeatureEnabled } from "../../lib/feature-flags";
 import { editableDeployments } from "@skill-studio/lib";
-import type { Deployment, FrontmatterQuoteRepair, InstalledSkill } from "@skill-studio/lib";
+import type {
+  Deployment,
+  FrontmatterQuoteRepair,
+  FrontmatterRepairKind,
+  InstalledSkill,
+} from "@skill-studio/lib";
 import type { ActiveView } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
 import { PageShell } from "../Shell/PageShell";
@@ -33,7 +38,7 @@ import { SkillPropertiesRail } from "./SkillPropertiesRail";
 import { SkillRepairCard } from "./SkillRepairCard";
 import { saveSkillEditorDraft } from "./skill-editor-save";
 import { useSkillPageActions } from "./skill-page-actions";
-import { resolveSkillPageDeployment } from "./skill-page-deployment";
+import { repinDeployment, resolveSkillPageDeployment } from "./skill-page-deployment";
 import { useSkillCompareDialog } from "./useSkillCompareDialog";
 import { useSkillEscapeGuard } from "./useSkillEscapeGuard";
 import { useSkillFrontmatterRepair } from "./useSkillFrontmatterRepair";
@@ -211,7 +216,7 @@ export function SkillPage({
   const { isRunsOpen, openAssistant, closeAssistant, openRuns, closeRuns } =
     useSkillAssistantNavigation(skill?.name, setIsAssistantOpen);
   const pageActions = useSkillPageActions(skill, onRemoveComplete);
-  const [isFrontmatterRepairOpen, setIsFrontmatterRepairOpen] = useState(false);
+  const [openRepairKind, setOpenRepairKind] = useState<FrontmatterRepairKind | null>(null);
   const assistantTriggerRef = useRef<HTMLButtonElement>(null);
 
   const { isCompareOpen, setIsCompareOpen } = useSkillCompareDialog(skill?.name);
@@ -227,11 +232,19 @@ export function SkillPage({
     }
   }, [activeView, clearSkillIntent, setIsCompareOpen]);
 
-  const { deployment, deploymentUnresolved, isDeploymentBroken, skillMdPath, isPluginManaged } =
-    resolveSkillPageDeployment(skill, deploymentPath);
+  const pinned = useAppStore((state) => state.pinnedDeployment);
+  const setPinnedDeployment = useAppStore((state) => state.setPinnedDeployment);
+  const currentPinned = repinDeployment(pinned, skill, deploymentPath);
+  useEffect(() => {
+    if (currentPinned !== pinned) setPinnedDeployment(currentPinned);
+  }, [currentPinned, pinned, setPinnedDeployment]);
 
-  const { selectedFrontmatterRepair, isFrontmatterPreviewSettled, clearFrontmatterRepair } =
+  const { deployment, deploymentUnresolved, isDeploymentBroken, skillMdPath, isPluginManaged } =
+    resolveSkillPageDeployment(skill, deploymentPath ?? currentPinned.path);
+
+  const { frontmatterRepairs, isFrontmatterPreviewSettled, clearFrontmatterRepair } =
     useSkillFrontmatterRepair(deployment);
+  const openRepair = frontmatterRepairs.find((repair) => repair.kind === openRepairKind);
 
   const {
     rawContent,
@@ -251,6 +264,8 @@ export function SkillPage({
     isEditing,
     isEditorDirty,
     setIsEditorDirty,
+    editorHighlightLine,
+    setEditorHighlightLine,
   } = useSkillMdEditorState(skill?.name, skillMdPath);
 
   const { pendingDiscard, setPendingDiscard } = useSkillEscapeGuard(
@@ -283,11 +298,13 @@ export function SkillPage({
       });
   };
 
-  const startEditing = () => {
+  const openEditor = (line?: number) => {
     if (rawContent === null) return;
     setEditorOpenedContent(rawContent);
+    setEditorHighlightLine(line);
     setIsEditorDirty(false);
   };
+  const startEditing = () => openEditor();
 
   if (!skill) {
     const name = activeView.kind === "skill" ? activeView.name : "";
@@ -317,12 +334,12 @@ export function SkillPage({
           <InstalledSkillHeader
             skill={skill}
             deployment={deployment ?? undefined}
-            frontmatterRepair={selectedFrontmatterRepair}
+            frontmatterRepairs={frontmatterRepairs}
             isFrontmatterPreviewSettled={isFrontmatterPreviewSettled}
             skillMdContent={rawContent}
             onQuoteRepair={isPluginManaged ? undefined : handleQuoteRepair}
-            onFixYaml={() => setIsFrontmatterRepairOpen(true)}
-            onEditManually={startEditing}
+            onFixRepair={setOpenRepairKind}
+            onEditManually={openEditor}
           />
 
           <SkillLocationsCard skill={skill} onCompareCopies={() => setIsCompareOpen(true)} />
@@ -359,6 +376,7 @@ export function SkillPage({
                 setIsEditorDirty(false);
               }}
               onDirtyChange={setIsEditorDirty}
+              highlightLine={editorHighlightLine}
             />
           )}
         </div>
@@ -390,11 +408,12 @@ export function SkillPage({
         <SkillCompareDialog skill={skill} onClose={() => setIsCompareOpen(false)} />
       )}
 
-      {isFrontmatterRepairOpen && selectedFrontmatterRepair && deployment && (
+      {openRepair && deployment && (
         <SkillFrontmatterRepairDialog
+          key={openRepair.proposal_id}
           target={lifecycleTargetForDeployment(deployment)}
-          preview={selectedFrontmatterRepair}
-          onClose={() => setIsFrontmatterRepairOpen(false)}
+          preview={openRepair}
+          onClose={() => setOpenRepairKind(null)}
           onEditManually={startEditing}
           onApplied={() => {
             clearFrontmatterRepair();
@@ -403,12 +422,17 @@ export function SkillPage({
         />
       )}
 
+      {pageActions.updateDialog}
+
       <DiscardChangesDialog
         open={pendingDiscard !== null}
         onOpenChange={(open) => {
           if (!open) setPendingDiscard(null);
         }}
         onDiscard={() => {
+          // The step may land on this same SKILL.md, which would not reset the editor by itself.
+          setEditorOpenedContent(null);
+          setIsEditorDirty(false);
           pendingDiscard?.();
           setPendingDiscard(null);
         }}

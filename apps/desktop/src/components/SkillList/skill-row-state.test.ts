@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
-import { fixesFor, rowState } from "./skill-row-state";
+import { fixesFor, rowGroup, rowState } from "./skill-row-state";
 
 function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
@@ -76,8 +76,23 @@ describe("rowState", () => {
     expect(fixesFor(state!)).toEqual(["Fix"]);
   });
 
-  it("does not surface a Fix action for a non-blocking spec note", () => {
-    const skill = fixtureSkill({ spec_violations: ["description exceeds 1024 characters"] });
+  it("keeps a notes-only skill Healthy, or a harmless length note would crowd Needs attention", () => {
+    const note = "description exceeds 1024 characters";
+    const skill = fixtureSkill({
+      spec_violations: [note],
+      deployments: [fixtureDeployment({ spec_violations: [note] })],
+    });
     expect(rowState(skill)).toBeNull();
+    expect(rowGroup(skill)).toBe("healthy");
+  });
+
+  it("puts a name-mismatch skill in Needs attention as a warning, so agents' different names get checked", () => {
+    const mismatch = 'name "other" does not match its directory name "find-bugs"';
+    const skill = fixtureSkill({
+      spec_violations: [mismatch],
+      deployments: [fixtureDeployment({ spec_violations: [mismatch] })],
+    });
+    expect(rowState(skill)?.level).toBe("warning");
+    expect(rowGroup(skill)).toBe("attention");
   });
 });

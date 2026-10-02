@@ -1,7 +1,7 @@
 // ============================================================================
-// useSkillListAct - Row action dispatch for SkillListTable: Park/Unpark and
-// Fix act on the deployment target `HomeView` uses, every other fix (Fix
-// link, Compare, Convert, Keep, Pull latest) opens the skill's own detail,
+// useSkillListAct - Row action dispatch for SkillListTable: Park/Unpark,
+// Fix, and Pull latest act on the deployment target `HomeView` uses, every
+// other fix (Fix link, Compare, Convert, Keep) opens the skill's own detail,
 // since those flows live there. Fix now covers the repairable spec
 // violations too (invalid YAML frontmatter); any issue `fix_skill` leaves
 // unrepaired falls through to the detail page, which has its own card for
@@ -9,6 +9,7 @@
 // ============================================================================
 
 import { useAppStore } from "../../store/appStore";
+import { useGuardedSkillUpdate } from "../../hooks/useGuardedSkillUpdate";
 import { fixSkill, openConflictPaths, parkSkill, unparkSkill } from "../../lib/skill-api";
 import { lifecycleTargetForPark } from "../../lib/skill-lifecycle-target";
 import type { InstalledSkill, Toast } from "@skill-studio/lib";
@@ -67,10 +68,15 @@ export async function reportFixOutcome(
 export function useSkillListAct(
   onSelectSkill: (name: string, deploymentPath?: string) => void,
   deploymentPathForSkill: ((skill: InstalledSkill) => string | undefined) | undefined,
-): (label: string, skill: InstalledSkill) => Promise<void> {
+) {
   const addToast = useAppStore((state) => state.addToast);
+  const guard = useGuardedSkillUpdate();
 
-  return async function handleAct(label: string, skill: InstalledSkill) {
+  async function handleAct(label: string, skill: InstalledSkill) {
+    if (label === "Pull latest") {
+      await guard.pullLatest(skill);
+      return;
+    }
     if (label === "Fix") {
       try {
         await reportFixOutcome(skill, addToast, () =>
@@ -104,5 +110,7 @@ export function useSkillListAct(
         message: err instanceof Error ? err.message : "Unknown error",
       });
     }
-  };
+  }
+
+  return { handleAct, dialog: guard.dialog };
 }

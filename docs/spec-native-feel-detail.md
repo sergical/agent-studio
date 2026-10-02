@@ -92,8 +92,9 @@ Write JS with quotes into a `.sh` file and run it with `sh`.
 2. Harnesses: open the popover, toggle one harness off; the harness stack
    updates (the harness mock handles `set_harness_enabled`). Screenshot
    `detail-harness.png`. Escape closes the popover and the page stays.
-3. Invocation: change it with the keyboard (Enter, arrow, Enter); report the
-   status text and that focus is back on the value button.
+3. Invocation: in the Locations card's Invocation footer, change it with the
+   keyboard (Tab to the segmented control, arrow, Space); report that the
+   pressed item changes and focus stays on the control.
 4. Location: activate it; `SkillLocationsCard` heading has focus.
 5. Resize the viewport to 800px wide: screenshot `detail-narrow.png`; the rail
    stacks above the content.

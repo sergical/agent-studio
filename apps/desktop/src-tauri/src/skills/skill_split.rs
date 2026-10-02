@@ -15,6 +15,7 @@ use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::OpContext;
 
 use super::skill_dto::LifecycleTarget;
+use super::skill_park::{emit_snapshot_for_names, skill_names_for_deployments};
 
 fn parse_harnesses(harnesses: &[String]) -> Result<Vec<AgentId>, String> {
     harnesses
@@ -29,6 +30,7 @@ pub async fn split_skill(
     harnesses: Vec<String>,
     app: tauri::AppHandle,
 ) -> Result<SplitOutcome, String> {
+    let state_app = app.clone();
     crate::timing_log::time_command_blocking(&app, "split_skill", move || {
         let raw = target
             .deployment_id
@@ -36,6 +38,7 @@ pub async fn split_skill(
             .ok_or("Split requires a deployment id")?;
         let deployment_id = DeploymentId::parse(raw).map_err(|e| e.message)?;
         let harnesses = parse_harnesses(&harnesses)?;
+        let names = skill_names_for_deployments([&deployment_id]);
         let rt = super::core_runtime::build_runtime_write()?;
         let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
         let result = ops::split(
@@ -47,7 +50,9 @@ pub async fn split_skill(
             },
         );
         let envelope = ResultEnvelope::from_result(Operation::Split, &rt.scope, &ctx, result);
-        super::core_runtime::to_command_result(envelope)
+        let outcome = super::core_runtime::to_command_result(envelope)?;
+        emit_snapshot_for_names(&state_app, "split_skill", names);
+        Ok(outcome)
     })
     .await
 }

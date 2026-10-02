@@ -1,0 +1,162 @@
+// ============================================================================
+// SkillInvocationFooter - the Locations card's Invocation section, the skill
+// page's only invocation control. One file: one segmented Both/User only/Model
+// only control. Two or more files: an "All locations" control first, which
+// sets every editable file at once, then one control per file, so a file can
+// still differ from the rest.
+// ============================================================================
+
+import { useRef } from "react";
+import { ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
+import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
+import { useAppStore } from "../../store/appStore";
+import { HarnessIcon } from "../ui/HarnessIcon";
+import { StatusIcon } from "../ui/StatusIcon";
+import { TooltipControl } from "../ui/TooltipControl";
+import { setInvocationForFiles } from "./skill-location-actions";
+import {
+  INVOCATION_POLICY_OPTIONS,
+  invocationFooterNote,
+  toTooltipLines,
+} from "./skill-location-status";
+import type { InvocationFile } from "./skill-location-status";
+import type { InstalledSkill, InvocationPolicy } from "@skill-studio/lib";
+
+interface InvocationToggleProps {
+  label: string;
+  /** Null when the files disagree: no item is pressed. */
+  value: InvocationPolicy | null;
+  /** Locks every item except the pressed one. */
+  locked: boolean;
+  lockedReason?: string;
+  onSelect: (policy: InvocationPolicy) => void;
+}
+
+function InvocationToggle({ label, value, locked, lockedReason, onSelect }: InvocationToggleProps) {
+  const group = (
+    <ToggleGroup
+      variant="segmented"
+      aria-label={label}
+      value={value ? [value] : []}
+      onValueChange={(next) => singleSelectToggleValue<InvocationPolicy>(next, onSelect)}
+    >
+      {INVOCATION_POLICY_OPTIONS.map((option) => (
+        <ToggleGroupItem
+          key={option.value}
+          value={option.value}
+          className="h-[26px] px-3 text-small"
+          disabled={locked && value !== option.value}
+        >
+          {option.label}
+        </ToggleGroupItem>
+      ))}
+    </ToggleGroup>
+  );
+  return lockedReason ? <TooltipControl content={lockedReason}>{group}</TooltipControl> : group;
+}
+
+interface SkillInvocationFooterProps {
+  skill: InstalledSkill;
+  files: InvocationFile[];
+}
+
+export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterProps) {
+  const addToast = useAppStore((state) => state.addToast);
+  // A save in flight drops further clicks rather than disabling the items: a disabled item loses
+  // keyboard focus, and the pressed value only moves once the snapshot refresh arrives.
+  const isSaving = useRef(false);
+
+  const editableFiles = files.filter((file) => file.editable);
+  const lockedFiles = files.filter((file) => !file.editable);
+  // "All locations" can only change the editable files, so its pressed value follows those; a
+  // locked file that differs gets its own caption instead of keeping the control unpressed.
+  const policyFiles = editableFiles.length > 0 ? editableFiles : files;
+  const policies = new Set(policyFiles.map((file) => file.invocation));
+  const sharedPolicy = policies.size === 1 ? policyFiles[0].invocation : null;
+  const allCaption = [
+    sharedPolicy === null ? "Files differ" : null,
+    editableFiles.length > 0 && lockedFiles.length > 0
+      ? `${lockedFiles.length} locked file${lockedFiles.length === 1 ? "" : "s"} not changed`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const save = async (targets: InvocationFile[], policy: InvocationPolicy) => {
+    if (isSaving.current || targets.length === 0) return;
+    isSaving.current = true;
+    try {
+      await setInvocationForFiles(skill, targets, policy);
+    } catch (err) {
+      // An `if`, not a conditional expression: the React Compiler can't compile a value block
+      // directly inside a try/catch statement.
+      let message = "Unknown error";
+      if (err instanceof Error) message = err.message;
+      addToast({ type: "error", title: "Couldn't change invocation policy", message });
+    }
+    isSaving.current = false;
+  };
+
+  return (
+    <div className="mt-3 flex flex-col gap-1.5 border-t border-border-subtle pt-3">
+      <span className="text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
+        Invocation
+      </span>
+      {files.length > 1 && (
+        <div className="grid h-8 grid-cols-[16px_minmax(0,1fr)_auto] items-center gap-2.5 border-b border-border-subtle pb-1.5">
+          <span aria-hidden="true" />
+          <span className="flex min-w-0 flex-col">
+            <span className="truncate text-body font-medium text-text-primary">All locations</span>
+            {allCaption && (
+              <span className="truncate text-caption text-text-tertiary">{allCaption}</span>
+            )}
+          </span>
+          <InvocationToggle
+            label="Invocation for all locations"
+            value={sharedPolicy}
+            locked={editableFiles.length === 0}
+            lockedReason={editableFiles.length === 0 ? files[0].disabledReason : undefined}
+            onSelect={(policy) => void save(editableFiles, policy)}
+          />
+        </div>
+      )}
+      {files.map((file) => (
+        <div
+          key={file.path}
+          className="grid h-8 grid-cols-[16px_minmax(0,1fr)_auto_auto] items-center gap-2.5"
+        >
+          <StatusIcon
+            icon={<HarnessIcon harness={file.harness} size={16} />}
+            level={file.level ?? undefined}
+            tip={toTooltipLines(file.tip)}
+          />
+          <span className="flex min-w-0 flex-col">
+            <TooltipControl content={[{ text: `${file.path}/SKILL.md`, mono: true }]}>
+              <span className="w-fit max-w-full truncate text-body text-text-primary">
+                {file.name}
+              </span>
+            </TooltipControl>
+            {file.caption && (
+              <span className="truncate text-caption text-text-tertiary">{file.caption}</span>
+            )}
+          </span>
+          {file.chip ? (
+            <span className="rounded-full bg-bg-tertiary px-1.5 py-0.5 text-caption text-text-tertiary">
+              {file.chip}
+            </span>
+          ) : (
+            <span />
+          )}
+          <InvocationToggle
+            label={`Invocation for ${file.name}`}
+            value={file.invocation}
+            locked={!file.editable}
+            lockedReason={file.editable ? undefined : file.disabledReason}
+            onSelect={(policy) => void save([file], policy)}
+          />
+        </div>
+      ))}
+      <p className="text-small text-text-tertiary">{invocationFooterNote(files, skill.name)}</p>
+    </div>
+  );
+}

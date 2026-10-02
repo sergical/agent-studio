@@ -5,6 +5,7 @@
 // ============================================================================
 
 import {
+  deploymentWithSpecViolations,
   attentionGroups,
   collectDashboardIssues,
   homeInvocationCounts,
@@ -18,13 +19,20 @@ import type {
   HealthIssue,
   HealthIssueKind,
   InstalledSkill,
+  ForkRecord,
   LifecycleTarget,
   PullResult,
   RecentlyUsedSkill,
   SkillSnapshot,
   UpdateAllOutcome,
 } from "@skill-studio/lib";
-import { lifecycleTargetForPark, skillUpdateOwnerTargets } from "../../lib/skill-lifecycle-target";
+import {
+  excludeForkedOwner,
+  forkTargetForSkill,
+  forkThenPull,
+  lifecycleTargetForPark,
+  skillUpdateOwnerTargets,
+} from "../../lib/skill-lifecycle-target";
 import { issueRowState, rowState, updateRowState } from "../SkillList/skill-row-state";
 import type { RowState } from "../SkillList/skill-row-state";
 
@@ -75,6 +83,15 @@ export function homeRowState(
   }
 }
 
+/** The copy a Home issue row opens: a spec-violation issue opens the copy that has the violation
+ * (the skill's first copy may be clean); other kinds open the skill's default copy. */
+export function issueDeploymentPath(issue: HealthIssue): string | undefined {
+  if (issue.kind === "spec-violation") return deploymentWithSpecViolations(issue.skill)?.path;
+  if (issue.kind === "spec-warning")
+    return deploymentWithSpecViolations(issue.skill, "warning")?.path;
+  return undefined;
+}
+
 /** The row-level action label for one health issue kind - see NeedsAttentionCard's former mapping. */
 export function issueActionLabel(kind: HealthIssueKind): string {
   switch (kind) {
@@ -86,6 +103,7 @@ export function issueActionLabel(kind: HealthIssueKind): string {
       return "Convert to per-skill links";
     case "parked-but-reinstalled":
     case "spec-violation":
+    case "spec-warning":
     case "lock-only":
       return "Open";
   }
@@ -95,30 +113,38 @@ interface UpdateAllTally {
   attempted: number;
   succeeded: number;
   failures: number;
+  /** `attempted`/`succeeded` count update targets (one per copy); these count distinct skills, which is what the toast names. */
+  skillsAttempted: number;
+  skillsSucceeded: number;
   /** The first failed target's message, so the toast can say why. */
   firstError: string | null;
+  /** Skills whose pull left conflict markers; set only when there are any. */
+  conflicted?: string[];
 }
 
 const MAX_ERROR_LENGTH = 140;
 
-/** "3 failed: <first error>" for the toast, or `undefined` when nothing failed. */
+/** "1 failed: <first error>" for the toast, or `undefined` when nothing failed. Counts skills, matching the toast title; a skill with any failed copy counts once. */
 export function updateAllFailureMessage(tally: UpdateAllTally): string | undefined {
   if (tally.failures === 0) return undefined;
-  if (!tally.firstError) return `${tally.failures} failed`;
+  const failedSkills = tally.skillsAttempted - tally.skillsSucceeded;
+  if (!tally.firstError) return `${failedSkills} failed`;
   const reason =
     tally.firstError.length > MAX_ERROR_LENGTH
       ? `${tally.firstError.slice(0, MAX_ERROR_LENGTH - 1)}…`
       : tally.firstError;
-  return `${tally.failures} failed: ${reason}`;
+  return `${failedSkills} failed: ${reason}`;
 }
 
 /**
  * Home's "Update all": a fork pulls upstream one at a time (no batched CLI
  * form for that path), while every other outdated owner flattens into one
  * `updateAllOwners` call - one IPC round trip and one rescan for the whole
- * batch, instead of one `updateSkill` round trip and rescan per skill.
+ * batch, instead of one update round trip and rescan per skill.
  * `onProgress(done, total)` counts forks and owner targets in one sequence;
- * `updateAllOwners` reports how many of its own targets finished.
+ * `updateAllOwners` reports how many of its own targets finished. A skill named
+ * in `forkEdited.names` is forked first and then pulled like a fork, so its
+ * local edits survive instead of being overwritten by the batch.
  */
 export async function updateAllOutdatedSkills(
   skills: Pick<
@@ -131,13 +157,36 @@ export async function updateAllOutdatedSkills(
     onOwnerDone: (done: number) => void,
   ) => Promise<UpdateAllOutcome>,
   onProgress?: (done: number, total: number) => void,
+  forkEdited?: {
+    names: ReadonlySet<string>;
+    fork: (target: LifecycleTarget) => Promise<ForkRecord>;
+  },
 ): Promise<UpdateAllTally> {
-  const forks = skills.filter((skill) => skill.source_kind === "fork");
-  const ownerTargets = skills.flatMap((skill) =>
-    skill.source_kind === "fork" ? [] : skillUpdateOwnerTargets(skill),
+  const pullsUpstream = (skill: (typeof skills)[number]) =>
+    skill.source_kind === "fork" || forkEdited?.names.has(skill.name) === true;
+  const forks = skills.filter(pullsUpstream);
+  // A skill forked because it was edited keeps its other owners (project or
+  // per-harness copies) on the normal update; only the forked owner is replaced.
+  const ownerTargetsOf = (skill: (typeof skills)[number]) => {
+    if (skill.source_kind === "fork") return [];
+    const targets = skillUpdateOwnerTargets(skill);
+    return pullsUpstream(skill) ? excludeForkedOwner(skill, targets) : targets;
+  };
+  let total = forks.length + skills.flatMap(ownerTargetsOf).length;
+  const ownerSkillNames = new Set(
+    skills.flatMap((skill) =>
+      !pullsUpstream(skill) && skillUpdateOwnerTargets(skill).length > 0 ? [skill.name] : [],
+    ),
   );
-  const total = forks.length + ownerTargets.length;
-  const tally: UpdateAllTally = { attempted: total, succeeded: 0, failures: 0, firstError: null };
+  const failedSkillNames = new Set<string>();
+  const tally: UpdateAllTally = {
+    attempted: total,
+    succeeded: 0,
+    failures: 0,
+    skillsAttempted: forks.length + ownerSkillNames.size,
+    skillsSucceeded: 0,
+    firstError: null,
+  };
   const fail = (count: number, message: string) => {
     tally.failures += count;
     tally.firstError ??= message;
@@ -146,15 +195,30 @@ export async function updateAllOutdatedSkills(
 
   for (const [index, skill] of forks.entries()) {
     try {
+      const pullOne =
+        skill.source_kind === "fork" || !forkEdited
+          ? () => pullFork(lifecycleTargetForPark(skill))
+          : () => forkThenPull(forkTargetForSkill(skill), forkEdited.fork, pullFork);
       // react-doctor-disable-next-line react-doctor/async-await-in-loop -- update-all runs sequentially on purpose; concurrent `npx skills update` calls race on ~/.agents/.skill-lock.json
-      await pullFork(lifecycleTargetForPark(skill));
+      const pull = await pullOne();
+      if (pull.conflicts.length > 0) (tally.conflicted ??= []).push(skill.name);
       tally.succeeded += 1;
     } catch (error) {
+      failedSkillNames.add(skill.name);
       fail(1, error instanceof Error ? error.message : String(error));
     }
     onProgress?.(index + 1, total);
   }
 
+  // A skill whose fork failed keeps all its owners untouched, so its other copies are not updated either.
+  const ownerTargets = skills.flatMap((skill) =>
+    failedSkillNames.has(skill.name) ? [] : ownerTargetsOf(skill),
+  );
+  // Their copies leave the total too, so progress still reaches it.
+  const plannedTotal = total;
+  total = forks.length + ownerTargets.length;
+  tally.attempted = total;
+  if (total !== plannedTotal) onProgress?.(forks.length, total);
   if (ownerTargets.length > 0) {
     try {
       const outcome = await updateAllOwners(ownerTargets, (done) =>
@@ -166,15 +230,24 @@ export async function updateAllOutdatedSkills(
       // instead (N1, review round 3).
       const failedItems = outcome.items.filter((item) => item.outcome === null);
       tally.succeeded += outcome.items.length - failedItems.length;
+      for (const item of failedItems) failedSkillNames.add(item.skill);
       if (failedItems.length > 0) {
         const first = failedItems[0];
         fail(failedItems.length, outcome.errors[first.skill] ?? `${first.skill} failed`);
       }
     } catch (error) {
+      // Every skill in the rejected batch failed, including a forked skill's other copies.
+      for (const skill of skills) {
+        if (!failedSkillNames.has(skill.name) && ownerTargetsOf(skill).length > 0) {
+          failedSkillNames.add(skill.name);
+        }
+      }
       fail(ownerTargets.length, error instanceof Error ? error.message : String(error));
     }
   }
 
+  // Core can report one requested skill under two names, so the difference can go below zero.
+  tally.skillsSucceeded = Math.max(0, tally.skillsAttempted - failedSkillNames.size);
   return tally;
 }
 
@@ -225,7 +298,7 @@ export function buildHomeRowPlan(params: {
   groups: HomeGroups;
   isGroupVisible: (id: GroupId) => boolean;
   isGroupExpanded: (id: GroupId) => boolean;
-  onSelectSkill: (name: string) => void;
+  onSelectSkill: (name: string, deploymentPath?: string) => void;
 }): HomeRowPlan {
   const { groups, isGroupVisible, isGroupExpanded, onSelectSkill } = params;
   const { broken, warnings, updates, unused, recent } = groups;
@@ -265,11 +338,11 @@ export function buildHomeRowPlan(params: {
   const openByKey = new Map<string, () => void>([
     ...brokenRows.map((issue): [string, () => void] => [
       issueKey("broken", issue),
-      () => onSelectSkill(issue.skill.name),
+      () => onSelectSkill(issue.skill.name, issueDeploymentPath(issue)),
     ]),
     ...warnRows.map((issue): [string, () => void] => [
       issueKey("warn", issue),
-      () => onSelectSkill(issue.skill.name),
+      () => onSelectSkill(issue.skill.name, issueDeploymentPath(issue)),
     ]),
     ...updRows.map((skill): [string, () => void] => [
       skillKey("upd", skill),

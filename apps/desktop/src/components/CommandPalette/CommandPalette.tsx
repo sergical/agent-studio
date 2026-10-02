@@ -9,6 +9,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
+  ArrowLeft,
+  ArrowRight,
   BookOpen,
   Layers,
   LayoutDashboard,
@@ -57,6 +59,8 @@ export function CommandPalette({ snapshot, requestRescan }: CommandPaletteProps)
   const requestSkillSearchFocus = useAppStore((state) => state.requestSkillSearchFocus);
   const resolvedTheme = useAppStore((state) => state.resolvedTheme);
   const setTheme = useAppStore((state) => state.setTheme);
+  const goBack = useAppStore((state) => state.goBack);
+  const goForward = useAppStore((state) => state.goForward);
 
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
@@ -88,6 +92,22 @@ export function CommandPalette({ snapshot, requestRescan }: CommandPaletteProps)
         icon: <Plus size={14} />,
         shortcut: SHORTCUTS.addSkill,
         run: () => openAddSkillSheet(),
+      },
+      {
+        id: "action-back",
+        section: "actions",
+        label: SHORTCUTS.back.label,
+        icon: <ArrowLeft size={14} />,
+        shortcut: SHORTCUTS.back,
+        run: () => goBack(),
+      },
+      {
+        id: "action-forward",
+        section: "actions",
+        label: SHORTCUTS.forward.label,
+        icon: <ArrowRight size={14} />,
+        shortcut: SHORTCUTS.forward,
+        run: () => goForward(),
       },
       {
         id: "action-sync",

@@ -187,6 +187,35 @@ describe("applySkillListFilter", () => {
     expect(applySkillListFilter(skills, { scope: "all", query: "acme" })).toEqual([skills[1]]);
   });
 
+  it("query words match across hyphens, so typing a skill name with spaces finds it", () => {
+    // Users type the words they remember; a hyphenated name must not need its exact separators.
+    const skills = [
+      fixtureSkill({ name: "i-have-adhd", description: "Focus helper" }),
+      fixtureSkill({ name: "ask-emil", description: "Routes to the skill I have in mind" }),
+      fixtureSkill({ name: "find-bugs", description: "Locates regressions" }),
+    ];
+    const names = (query: string) =>
+      applySkillListFilter(skills, { scope: "all", query }).map((s) => s.name);
+    expect(names("i have")).toEqual(["i-have-adhd", "ask-emil"]);
+    expect(names("have adhd")).toEqual(["i-have-adhd"]);
+    expect(names("adhd have")).toEqual(["i-have-adhd"]);
+    expect(names("ihave")).toEqual(["i-have-adhd"]);
+    expect(names("adhd regressions")).toEqual([]);
+  });
+
+  it("description words must match as a phrase, so short words do not flood the list", () => {
+    const skills = [
+      fixtureSkill({ name: "ask-emil", description: "Pick a skill" }),
+      fixtureSkill({ name: "planner", description: "Ask a task, emil reviews it" }),
+      fixtureSkill({ name: "reviewer", description: "Runs a code-review pass" }),
+      fixtureSkill({ name: "linter", description: "Reviews code style" }),
+    ];
+    const names = (query: string) =>
+      applySkillListFilter(skills, { scope: "all", query }).map((s) => s.name);
+    expect(names("ask emil")).toEqual(["ask-emil"]);
+    expect(names("code review")).toEqual(["reviewer"]);
+  });
+
   it("filters by invocation policy", () => {
     const skills = [
       fixtureSkill({ name: "both", invocation: "both" }),

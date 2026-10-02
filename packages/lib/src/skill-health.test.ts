@@ -5,10 +5,13 @@
 import { describe, expect, it } from "vitest";
 import {
   coverageGaps,
+  deploymentWithSpecViolations,
   findDuplicateSkills,
   findLinkedRootIssues,
   findParkedButReinstalled,
   findSpecViolations,
+  findSpecWarnings,
+  specViolationSeverity,
   HEALTH_ISSUE_KIND_ORDER,
   isBlockingSpecViolation,
 } from "./skill-health";
@@ -24,6 +27,7 @@ function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
     symlink_is_broken: false,
     content_hash: "abc",
     disabled: false,
+    spec_violations: [],
     ...overrides,
   };
 }
@@ -55,63 +59,88 @@ function fixtureSkill(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
   };
 }
 
-describe("isBlockingSpecViolation", () => {
-  it("treats a missing required field as blocking", () => {
+const NAME_FORMAT =
+  'name "Bad Name" must be 1-64 lowercase a-z0-9 characters and hyphens, with no leading, trailing, or consecutive hyphens';
+const NAME_MISMATCH = 'name "other-name" does not match its directory name "agent-browser"';
+
+describe("specViolationSeverity", () => {
+  it.each([
+    "missing required frontmatter field: name",
+    "missing required frontmatter field: description",
+    "invalid YAML frontmatter at line 3, column 5: bad indent",
+  ])("rates %s an error, because at least one agent skips the skill", (violation) => {
+    expect(specViolationSeverity(violation)).toBe("error");
+  });
+
+  it.each([NAME_MISMATCH, "conflicting invocation keys"])(
+    "rates %s a warning, because agents disagree but all load it",
+    (violation) => {
+      expect(specViolationSeverity(violation)).toBe("warning");
+    },
+  );
+
+  it.each([
+    NAME_FORMAT,
+    "description exceeds 1024 characters",
+    "compatibility exceeds 500 characters",
+    "SKILL.md exceeds recommended 500 lines",
+  ])("rates %s a note, because every agent loads it unchanged", (violation) => {
+    expect(specViolationSeverity(violation)).toBe("note");
+  });
+
+  it("rates an unrecognised message a warning, so a new Rust message is never ignored", () => {
+    expect(specViolationSeverity("something new from the validator")).toBe("warning");
+  });
+
+  it("blocks only on errors, so a name mismatch does not turn a skill red", () => {
     expect(isBlockingSpecViolation("missing required frontmatter field: name")).toBe(true);
-    expect(isBlockingSpecViolation("missing required frontmatter field: description")).toBe(true);
-  });
-
-  it("treats an invalid name format as blocking", () => {
-    expect(
-      isBlockingSpecViolation(
-        'name "Bad Name" must be 1-64 lowercase a-z0-9 characters and hyphens, with no leading, trailing, or consecutive hyphens',
-      ),
-    ).toBe(true);
-  });
-
-  it("treats a name/directory mismatch as blocking", () => {
-    expect(
-      isBlockingSpecViolation(
-        'name "other-name" does not match its directory name "agent-browser"',
-      ),
-    ).toBe(true);
-  });
-
-  it("treats length and style notes as non-blocking", () => {
-    expect(isBlockingSpecViolation("description exceeds 1024 characters")).toBe(false);
-    expect(isBlockingSpecViolation("compatibility exceeds 500 characters")).toBe(false);
-    expect(isBlockingSpecViolation("SKILL.md exceeds recommended 500 lines")).toBe(false);
-    expect(isBlockingSpecViolation("conflicting invocation keys")).toBe(false);
+    expect(isBlockingSpecViolation(NAME_MISMATCH)).toBe(false);
+    expect(isBlockingSpecViolation(NAME_FORMAT)).toBe(false);
   });
 });
 
 describe("findSpecViolations", () => {
-  it("flags a skill with a blocking violation", () => {
+  it("flags a skill with an error violation and describes the agent impact", () => {
     const skill = fixtureSkill({
       spec_violations: ["missing required frontmatter field: description"],
     });
     const issues = findSpecViolations([skill]);
     expect(issues).toHaveLength(1);
     expect(issues[0].kind).toBe("spec-violation");
-    expect(issues[0].detail).toBe("missing required frontmatter field: description");
+    expect(issues[0].detail).toContain("Codex, OpenCode, and pi skip it.");
   });
 
-  it("does not flag a skill with only non-blocking violations", () => {
+  it("does not flag a skill with only warnings or notes, or a failure is hidden as red", () => {
     const skill = fixtureSkill({
-      spec_violations: ["description exceeds 1024 characters", "conflicting invocation keys"],
+      spec_violations: ["description exceeds 1024 characters", NAME_MISMATCH],
     });
     expect(findSpecViolations([skill])).toEqual([]);
   });
 
-  it("includes only the blocking violations in detail when both kinds are present", () => {
+  it("leaves warnings and notes out of the detail when an error is present", () => {
     const skill = fixtureSkill({
       spec_violations: [
         "missing required frontmatter field: name",
         "description exceeds 1024 characters",
       ],
     });
-    const issues = findSpecViolations([skill]);
-    expect(issues[0].detail).toBe("missing required frontmatter field: name");
+    expect(findSpecViolations([skill])[0].detail).not.toContain("1024");
+  });
+});
+
+describe("findSpecWarnings", () => {
+  it("returns a name-mismatch skill as spec-warning and keeps it out of findSpecViolations", () => {
+    const skill = fixtureSkill({ spec_violations: [NAME_MISMATCH] });
+    const issues = findSpecWarnings([skill]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe("spec-warning");
+    expect(issues[0].detail).toContain('Claude Code calls it "agent-browser"');
+    expect(findSpecViolations([skill])).toEqual([]);
+  });
+
+  it("ignores a notes-only skill, or a harmless length note would raise a warning", () => {
+    const skill = fixtureSkill({ spec_violations: [NAME_FORMAT] });
+    expect(findSpecWarnings([skill])).toEqual([]);
   });
 });
 
@@ -267,5 +296,111 @@ describe("findParkedButReinstalled", () => {
       deployments: [fixtureDeployment({ scope: "global" })],
     });
     expect(findParkedButReinstalled([skill])).toEqual([]);
+  });
+});
+
+describe("deploymentWithSpecViolations", () => {
+  const WARNING = "description exceeds 1024 characters";
+  const ERROR = "missing required frontmatter field: description";
+  const NOTE = WARNING;
+  const MISMATCH = 'name "other" does not match its directory name "find-bugs"';
+  const plugin = {
+    name: "p",
+    version: null,
+    harness: "Claude Code",
+    marketplace: "m",
+    id: "p@m",
+  };
+
+  it("a_blocking_copy_beats_an_earlier_warning_only_copy_or_the_error_stays_hidden", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/a", spec_violations: [WARNING] }),
+        fixtureDeployment({ path: "/b", spec_violations: [ERROR] }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)?.path).toBe("/b");
+  });
+
+  it("a_warning_copy_beats_an_earlier_note_only_copy_or_the_page_opens_a_copy_with_nothing_to_act_on", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/a", spec_violations: [NOTE] }),
+        fixtureDeployment({ path: "/b", spec_violations: [MISMATCH] }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)?.path).toBe("/b");
+  });
+
+  it("a_warning_severity_request_skips_an_earlier_errored_copy_for_the_warning_copy_or_the_spec_warning_row_opens_the_wrong_copy", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/a", spec_violations: [ERROR] }),
+        fixtureDeployment({ path: "/b", spec_violations: [MISMATCH] }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)?.path).toBe("/a");
+    expect(deploymentWithSpecViolations(skill, "warning")?.path).toBe("/b");
+  });
+
+  it("a_skill_with_no_violations_returns_undefined_so_callers_keep_their_default", () => {
+    const skill = fixtureSkill({ deployments: [fixtureDeployment()] });
+    expect(deploymentWithSpecViolations(skill)).toBeUndefined();
+  });
+
+  it("an_own_copy_with_a_warning_beats_a_plugin_copy_with_an_error_or_the_page_opens_a_read_only_file", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/plugin", spec_violations: [ERROR], plugin }),
+        fixtureDeployment({ path: "/own", spec_violations: [WARNING] }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)?.path).toBe("/own");
+  });
+
+  it("a_clean_own_copy_and_an_errored_plugin_copy_return_undefined_because_the_problem_is_not_the_users_to_fix", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/plugin", spec_violations: [ERROR], plugin }),
+        fixtureDeployment({ path: "/own" }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)).toBeUndefined();
+  });
+
+  it("a_plugin_only_skill_returns_its_errored_plugin_copy", () => {
+    const skill = fixtureSkill({
+      deployments: [fixtureDeployment({ path: "/plugin", spec_violations: [ERROR], plugin })],
+    });
+    expect(deploymentWithSpecViolations(skill)?.path).toBe("/plugin");
+  });
+
+  it("an_editable_copy_beats_a_symlink_copy_when_both_have_the_same_violation", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/link", is_symlink: true, spec_violations: [ERROR] }),
+        fixtureDeployment({ path: "/physical", spec_violations: [ERROR] }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)?.path).toBe("/physical");
+  });
+
+  it("a_skill_whose_only_own_copy_is_a_broken_symlink_returns_undefined_instead_of_a_plugin_copy", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/plugin", spec_violations: [ERROR], plugin }),
+        fixtureDeployment({ path: "/broken", symlink_is_broken: true }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)).toBeUndefined();
+  });
+
+  it("a_broken_symlink_never_wins_on_its_violations_alone", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/broken", symlink_is_broken: true, spec_violations: [ERROR] }),
+      ],
+    });
+    expect(deploymentWithSpecViolations(skill)).toBeUndefined();
   });
 });

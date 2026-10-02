@@ -116,18 +116,30 @@ describe("buildScopeGroups", () => {
     expect(row?.conditions[0].status).toBe("Link unreadable");
   });
 
-  it("treats a missing required field as blocking (error), won't-load wording", () => {
+  it("treats a missing required field as blocking (error) and says some agents skip it, or the row claims no agent loads a skill Claude Code still loads", () => {
     const shared = fixtureDeployment({
       spec_violations: ["missing required frontmatter field: description"],
     });
     const skill = fixtureSkill({ deployments: [shared], has_spec: false });
     const [global] = buildScopeGroups(skill);
     expect(global.shared?.level).toBe("error");
-    expect(global.shared?.conditions[0].what).toContain("SKILL.md will not load:");
+    expect(global.shared?.conditions[0].status).toBe("Skipped by some agents");
+    expect(global.shared?.conditions[0].what).toBe(
+      "SKILL.md: SKILL.md has no description in its frontmatter. Codex, OpenCode, and pi skip it. Claude Code still loads it.",
+    );
   });
 
-  it("treats a non-blocking violation as a soft warning that still loads", () => {
-    const shared = fixtureDeployment({ spec_violations: ["description is over 1024 characters"] });
+  it("gives a notes-only copy no spec condition, so a length note never raises a dot", () => {
+    const shared = fixtureDeployment({ spec_violations: ["description exceeds 1024 characters"] });
+    const skill = fixtureSkill({ deployments: [shared] });
+    const [global] = buildScopeGroups(skill);
+    expect(global.shared?.conditions).toEqual([]);
+  });
+
+  it("treats a warning-severity violation as a soft warning that still loads", () => {
+    const shared = fixtureDeployment({
+      spec_violations: ['name "other" does not match its directory name "find-bugs"'],
+    });
     const skill = fixtureSkill({ deployments: [shared] });
     const [global] = buildScopeGroups(skill);
     expect(global.shared?.level).toBe("warning");
@@ -547,9 +559,9 @@ describe("titleLink", () => {
     expect(titleLink(skill, false)).toBe("Enable everywhere");
   });
 
-  it("falls back to Update when nothing else applies", () => {
+  it("leaves Update to the page header, so the card title never reads as updating locations", () => {
     const skill = fixtureSkill({ has_update: true });
-    expect(titleLink(skill, false)).toBe("Update");
+    expect(titleLink(skill, false)).toBeNull();
   });
 
   it("returns null when there is nothing to fix", () => {
@@ -766,7 +778,7 @@ describe("buildInvocationFiles / invocationFooterNote", () => {
     const files = buildInvocationFiles(groups);
     expect(files).toHaveLength(2);
     expect(invocationFooterNote(files, skill.name)).toBe(
-      "Each file sets its own. Symlinks follow the folder they point to.",
+      "All locations sets every file; a file can still differ. Symlinks follow the folder they point to.",
     );
   });
 });

@@ -5,7 +5,8 @@
 import { describe, expect, it } from "vitest";
 import type { PullResult } from "@skill-studio/lib";
 
-import { pullUpstreamToast, removeSuccessToast } from "./skill-page-actions";
+import { pullUpstreamToast } from "../../lib/skill-lifecycle-target";
+import { headerUpdateLabel, removeSuccessToast } from "./skill-page-actions";
 
 function fixtureResult(overrides: Partial<PullResult> = {}): PullResult {
   return {
@@ -69,5 +70,24 @@ describe("removeSuccessToast", () => {
     expect(toast).toEqual({ type: "success", title: "Removed", message: "find-bugs" });
     expect(toast.title).not.toMatch(/updated/i);
     expect(toast.title).not.toMatch(/deployments/i);
+  });
+});
+
+describe("headerUpdateLabel", () => {
+  // The header is the page's only Update button, so a skill with an update must never lose it.
+  it("offers Update for a plugin-kind skill whose skills.sh copy has an update", () => {
+    expect(headerUpdateLabel({ source_kind: "plugin", update_owner_ids: ["owner-1"] })).toBe(
+      "Update",
+    );
+  });
+
+  it("offers Pull latest for a fork with an update", () => {
+    expect(headerUpdateLabel({ source_kind: "fork", update_owner_ids: ["owner-1"] })).toBe(
+      "Pull latest",
+    );
+  });
+
+  it("offers nothing when no owner has an update", () => {
+    expect(headerUpdateLabel({ source_kind: "skills-sh", update_owner_ids: [] })).toBeNull();
   });
 });

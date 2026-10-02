@@ -17,7 +17,7 @@ import {
 } from "@skill-studio/ui";
 import { ProjectDirectorySelect } from "./ProjectDirectorySelect";
 import { ScopeToggleGroup } from "./ScopeToggleGroup";
-import { removeSkill, updateSkill } from "../../lib/skill-api";
+import { removeSkill } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import {
   skillLifecycleScopeSelection,
@@ -33,6 +33,7 @@ import type {
   SkillUpdateAvailability,
 } from "../../lib/skill-lifecycle-target";
 import type { InstallScope, SkillWithStatus } from "@skill-studio/lib";
+import { useGuardedSkillUpdate } from "../../hooks/useGuardedSkillUpdate";
 
 const ACTION_BUTTON_CLASS =
   "h-(--control-height) w-full justify-center gap-2 rounded-md px-3.5 text-body font-medium";
@@ -102,6 +103,7 @@ function useSkillLifecycleMutations(
   const addToast = useAppStore((state) => state.addToast);
   const [isRemoving, setIsRemoving] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+  const guard = useGuardedSkillUpdate();
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
 
   const handleRemove = () => {
@@ -127,39 +129,34 @@ function useSkillLifecycleMutations(
       });
   };
 
-  const handleUpdate = () => {
+  const handleUpdate = async () => {
+    const installed = skill.installed_info;
+    if (!updateAvailability?.available || !installed) return;
     setIsUpdating(true);
-    if (!updateAvailability?.available) {
-      setIsUpdating(false);
-      return Promise.resolve();
-    }
-    return updateSkill(updateAvailability.target)
-      .then((result) => {
-        if (result.success) {
-          onInstallComplete({ success: true, skillName: skill.name });
-        } else {
-          onInstallComplete({
-            success: false,
-            error: result.error ?? "Update command failed without an error message.",
-            skillName: skill.name,
-          });
-        }
-      })
-      .catch((error) => {
-        onInstallComplete({
-          success: false,
-          error: error instanceof Error ? error.message : "Update failed without an error message.",
-          skillName: skill.name,
-        });
-      })
-      .finally(() => {
-        setIsUpdating(false);
+    try {
+      await guard.requestUpdate(installed, {
+        scopeTarget: updateAvailability.target,
+        onFinished: ({ success, error }) =>
+          onInstallComplete(
+            success
+              ? { success: true, skillName: skill.name }
+              : { success: false, error: error ?? "Update failed.", skillName: skill.name },
+          ),
       });
+    } catch (error) {
+      addToast({
+        type: "error",
+        title: "Update failed",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+    setIsUpdating(false);
   };
 
   return {
     isRemoving,
-    isUpdating,
+    isUpdating: isUpdating || guard.isResolving,
+    updateDialog: guard.dialog,
     showRemoveConfirm,
     setShowRemoveConfirm,
     handleRemove,
@@ -234,6 +231,7 @@ export function InstalledSkillLifecycleActions({
   const {
     isRemoving,
     isUpdating,
+    updateDialog,
     showRemoveConfirm,
     setShowRemoveConfirm,
     handleRemove,
@@ -305,6 +303,8 @@ export function InstalledSkillLifecycleActions({
       {removalDisabledReason && (
         <p className="m-0 text-caption text-text-tertiary">{removalDisabledReason}</p>
       )}
+
+      {updateDialog}
 
       <AlertDialog open={showRemoveConfirm} onOpenChange={setShowRemoveConfirm}>
         <AlertDialogContent>

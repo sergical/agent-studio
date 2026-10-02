@@ -192,6 +192,9 @@ export function useRowCursor({
   function onGridKeyDown(e: ReactKeyboardEvent) {
     const target = e.target;
     if (!(target instanceof HTMLElement)) return;
+    // React bubbles keys from portaled dialogs and menus through the component tree, so a key
+    // pressed in a row action's dialog reaches the grid even though the dialog is not in its DOM.
+    if (!e.currentTarget.contains(target) || isEditable(target)) return;
 
     // `ArrowRight` on a collapsed group's own header button expands it and moves into the group.
     const headerGroupId = target.getAttribute("data-group-header");
@@ -203,6 +206,10 @@ export function useRowCursor({
       }
       return;
     }
+
+    // Enter and Space on a row's own button run that button, not the row.
+    if ((e.key === "Enter" || e.key === " ") && target.closest("button, a, [role='button']"))
+      return;
 
     if (effectiveCursorKey === null) return;
     const cursorKey = effectiveCursorKey;

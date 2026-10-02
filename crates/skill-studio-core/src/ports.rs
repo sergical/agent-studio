@@ -1358,8 +1358,25 @@ pub struct MutationSession {
 
 impl MutationSession {
     /// Takes the exclusive lease, opens history, recovers interrupted rows,
-    /// and scans a fresh inventory.
+    /// and scans a fresh inventory of every skill.
+    ///
+    /// Use [`Self::begin_for`] when the op can name the skills it touches.
     pub fn begin(rt: &Runtime, ctx: &OpContext) -> Result<Self, CoreError> {
+        Self::begin_for(rt, ctx, &[])
+    }
+
+    /// Like [`Self::begin`], but `fresh` holds only the named skills.
+    ///
+    /// A full scan walks every root, project, and plugin cache, which costs
+    /// seconds on a large machine; a write that resolves one skill needs
+    /// none of that. An empty `skills` slice, or a recovery or journal
+    /// reconcile that repaired anything, scans everything: the repair may
+    /// have touched skills the caller did not name.
+    pub fn begin_for(
+        rt: &Runtime,
+        ctx: &OpContext,
+        skills: &[crate::identity::SkillName],
+    ) -> Result<Self, CoreError> {
         ctx.checkpoint()?;
         let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)?;
         let Some(mut store) = rt.ports.history.open(&rt.scope, HistoryAccess::ReadWrite)? else {
@@ -1368,7 +1385,7 @@ impl MutationSession {
                 "this host build has no history store; mutations are not available",
             ));
         };
-        crate::events::recover_interrupted(
+        let recovery = crate::events::recover_interrupted(
             &guard,
             store.as_mut(),
             rt.ports.fs.as_ref(),
@@ -1386,7 +1403,18 @@ impl MutationSession {
         let install_journal_root = crate::ops_install::journal_root(&rt.scope.home.lexical);
         let install_journal =
             crate::journal::FsJournal::new(install_journal_root, rt.ports.fs.clone());
-        crate::journal::reconcile(&install_journal, &guard, rt.ports.fs.as_ref())?;
+        let reconciliation =
+            crate::journal::reconcile(&install_journal, &guard, rt.ports.fs.as_ref())?;
+        let repaired = !recovery.interrupted.is_empty()
+            || !recovery.completed.is_empty()
+            || !reconciliation.reversed.is_empty()
+            || !reconciliation.interrupted.is_empty()
+            || !reconciliation.resolved_without_steps.is_empty();
+        let scanned_skills = if repaired {
+            Vec::new()
+        } else {
+            skills.to_vec()
+        };
         // Scan under the exclusive lease already held: `crate::ops::scan`
         // would try to acquire a second (shared) lease over the same keys,
         // and an advisory file lock does not nest within one process.
@@ -1394,7 +1422,7 @@ impl MutationSession {
             rt,
             ctx,
             &crate::dto::ScanRequest {
-                skills: Vec::new(),
+                skills: scanned_skills,
                 timings: false,
             },
         )?;
@@ -1403,6 +1431,17 @@ impl MutationSession {
             store,
             fresh,
         })
+    }
+
+    /// [`Self::begin_for`] for the skill a deployment id names; a full scan
+    /// when the id does not name one.
+    pub(crate) fn begin_for_deployment(
+        rt: &Runtime,
+        ctx: &OpContext,
+        id: &DeploymentId,
+    ) -> Result<Self, CoreError> {
+        let skills: Vec<_> = id.skill_name().into_iter().collect();
+        Self::begin_for(rt, ctx, &skills)
     }
 
     /// Finds exactly one deployment by id in the fresh inventory.

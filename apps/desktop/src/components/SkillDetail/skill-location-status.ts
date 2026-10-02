@@ -14,6 +14,7 @@ import {
   driftingCopies,
   homeRelativePath,
   isBlockingSpecViolation,
+  specViolationSeverity,
   locationSummary,
   parentDirectory,
 } from "@skill-studio/lib";
@@ -88,7 +89,6 @@ export type LocationAction =
   | { kind: "split"; target: LifecycleTarget; projectPath: string | null; readers: AgentId[] }
   | { kind: "remove-scope"; scopeLabel: string; projectPath: string | null }
   | { kind: "remove-deployment"; scopeLabel: string; deployment: Deployment }
-  | { kind: "update" }
   | { kind: "install-again" }
   | { kind: "remove-lock-entry" }
   | { kind: "promote-global"; source: string; agents: AgentId[] };
@@ -260,9 +260,11 @@ function liveElsewhere(skill: InstalledSkill): boolean {
 }
 
 /** "Missing description", "Missing name", etc, folded into the fixed sentence shapes from status-spec.md §5. */
-function specCondition(violations: string[], path: string): Condition {
-  const blocking = violations.some(isBlockingSpecViolation);
-  const sentence = describeSpecViolations(violations);
+function specCondition(violations: string[], path: string): Condition | null {
+  const relevant = violations.filter((v) => specViolationSeverity(v) !== "note");
+  if (relevant.length === 0) return null;
+  const blocking = relevant.some(isBlockingSpecViolation);
+  const sentence = describeSpecViolations(relevant);
   const editAndReveal: MenuEntry[] = [
     { label: "Edit SKILL.md", action: { kind: "edit-skill-md", path } },
     { label: "Reveal in Finder", action: { kind: "reveal", path, label: "the copy" } },
@@ -270,10 +272,10 @@ function specCondition(violations: string[], path: string): Condition {
   return blocking
     ? {
         level: "error",
-        status: "Won't load",
-        phrase: "won't load",
-        plural: "won't load",
-        what: `SKILL.md will not load: ${sentence}`,
+        status: "Skipped by some agents",
+        phrase: "skipped by some agents",
+        plural: "skipped by some agents",
+        what: `SKILL.md: ${sentence}`,
         fix: "Edit SKILL.md.",
         menu: editAndReveal,
       }
@@ -465,7 +467,8 @@ function deploymentConditions(deployment: Deployment, ctx: GroupContext): Condit
   }
 
   const violations = deployment.spec_violations ?? [];
-  if (violations.length > 0) out.push(specCondition(violations, deployment.path));
+  const spec = specCondition(violations, deployment.path);
+  if (spec) out.push(spec);
 
   if (ctx.driftSet.has(deployment)) out.push(driftCondition(deployment, ctx));
 
@@ -511,7 +514,8 @@ function sharedConditions(shared: Deployment, ctx: GroupContext): Condition[] {
     });
   }
   const violations = shared.spec_violations ?? [];
-  if (violations.length > 0) out.push(specCondition(violations, shared.path));
+  const spec = specCondition(violations, shared.path);
+  if (spec) out.push(spec);
   return out.sort((a, b) => RANK[b.level] - RANK[a.level]);
 }
 
@@ -827,16 +831,15 @@ export function scopeGroupsHaveDrift(groups: ScopeGroup[]): boolean {
   return groups.some((g) => g.rows.some((r) => r.conditions.some((c) => c.status === "Differs")));
 }
 
-/** The card title's one right-aligned action link, precedence per status-spec.md §2: unpark > compare > install-again > enable-everywhere > update. */
+/** The card title's one right-aligned action link, precedence per status-spec.md §2: unpark > compare > install-again > enable-everywhere. Update stays in the page header: here it read as updating the locations. */
 export function titleLink(
   skill: InstalledSkill,
   hasDrift: boolean,
-): "Unpark" | "Compare copies" | "Install again" | "Enable everywhere" | "Update" | null {
+): "Unpark" | "Compare copies" | "Install again" | "Enable everywhere" | null {
   if (liveElsewhere(skill)) return "Unpark";
   if (hasDrift) return "Compare copies";
   if (skill.deployments.length === 0) return "Install again";
   if (skill.parked) return "Enable everywhere";
-  if (skill.update_owner_ids.length > 0) return "Update";
   return null;
 }
 
@@ -866,7 +869,7 @@ export function promoteToGlobal(groups: ScopeGroup[]): PromoteSource | null {
   return { path: source.path, agents };
 }
 
-/** The Invocation files of one skill, exactly as the properties rail lists them - the rail and the list's bulk Invocation action both edit these. */
+/** The Invocation files of one skill, exactly as the Locations card lists them - the card and the list's bulk Invocation action both edit these. */
 export function invocationFilesForSkill(skill: InstalledSkill): InvocationFile[] {
   return buildInvocationFiles(buildScopeGroups(skill));
 }
@@ -919,9 +922,10 @@ export function buildInvocationFiles(groups: ScopeGroup[]): InvocationFile[] {
   return files;
 }
 
-/** The footer's single note line, from status-spec.md §5: one file explains its own value; several files just point at "each file sets its own". */
+/** The footer's single note line, from status-spec.md §5: one file explains its own value; several files explain the "All locations" control. */
 export function invocationFooterNote(files: InvocationFile[], skillName: string): string {
-  if (files.length > 1) return "Each file sets its own. Symlinks follow the folder they point to.";
+  if (files.length > 1)
+    return "All locations sets every file; a file can still differ. Symlinks follow the folder they point to.";
   if (files.length !== 1) return "";
   switch (files[0].invocation) {
     case "both":

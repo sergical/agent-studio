@@ -5,15 +5,22 @@
 // ============================================================================
 
 import { describe, expect, it } from "vitest";
+import { ownSkillsView } from "@skill-studio/lib";
 import type {
   Deployment,
+  ForkRecord,
   HealthIssue,
   InstalledSkill,
   UpdateAllItem,
   UpdateAllOutcome,
   UpdateOutcome,
 } from "@skill-studio/lib";
-import { homeRowState, updateAllFailureMessage, updateAllOutdatedSkills } from "./home-inbox-data";
+import {
+  homeRowState,
+  issueDeploymentPath,
+  updateAllFailureMessage,
+  updateAllOutdatedSkills,
+} from "./home-inbox-data";
 
 function fixtureDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
@@ -207,7 +214,14 @@ describe("updateAllOutdatedSkills", () => {
       "owner:v1/global/beta",
       "owner:v1/global/gamma",
     ]);
-    expect(tally).toEqual({ attempted: 3, succeeded: 3, failures: 0, firstError: null });
+    expect(tally).toEqual({
+      attempted: 3,
+      succeeded: 3,
+      failures: 0,
+      skillsAttempted: 3,
+      skillsSucceeded: 3,
+      firstError: null,
+    });
   });
 
   it("update_all_pulls_a_fork_upstream_separately_from_the_batched_owner_call_or_names_the_extra_call", async () => {
@@ -239,7 +253,14 @@ describe("updateAllOutdatedSkills", () => {
 
     expect(pullForkCalls).toBe(1);
     expect(updateAllCalls).toBe(1);
-    expect(tally).toEqual({ attempted: 2, succeeded: 2, failures: 0, firstError: null });
+    expect(tally).toEqual({
+      attempted: 2,
+      succeeded: 2,
+      failures: 0,
+      skillsAttempted: 2,
+      skillsSucceeded: 2,
+      firstError: null,
+    });
   });
 
   it("update_all_counts_every_owner_update_all_skills_reports_as_failed_or_names_the_uncounted_owner", async () => {
@@ -260,6 +281,8 @@ describe("updateAllOutdatedSkills", () => {
       attempted: 2,
       succeeded: 0,
       failures: 2,
+      skillsAttempted: 2,
+      skillsSucceeded: 0,
       firstError: "update failed",
     });
   });
@@ -291,6 +314,8 @@ describe("updateAllOutdatedSkills", () => {
       attempted: 2,
       succeeded: 0,
       failures: 2,
+      skillsAttempted: 1,
+      skillsSucceeded: 0,
       firstError: "update failed",
     });
   });
@@ -321,6 +346,8 @@ describe("updateAllOutdatedSkills", () => {
       attempted: 3,
       succeeded: 1,
       failures: 2,
+      skillsAttempted: 3,
+      skillsSucceeded: 1,
       firstError: "beta is wildcard-dotagents (read-only)",
     });
   });
@@ -345,6 +372,8 @@ describe("updateAllOutdatedSkills", () => {
       attempted: 2,
       succeeded: 0,
       failures: 2,
+      skillsAttempted: 2,
+      skillsSucceeded: 0,
       firstError: "backend unreachable",
     });
   });
@@ -381,11 +410,342 @@ describe("updateAllOutdatedSkills", () => {
 
 describe("updateAllFailureMessage", () => {
   it("update_all_toast_names_the_first_error_and_truncates_a_long_one_or_hides_why_it_failed", () => {
-    const tally = { attempted: 5, succeeded: 2, failures: 3, firstError: "read-only" };
+    const tally = {
+      attempted: 5,
+      succeeded: 2,
+      failures: 3,
+      skillsAttempted: 5,
+      skillsSucceeded: 2,
+      firstError: "read-only",
+    };
     expect(updateAllFailureMessage(tally)).toBe("3 failed: read-only");
     expect(updateAllFailureMessage({ ...tally, failures: 0, firstError: null })).toBeUndefined();
     const long = updateAllFailureMessage({ ...tally, firstError: "x".repeat(500) }) ?? "";
     expect(long.length).toBeLessThan(170);
     expect(long.endsWith("…")).toBe(true);
+  });
+
+  it("update_all_toast_counts_skills_not_copies_so_it_agrees_with_its_title", () => {
+    const base = { attempted: 2, firstError: "read-only" };
+    // One skill, both copies failed: title "Updated 0 of 1 skill", so one failed.
+    expect(
+      updateAllFailureMessage({
+        ...base,
+        succeeded: 0,
+        failures: 2,
+        skillsAttempted: 1,
+        skillsSucceeded: 0,
+      }),
+    ).toBe("1 failed: read-only");
+    // Three copies failed across two skills, one skill fully updated: one skill failed, not three.
+    expect(
+      updateAllFailureMessage({
+        ...base,
+        attempted: 4,
+        succeeded: 1,
+        failures: 3,
+        skillsAttempted: 2,
+        skillsSucceeded: 1,
+      }),
+    ).toBe("1 failed: read-only");
+  });
+});
+
+describe("issueDeploymentPath", () => {
+  const ERROR = 'name "Find Bugs" is not a valid skill name';
+
+  it("a_spec_violation_issue_opens_the_warned_copy_instead_of_the_clean_first_copy_or_the_warning_stays_hidden", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/a/clean" }),
+        fixtureDeployment({ path: "/b/warned", spec_violations: [ERROR] }),
+      ],
+    });
+    const issue: HealthIssue = { kind: "spec-violation", skill, detail: ERROR };
+    expect(issueDeploymentPath(issue)).toBe("/b/warned");
+  });
+
+  it("a_spec_warning_issue_opens_the_copy_with_the_warning_not_an_earlier_copy_with_an_error_or_the_page_shows_a_different_problem_than_the_row", () => {
+    const mismatch = 'name "other" does not match its directory name "find-bugs"';
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({
+          path: "/a/errored",
+          spec_violations: ["missing required frontmatter field: description"],
+        }),
+        fixtureDeployment({ path: "/b/mismatch", spec_violations: [mismatch] }),
+      ],
+    });
+    const issue: HealthIssue = { kind: "spec-warning", skill, detail: mismatch };
+    expect(issueDeploymentPath(issue)).toBe("/b/mismatch");
+  });
+
+  it("a_non_spec_issue_names_no_copy_so_the_page_opens_its_default", () => {
+    const skill = fixtureSkill({
+      deployments: [fixtureDeployment({ path: "/b/warned", spec_violations: [ERROR] })],
+    });
+    const issue: HealthIssue = { kind: "broken-symlink", skill, detail: "broken" };
+    expect(issueDeploymentPath(issue)).toBeUndefined();
+  });
+
+  it("a_skill_also_shipped_by_a_plugin_opens_the_warned_own_copy_not_the_plugin_copy_in_the_own_view", () => {
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({ path: "/own/warned", spec_violations: [ERROR] }),
+        fixtureDeployment({
+          path: "/plugin/errored",
+          spec_violations: [ERROR],
+          plugin: { name: "p", version: null, harness: "Claude Code", marketplace: "m", id: "p@m" },
+        }),
+      ],
+      spec_violations: [ERROR],
+    });
+    const [own] = ownSkillsView([skill]);
+    const issue: HealthIssue = { kind: "spec-violation", skill: own, detail: ERROR };
+    expect(issueDeploymentPath(issue)).toBe("/own/warned");
+  });
+});
+
+describe("updateAllOutdatedSkills with edited skills", () => {
+  const edited = {
+    ...ownerSkill("edited", "owner:v1/global/edited"),
+    deployments: [
+      {
+        ...canonicalDeployment,
+        id: "dep:v1/edited",
+        owner_kind: "skills-sh" as const,
+        owner_id: "owner:v1/global/edited",
+      },
+    ],
+  };
+  const twoOwners = {
+    ...edited,
+    update_owner_ids: ["owner:v1/global/edited", "owner:v1/project/edited"],
+    update_owners: [
+      { owner_id: "owner:v1/global/edited", latest_commit: "next", latest_commit_at: null },
+      { owner_id: "owner:v1/project/edited", latest_commit: "next", latest_commit_at: null },
+    ],
+  };
+  const pulled = {
+    from_commit: "a",
+    to_commit: "b",
+    merged: [],
+    added: [],
+    removed: [],
+    conflicts: [],
+    unchanged: 0,
+    message: null,
+  };
+  const forkRecord: ForkRecord = {
+    deployment_id: "dep:v1/forked",
+    forked_at: "2026-10-01T00:00:00Z",
+    origin_tool: "skills-sh",
+    origin_source: "owner/repo",
+    repo: "owner/repo",
+    path: "skills/edited",
+    declared_ref: null,
+    base_commit: "a",
+  };
+  const plain = ownerSkill("plain", "owner:v1/global/plain");
+
+  it("update_all_forks_then_pulls_an_edited_skill_and_updates_the_rest_or_overwrites_the_edit", async () => {
+    const calls: string[] = [];
+    const tally = await updateAllOutdatedSkills(
+      [edited, plain],
+      async (target) => {
+        calls.push(`pull ${target.deployment_id}`);
+        return {
+          from_commit: "a",
+          to_commit: "b",
+          merged: [],
+          added: [],
+          removed: [],
+          conflicts: [],
+          unchanged: 0,
+          message: null,
+        };
+      },
+      async (targets) => {
+        const owners = targets.map((target) => target.owner_id ?? "");
+        calls.push(`update ${owners.join(",")}`);
+        return succeedAll(owners);
+      },
+      undefined,
+      {
+        names: new Set(["edited"]),
+        fork: async (target) => {
+          calls.push(`fork ${target.deployment_id}`);
+          const record: ForkRecord = {
+            deployment_id: "dep:v1/forked",
+            forked_at: "2026-10-01T00:00:00Z",
+            origin_tool: "skills-sh",
+            origin_source: "owner/repo",
+            repo: "owner/repo",
+            path: "skills/edited",
+            declared_ref: null,
+            base_commit: "a",
+          };
+          return record;
+        },
+      },
+    );
+
+    expect(calls).toEqual([
+      "fork dep:v1/edited",
+      "pull dep:v1/forked",
+      "update owner:v1/global/plain",
+    ]);
+    expect(tally.skillsAttempted).toBe(2);
+    expect(tally.skillsSucceeded).toBe(2);
+  });
+
+  it("update_all_counts_an_edited_skill_whose_fork_fails_as_failed_and_never_updates_it_or_loses_the_edit", async () => {
+    const tally = await updateAllOutdatedSkills(
+      [edited],
+      async () => {
+        throw new Error("pull must not run after a failed fork");
+      },
+      async () => {
+        throw new Error("the edited skill must not be overwritten");
+      },
+      undefined,
+      {
+        names: new Set(["edited"]),
+        fork: async () => {
+          throw new Error("fork refused");
+        },
+      },
+    );
+
+    expect(tally.failures).toBe(1);
+    expect(tally.skillsSucceeded).toBe(0);
+    expect(tally.firstError).toBe("fork refused");
+  });
+
+  it("update_all_names_the_skill_whose_pull_left_conflict_markers_or_the_toast_hides_them", async () => {
+    const tally = await updateAllOutdatedSkills(
+      [edited],
+      async () => ({
+        from_commit: "a",
+        to_commit: "b",
+        merged: [],
+        added: [],
+        removed: [],
+        conflicts: ["SKILL.md"],
+        unchanged: 0,
+        message: null,
+      }),
+      async () => succeedAll([]),
+      undefined,
+      {
+        names: new Set(["edited"]),
+        fork: async () => ({
+          deployment_id: "dep:v1/forked",
+          forked_at: "2026-10-01T00:00:00Z",
+          origin_tool: "skills-sh",
+          origin_source: "owner/repo",
+          repo: "owner/repo",
+          path: "skills/edited",
+          declared_ref: null,
+          base_commit: "a",
+        }),
+      },
+    );
+    expect(tally.conflicted).toEqual(["edited"]);
+    expect(tally.skillsSucceeded).toBe(1);
+  });
+
+  it("update_all_still_updates_the_other_copy_of_a_forked_skill_or_silently_skips_it", async () => {
+    const updated: string[] = [];
+    const tally = await updateAllOutdatedSkills(
+      [twoOwners],
+      async () => pulled,
+      async (targets) => {
+        updated.push(...targets.map((target) => target.owner_id ?? ""));
+        return succeedAll(["edited"]);
+      },
+      undefined,
+      { names: new Set(["edited"]), fork: async () => forkRecord },
+    );
+    expect(updated).toEqual(["owner:v1/project/edited"]);
+    expect(tally.attempted).toBe(2);
+    expect(tally.succeeded).toBe(2);
+    expect(tally.skillsSucceeded).toBe(1);
+  });
+
+  it("update_all_counts_a_forked_skill_as_failed_when_its_other_copy_fails_or_reports_a_false_success", async () => {
+    const tally = await updateAllOutdatedSkills(
+      [twoOwners],
+      async () => pulled,
+      async () => failAll(["edited"]),
+      undefined,
+      { names: new Set(["edited"]), fork: async () => forkRecord },
+    );
+    expect(tally.failures).toBe(1);
+    expect(tally.skillsSucceeded).toBe(0);
+  });
+
+  it("update_all_leaves_every_copy_alone_when_the_fork_fails_or_the_other_copy_is_overwritten", async () => {
+    const tally = await updateAllOutdatedSkills(
+      [twoOwners],
+      async () => pulled,
+      async () => {
+        throw new Error("no owner may be updated after a failed fork");
+      },
+      undefined,
+      {
+        names: new Set(["edited"]),
+        fork: async () => {
+          throw new Error("fork refused");
+        },
+      },
+    );
+    expect(tally.skillsSucceeded).toBe(0);
+    expect(tally.firstError).toBe("fork refused");
+  });
+
+  it("update_all_says_the_fork_was_made_when_only_the_pull_fails_or_the_user_thinks_the_edits_are_gone", async () => {
+    const tally = await updateAllOutdatedSkills(
+      [edited],
+      async () => {
+        throw new Error("network down");
+      },
+      async () => succeedAll([]),
+      undefined,
+      { names: new Set(["edited"]), fork: async () => forkRecord },
+    );
+    expect(tally.firstError).toContain("The fork was made and your edits are kept");
+    expect(tally.firstError).toContain("network down");
+  });
+
+  it("update_all_counts_a_forked_skills_other_copy_as_failed_when_the_whole_batch_rejects_or_it_reads_as_updated", async () => {
+    const tally = await updateAllOutdatedSkills(
+      [twoOwners],
+      async () => pulled,
+      async () => {
+        throw new Error("ipc down");
+      },
+      undefined,
+      { names: new Set(["edited"]), fork: async () => forkRecord },
+    );
+    expect(tally.skillsSucceeded).toBe(0);
+    expect(tally.failures).toBe(1);
+  });
+
+  it("update_all_progress_reaches_its_total_when_a_fork_fails_or_the_bar_stalls", async () => {
+    const seen: [number, number][] = [];
+    await updateAllOutdatedSkills(
+      [twoOwners],
+      async () => pulled,
+      async () => succeedAll([]),
+      (done, total) => seen.push([done, total]),
+      {
+        names: new Set(["edited"]),
+        fork: async () => {
+          throw new Error("fork refused");
+        },
+      },
+    );
+    expect(seen[seen.length - 1]).toEqual([1, 1]);
   });
 });

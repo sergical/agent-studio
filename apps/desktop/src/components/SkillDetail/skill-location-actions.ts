@@ -31,16 +31,13 @@ import {
   restoreMovedDeployment,
   setHarnessEnabled,
   setPluginEnabled,
-  setSkillInvocation,
+  setSkillsInvocation,
   unparkSkill,
-  updateSkill,
 } from "../../lib/skill-api";
 import {
   lifecycleTargetForDeployment,
   lifecycleTargetForPark,
   lifecycleTargetForSkill,
-  skillUpdateToast,
-  updateSkillOwners,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
 import { canOfferHarnessSwitch } from "./skill-location-helpers";
@@ -261,12 +258,6 @@ export function useLocationActions(
           deployment: action.deployment,
         });
         return;
-      case "update":
-        runWithErrorToast("Update failed", async () => {
-          const summary = await updateSkillOwners(skill, updateSkill);
-          addToast(skillUpdateToast(skill.name, summary));
-        });
-        return;
       case "install-again":
         runWithErrorToast("Couldn't reinstall", async () => {
           const source = parseSkillSource(skill.source);
@@ -314,19 +305,35 @@ export function useLocationActions(
 }
 
 /**
- * Sets `file`'s invocation policy, forking first when needed - the same rule
- * the SKILL.md editor uses: only the global Universal folder can need a fork
- * before editing (`fileEditability` keeps managed Project folders and copies
- * out of this branch). Shared by `SkillLocationsCard`'s segmented control and
- * the properties rail's Invocation select.
+ * Sets every file in `files` to `policy`, forking first when needed - the same rule the SKILL.md
+ * editor uses: only the global Universal folder can need a fork before editing (`fileEditability`
+ * keeps managed Project folders and copies out of this branch). The forks run one at a time, then
+ * one backend call writes every file, so the skill list refreshes once and nothing is still
+ * writing when this returns. Throws with how many files changed and the first failure. Used by `SkillInvocationFooter`.
  */
-export async function setInvocationForFile(
+export async function setInvocationForFiles(
   skill: InstalledSkill,
-  file: InvocationFile,
+  files: InvocationFile[],
   policy: InvocationPolicy,
 ): Promise<void> {
-  await forkBeforeInvocationEdit(file);
-  await setSkillInvocation(skill.name, `${file.path}/SKILL.md`, policy);
+  for (const file of files) {
+    // react-doctor-disable-next-line react-doctor/async-await-in-loop -- each fork takes an exclusive lease, so the forks must not overlap
+    await forkBeforeInvocationEdit(file);
+  }
+  const results = await setSkillsInvocation(
+    files.map((file) => ({ name: skill.name, path: `${file.path}/SKILL.md` })),
+    policy,
+  );
+  // A missing result counts as a failure, the same as the list's bulk Invocation action.
+  const failures = files.flatMap((file, index) => {
+    const error = results[index] ? results[index].error : "The batch returned no result.";
+    return error === null ? [] : [{ path: file.path, error }];
+  });
+  if (failures.length === 0) return;
+  const [first] = failures;
+  if (files.length === 1) throw new Error(first.error);
+  const changed = files.length - failures.length;
+  throw new Error(`Changed ${changed} of ${files.length} files. ${first.path}: ${first.error}`);
 }
 
 /** Forks a shared folder an update would write over, so the edit stays. Ambiguous and manual folders have no upstream, so they are edited in place. */
