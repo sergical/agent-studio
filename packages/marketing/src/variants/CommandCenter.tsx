@@ -7,6 +7,8 @@ import { Arrow } from "../MarketingBrand";
 import { SiteFooter, SiteHeader, siteLayout } from "../SiteChrome";
 import { lightSiteTheme, siteTokens, type SiteTheme } from "../SiteTheme.stylex";
 import { SidecarWalkthrough } from "../walkthrough/SidecarWalkthrough";
+import { ClosingFinale } from "../home/ClosingFinale";
+import { finaleCtaMarker } from "../home/ClosingFinale.stylex";
 import { FaqSection } from "../home/FaqSection";
 import { homeSectionStyles } from "../home/HomeSection.stylex";
 import { MascotStage } from "../home/MascotStage";
@@ -31,9 +33,9 @@ const marqueeMove = stylex.keyframes({
   to: { transform: "translateX(-50%)" },
 });
 
-function DownloadButton({ theme }: { theme: SiteTheme }) {
+function DownloadButton({ theme, inFinale = false }: { theme: SiteTheme; inFinale?: boolean }) {
   return (
-    <a href={DOWNLOAD_URL} {...stylex.props(styles.primaryButton)}>
+    <a href={DOWNLOAD_URL} {...stylex.props(inFinale && finaleCtaMarker, styles.primaryButton)}>
       <span>Download for macOS</span>
       <span aria-hidden="true" {...stylex.props(styles.primaryButtonArrow)}>
         <Arrow inverse={theme === "dark"} />
@@ -45,11 +47,9 @@ function DownloadButton({ theme }: { theme: SiteTheme }) {
 function TrustLine() {
   return (
     <p {...stylex.props(styles.fineprint)}>
-      {TRUST_LINE}
-      <br />
-      Intel Mac?{" "}
+      {TRUST_LINE} ·{" "}
       <a href={DOWNLOAD_INTEL_URL} {...stylex.props(homeSectionStyles.textLink, styles.intelLink)}>
-        Download for Intel
+        Intel build
       </a>
     </p>
   );
@@ -128,18 +128,26 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
         <section id="faq" {...stylex.props(siteLayout.container, homeSectionStyles.section)}>
           <FaqSection />
         </section>
+      </main>
 
+      <ClosingFinale theme={theme}>
         <section id="download" {...stylex.props(siteLayout.container, styles.closingSection)}>
+          <img
+            src="/skill-studio-logo.png"
+            alt=""
+            width={96}
+            height={96}
+            {...stylex.props(styles.closingMascot)}
+          />
           <h2 {...stylex.props(styles.closingTitle)}>Clear out your skills.</h2>
           <p {...stylex.props(styles.closingCopy)}>
             Keep the ones your agents use and park the rest.
           </p>
-          <DownloadButton theme={theme} />
+          <DownloadButton theme={theme} inFinale />
           <TrustLine />
         </section>
-      </main>
-
-      <SiteFooter page="home" />
+        <SiteFooter page="home" />
+      </ClosingFinale>
     </div>
   );
 }
@@ -223,6 +231,7 @@ const styles = stylex.create({
       ":hover": {
         backgroundColor: siteTokens.accentHover,
         boxShadow: "0 1px 0 oklch(1 0 0 / .35) inset, 0 14px 38px oklch(0 0 0 / .38)",
+        transform: "translateY(-1px)",
       },
       ":hover:active": {
         boxShadow: "0 1px 0 oklch(1 0 0 / .18) inset, 0 4px 12px oklch(0 0 0 / .24)",
@@ -359,15 +368,27 @@ const styles = stylex.create({
     "@media (max-width: 600px)": { paddingBlock: "86px 24px" },
   },
   closingSection: {
-    alignItems: "flex-start",
+    alignItems: "center",
     display: "flex",
     flexDirection: "column",
-    paddingBlock: "124px 142px",
-    "@media (max-width: 600px)": {
-      alignItems: "center",
-      paddingBlock: "86px 100px",
-      textAlign: "center",
+    paddingBlock: "124px 96px",
+    textAlign: "center",
+    "@media (max-width: 600px)": { paddingBlock: "86px 64px" },
+  },
+  closingMascot: {
+    filter: "drop-shadow(0 18px 32px oklch(0.45 0.2 293 / .4))",
+    height: "auto",
+    marginBottom: 28,
+    // The mascot perks up while the download button below it is hovered.
+    transform: {
+      default: "none",
+      "@media (hover: hover) and (pointer: fine)": {
+        [stylex.when.anySibling(":hover", finaleCtaMarker)]: "translateY(-6px) rotate(-6deg)",
+      },
     },
+    transition: "transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1)",
+    width: 96,
+    "@media (max-width: 600px)": { width: 80 },
   },
   closingTitle: {
     fontSize: "clamp(42px,5vw,68px)",
@@ -383,5 +404,6 @@ const styles = stylex.create({
     lineHeight: 1.6,
     margin: "24px 0 30px",
     maxWidth: "48ch",
+    textWrap: "balance",
   },
 });

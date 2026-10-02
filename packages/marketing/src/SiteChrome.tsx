@@ -84,7 +84,9 @@ interface SiteFooterProps {
 
 export function SiteFooter({ page }: SiteFooterProps) {
   return (
-    <footer {...stylex.props(siteLayout.container, styles.footer)}>
+    <footer
+      {...stylex.props(siteLayout.container, styles.footer, page === "home" && styles.footerHome)}
+    >
       <LogoLockup href={page === "home" ? "#top" : "/"} compact />
       <nav {...stylex.props(styles.footerLinks)} aria-label="Footer navigation">
         <a href={DOCS_URL} {...stylex.props(styles.footerLink)}>
@@ -180,6 +182,8 @@ const styles = stylex.create({
     paddingBlock: 28,
     paddingBottom: "max(28px, env(safe-area-inset-bottom))",
   },
+  // On the homepage the footer sits in the closing section, which already separates it.
+  footerHome: { borderTopWidth: 0, paddingBottom: 28 },
   footerLinks: { alignItems: "center", display: "flex", gap: 22 },
   footerLink: {
     color: siteTokens.muted,
