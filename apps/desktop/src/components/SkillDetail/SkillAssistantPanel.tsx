@@ -1207,7 +1207,7 @@ export function SkillAssistantPanel({
   return (
     <div className="flex flex-col gap-3">
       <SelectControl
-        ariaLabel="Harness"
+        ariaLabel="Agent"
         value={harness}
         onValueChange={(value) => {
           if (isSkillAssistantHarness(value)) handleSelectHarness(value);

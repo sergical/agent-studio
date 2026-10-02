@@ -43,7 +43,7 @@ describe("split dialog model", () => {
     const [global] = buildScopeGroups(installed);
 
     const menu = rowMenu(global.shared!, global.label, null, splitReaders(global));
-    const split = menu.entries.find((entry) => entry.label === "Split into harness folders…");
+    const split = menu.entries.find((entry) => entry.label === "Split into agent folders…");
 
     expect(split?.action).toMatchObject({ kind: "split", projectPath: null });
     const readers = split?.action.kind === "split" ? split.action.readers : [];
@@ -68,6 +68,6 @@ describe("split dialog model", () => {
 
     const labels = rowMenu(link, global.label).entries.map((entry) => entry.label);
 
-    expect(labels).not.toContain("Split into harness folders…");
+    expect(labels).not.toContain("Split into agent folders…");
   });
 });

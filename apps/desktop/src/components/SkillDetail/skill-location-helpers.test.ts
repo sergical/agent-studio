@@ -251,7 +251,7 @@ describe("per-harness reader switches", () => {
       expect(
         harnessSwitchOffTitle(row!),
         `the ${harness} switch title does not point at Park as the off path`,
-      ).toContain("Park the skill to turn it off for every harness");
+      ).toContain("Park the skill to turn it off for every agent");
     }
   });
 

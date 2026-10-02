@@ -66,7 +66,7 @@ function readerNoSwitchReason(agent: AgentId, isGlobal: boolean): string {
     return `${label} can be turned off only for the Global Universal folder`;
   }
   return isGlobal
-    ? `${label} has no per-skill switch. Park the skill to turn it off for every harness.`
+    ? `${label} has no per-skill switch. Park the skill to turn it off for every agent.`
     : `${label} has no per-skill switch`;
 }
 
@@ -979,7 +979,7 @@ export function rowMenu(
     if (!hasOff && row.deployment?.backing.kind === "canonical") {
       push(
         {
-          label: "Split into harness folders…",
+          label: "Split into agent folders…",
           action: {
             kind: "split",
             target: row.lifecycleTarget,

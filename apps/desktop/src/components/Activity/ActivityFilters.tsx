@@ -130,7 +130,7 @@ export function ActivityFilters({
     <>
       <MenuControl
         triggerClassName={FILTER_TRIGGER}
-        triggerAriaLabel="Filter by harness"
+        triggerAriaLabel="Filter by agent"
         popupClassName="min-w-60"
         trigger={
           <>
@@ -140,7 +140,7 @@ export function ActivityFilters({
               // SAFETY: HarnessFilter is AgentId | "all"; the "all" branch is handled above.
               <HarnessIcon harness={harness as AgentId} size={14} />
             )}
-            {harness === "all" ? "All harnesses" : deploymentLabelFromAgentId(harness)}
+            {harness === "all" ? "All agents" : deploymentLabelFromAgentId(harness)}
             <ChevronDown size={12} className="text-icon-muted" aria-hidden="true" />
           </>
         }

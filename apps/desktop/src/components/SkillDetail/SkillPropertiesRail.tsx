@@ -126,21 +126,21 @@ export function SkillPropertiesRail({ skill }: SkillPropertiesRailProps) {
           </Button>
         </PropertyRow>
 
-        <PropertyRow label="Harnesses">
+        <PropertyRow label="Agents">
           <Popover>
             <PopoverTrigger
               className={`${EDIT_BUTTON_CLASS} inline-flex cursor-pointer items-center border-0 bg-transparent hover:bg-bg-hover`}
-              aria-label={`Harnesses: ${harnessCount} harnesses, edit`}
+              aria-label={`Agents: ${harnessCount} agents, edit`}
             >
               <HarnessStack skill={skill} harnessList={DEFAULT_HARNESS_LIST} />
               <span className="tabular-nums text-text-tertiary">{harnessCount}</span>
             </PopoverTrigger>
-            <PopoverContent align="start" aria-label="Harnesses" className="w-64 gap-1.5">
+            <PopoverContent align="start" aria-label="Agents" className="w-64 gap-1.5">
               {harnessEntries.length === 0 ? (
                 <p className="m-0 text-small text-text-tertiary">
                   {reach.universal.present
                     ? "Only in the shared Universal folder."
-                    : "No harness reaches this skill."}
+                    : "No agent reaches this skill."}
                 </p>
               ) : (
                 harnessEntries.map((h) => {

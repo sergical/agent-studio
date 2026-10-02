@@ -66,4 +66,47 @@ describe("anti-slop no-internal-vocabulary", () => {
 			`),
 		).toBe(0);
 	});
+
+	it("flags developer words in user-text props, JSX children, object keys, and text-returning functions", () => {
+		expect(
+			internalVocabularyDiagnostics(`
+				export function show(flag: boolean, name: string) {
+					const items = [{ label: "Split into harness folders", action: 1 }];
+					const palette = { "title": "Open deployment", tooltipText: \`Canonical \${name}\` };
+					return (
+						<section aria-label="Filter by harness" emptyMessage="No deployment">
+							<Panel label={flag ? "Harness" : "Copy"} />
+							<p>{flag ? "All harnesses" : name}</p>
+							<p>{flag && "Mutable copy"}</p>
+						</section>
+					);
+				}
+				function statusLabel(flag: boolean) {
+					return flag ? "No harness" : "Ready";
+				}
+				const parkReason = (name: string) => \`\${name} is a deployment\`;
+			`),
+		).toBe(10);
+	});
+
+	it("ignores identifiers, className, console text, and keys that are not user text", () => {
+		expect(
+			internalVocabularyDiagnostics(`
+				export function show(flag: boolean, harness: string) {
+					console.info("harness deployment ready");
+					const row = { kind: "harness_disable", harness: "deployment", id: "canonical" };
+					const harnessLabel = harness;
+					function pickKind() {
+						return "harness";
+					}
+					return (
+						<section className="harness-row" data-kind="deployment" aria-label="Filter by agent">
+							<Panel label={harnessLabel} variant={flag ? "harness" : "deployment"} />
+							<p>{row.kind}{pickKind()}</p>
+						</section>
+					);
+				}
+			`),
+		).toBe(0);
+	});
 });

@@ -15,14 +15,88 @@ function staticText(node: ESTree.Node | null | undefined): string | null {
   return null;
 }
 
-function isAddToastCall(node: ESTree.CallExpression): boolean {
-  const callee = node.callee;
-  if (callee.type === "Identifier") return callee.name === "addToast";
-  return (
-    callee.type === "MemberExpression" &&
-    callee.property.type === "Identifier" &&
-    callee.property.name === "addToast"
-  );
+const USER_TEXT_KEYS = new Set([
+  "label",
+  "title",
+  "description",
+  "subtitle",
+  "message",
+  "placeholder",
+  "content",
+  "tooltip",
+  "aria-label",
+  "triggerAriaLabel",
+]);
+const USER_TEXT_KEY_SUFFIX = /(Label|Title|Text|Message|Description|Caption)$/;
+const USER_TEXT_FUNCTION_SUFFIX = /(Label|Text|Title|Message|Caption|Copy|Note|Reason|Description|Hint)$/;
+
+function isUserTextKey(name: string): boolean {
+  return USER_TEXT_KEYS.has(name) || USER_TEXT_KEY_SUFFIX.test(name);
+}
+
+function propertyKeyName(node: ESTree.Node): string | null {
+  if (node.type === "Identifier") return node.name;
+  if (node.type === "Literal") return staticText(node);
+  return null;
+}
+
+function jsxAttributeName(node: ESTree.JSXAttribute): string {
+  return node.name.type === "JSXIdentifier" ? node.name.name : `${node.name.namespace.name}:${node.name.name.name}`;
+}
+
+/** The name a function is declared or assigned under, or `null` when it is anonymous. */
+function functionName(node: ESTree.Node): string | null {
+  if ((node.type === "FunctionDeclaration" || node.type === "FunctionExpression") && node.id) {
+    return node.id.name;
+  }
+  const parent = node.parent;
+  if (parent?.type === "VariableDeclarator" && parent.id.type === "Identifier") return parent.id.name;
+  if (parent?.type === "Property" || parent?.type === "MethodDefinition") {
+    return propertyKeyName(parent.key);
+  }
+  return null;
+}
+
+/** Whether the text node is shown to a user: a user-text prop or key, a JSX child, or a text-returning function. */
+function isUserFacingPosition(node: ESTree.Node): boolean {
+  let child: ESTree.Node = node;
+  let parent = child.parent;
+  while (
+    parent &&
+    (parent.type === "ConditionalExpression"
+      ? parent.test !== child
+      : parent.type === "LogicalExpression" || parent.type === "TemplateLiteral")
+  ) {
+    child = parent;
+    parent = child.parent;
+  }
+  if (!parent) return false;
+  switch (parent.type) {
+    case "JSXAttribute":
+      return isUserTextKey(jsxAttributeName(parent));
+    case "JSXExpressionContainer": {
+      const owner = parent.parent;
+      if (owner?.type === "JSXAttribute") return isUserTextKey(jsxAttributeName(owner));
+      return owner?.type === "JSXElement" || owner?.type === "JSXFragment";
+    }
+    case "Property": {
+      if (parent.value !== child) return false;
+      const key = propertyKeyName(parent.key);
+      return key !== null && isUserTextKey(key);
+    }
+    case "ReturnStatement":
+    case "ArrowFunctionExpression": {
+      let fn: ESTree.Node | null | undefined = parent;
+      while (fn && fn.type !== "FunctionDeclaration" && fn.type !== "FunctionExpression" && fn.type !== "ArrowFunctionExpression") {
+        fn = fn.parent;
+      }
+      if (parent.type === "ArrowFunctionExpression" && parent.body !== child) return false;
+      const name = fn ? functionName(fn) : null;
+      return name !== null && USER_TEXT_FUNCTION_SUFFIX.test(name);
+    }
+    default:
+      return false;
+  }
 }
 
 /** Keep the developers' vocabulary (deployment, harness, canonical...) out of text a user reads. */
@@ -31,7 +105,7 @@ export const noInternalVocabularyRule = defineRule({
     type: "problem",
     docs: {
       description:
-        "Disallow internal vocabulary in user-facing text: Error messages, toast titles and messages, and JSX text.",
+        "Disallow internal vocabulary in user-facing text: Error messages, JSX text, user-text props and object keys, JSX children, and text-returning functions.",
     },
     messages: {
       internalWord:
@@ -49,16 +123,11 @@ export const noInternalVocabularyRule = defineRule({
         const message = node.arguments[0];
         check(node, message?.type === "SpreadElement" ? null : staticText(message));
       },
-      CallExpression(node) {
-        if (!isAddToastCall(node)) return;
-        const options = node.arguments[0];
-        if (options?.type !== "ObjectExpression") return;
-        for (const property of options.properties) {
-          if (property.type !== "Property" || property.key.type !== "Identifier") continue;
-          if (property.key.name === "title" || property.key.name === "message") {
-            check(property.value, staticText(property.value));
-          }
-        }
+      Literal(node) {
+        if (isUserFacingPosition(node)) check(node, staticText(node));
+      },
+      TemplateLiteral(node) {
+        if (isUserFacingPosition(node)) check(node, staticText(node));
       },
       JSXText(node) {
         check(node, node.value);
