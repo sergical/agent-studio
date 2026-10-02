@@ -85,6 +85,7 @@ export function RemoveDeploymentsDialog({
             <ul className="max-h-40 overflow-auto font-mono text-xs break-all">
               {[
                 ...removalAvailability.preview.linkedDeployments,
+                ...removalAvailability.preview.otherLinks,
                 ...removalAvailability.preview.managedDeployments,
               ].map((item) => (
                 <li key={item.id || item.path}>{item.path}</li>

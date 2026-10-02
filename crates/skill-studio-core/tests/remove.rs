@@ -1621,3 +1621,91 @@ fn undo_of_a_copy_remove_keeps_registry_rows_added_after_it_or_names_the_erased_
 
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// Flow: a skill-authoring project keeps its source in `skills/x`, and also has a skills.sh
+/// install of `x` under `.agents/skills`; the user removes the install.
+/// Expectation: the remove is refused with the folder named, the CLI never runs, and
+/// `skills/x` is still there.
+/// A failure here means skills CLI 1.7.0's project `rm -rf <project>/skills/x` deletes the
+/// author's source with no backup for Undo to restore.
+#[test]
+fn project_skills_sh_remove_is_refused_when_the_cli_would_delete_a_real_skills_folder_or_names_the_lost_folder(
+) {
+    let home = unique_temp_dir("remove_project_source_folder");
+    let project = home.join("proj");
+    let install = project.join(UNIVERSAL_ROOT_RELATIVE).join("x");
+    let source = project.join("skills").join("x");
+    for dir in [install.as_path(), source.as_path()] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: x\ndescription: a project skill\n---\nBody.\n",
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        project.join("skills-lock.json"),
+        r#"{"version":1,"skills":{"x":{"source":"owner/x","sourceType":"github","computedHash":"deadbeef"}}}"#,
+    )
+    .unwrap();
+
+    let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
+    let mut scope = RuntimeScope::fixture(&home);
+    scope.projects = skill_studio_core::scope::ProjectSelection::Explicit {
+        paths: vec![project.clone()],
+    };
+    let ports = Ports {
+        fs: Arc::new(RealFs::new()),
+        clock: Arc::new(FakeClock::at(0)),
+        ids: Arc::new(FakeIds::default()),
+        leases: Arc::new(FileLease::new(home.join(".leases"))),
+        history: Arc::new(SqliteHistoryOpener::new(
+            home.join(".history").join("events.sqlite3"),
+        )),
+        sink: Arc::new(RecordingSink::default()),
+        spawner: Some(spawner.clone()),
+        discovery: None,
+        tools: None,
+        catalog: Arc::new(HarnessCatalog::builtin()),
+        telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
+    };
+    let rt = Runtime::new(&scope, ports).unwrap();
+
+    let inventory =
+        ops::scan(&rt, &ctx(), &skill_studio_core::dto::ScanRequest::default()).unwrap();
+    let deployment = inventory
+        .skills
+        .iter()
+        .find(|s| s.name.0 == "x")
+        .and_then(|s| {
+            s.deployments.iter().find(|d| {
+                d.root.kind == RootKind::Universal && matches!(d.root.scope, RootScope::Project(_))
+            })
+        })
+        .expect("the scan lists the project install of x");
+    assert_eq!(deployment.owner_kind, LifecycleOwnerKind::SkillsSh);
+
+    let error = ops::remove(
+        &rt,
+        &ctx(),
+        &RemoveRequest {
+            deployment_id: deployment.id.clone(),
+        },
+    )
+    .expect_err("the remove must be refused");
+
+    assert!(
+        error.to_string().contains(&source.display().to_string()),
+        "the refusal names {}, got: {error}",
+        source.display()
+    );
+    assert!(
+        source.join("SKILL.md").exists(),
+        "the source folder survives"
+    );
+    assert!(install.exists(), "the install survives a refused remove");
+    assert!(
+        spawner.recorded.lock().unwrap().is_empty(),
+        "the CLI must not run"
+    );
+}

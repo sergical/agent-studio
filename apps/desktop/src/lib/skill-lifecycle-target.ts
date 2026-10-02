@@ -27,6 +27,8 @@ export interface SkillRemovalPreview {
   target: LifecycleTarget;
   managedDeployments: Deployment[];
   linkedDeployments: Deployment[];
+  /** Links the removal deletes that point somewhere other than the removed folder. */
+  otherLinks: Deployment[];
   /** Copies in the same scope that this removal leaves alone. */
   staying: Deployment[];
 }
@@ -582,6 +584,9 @@ export function skillUpdateToast(
  * only Claude Code, Grok Build and pi, because Codex, Cursor and OpenCode read the project's
  * `.agents/skills` there. It never touches OpenCode's singular `skill` folder. The folder is
  * judged by agent, scope and its parent folder's name, so a moved config home still matches.
+ * The CLI also clears three project folders of agents that are not first-class
+ * (`skills`, `agent/skills`, `data/skills`); the backend refuses a removal that would delete a
+ * real folder there (`refuse_unbacked_cli_deletions`).
  */
 function skillsCliRemovesFolderAt(deployment: Deployment): boolean {
   if (deployment.plugin || basename(parentDirectory(deployment.path)) !== "skills") return false;
@@ -605,6 +610,7 @@ export function skillRemovalPreview(
         : deployment.id === target.deployment_id) && deployment.backing.kind !== "linked-to",
   );
   const linkedDeployments = managedDeployments.flatMap((folder) => linksRemovedWith(skill, folder));
+  const otherLinks: Deployment[] = [];
   const removed = new Set([...managedDeployments, ...linkedDeployments]);
   let staying = deploymentsInScope(skill, selection.scope, selection.projectPath).filter(
     (deployment) => !removed.has(deployment),
@@ -612,11 +618,9 @@ export function skillRemovalPreview(
   if (managedDeployments.some((deployment) => deployment.owner_kind === "skills-sh")) {
     const cleaned = staying.filter(skillsCliRemovesFolderAt);
     const managedRealPaths = new Set(managedDeployments.map(realPath));
-    const lost = cleaned.filter((deployment) =>
-      deployment.shared_via_whole_dir_link
-        ? !managedRealPaths.has(realPath(deployment))
-        : !deployment.is_symlink,
-    );
+    const sameFolder = (deployment: Deployment) =>
+      deployment.shared_via_whole_dir_link && managedRealPaths.has(realPath(deployment));
+    const lost = cleaned.filter((deployment) => !deployment.is_symlink && !sameFolder(deployment));
     if (lost.length > 0) {
       const paths = lost.map((copy) => homeRelativePath(copy.path)).join(", ");
       throw new Error(
@@ -624,17 +628,17 @@ export function skillRemovalPreview(
       );
     }
     // A link to a folder elsewhere is deleted too; only the link goes, so nothing is lost.
-    const strayLinks = cleaned.filter(
-      (deployment) => deployment.is_symlink && !deployment.shared_via_whole_dir_link,
+    otherLinks.push(
+      ...cleaned.filter((deployment) => deployment.is_symlink && !sameFolder(deployment)),
     );
-    linkedDeployments.push(...strayLinks);
-    const strayIds = new Set(strayLinks);
-    staying = staying.filter((deployment) => !strayIds.has(deployment));
+    const otherIds = new Set(otherLinks);
+    staying = staying.filter((deployment) => !otherIds.has(deployment));
   }
   return {
     target,
     managedDeployments,
     linkedDeployments,
+    otherLinks,
     staying: staying.filter((deployment) => !deployment.shared_via_whole_dir_link),
   };
 }
@@ -659,6 +663,7 @@ export function skillDeploymentRemovalAvailability(
       target: lifecycleTargetForDeployment(deployment),
       managedDeployments: [deployment],
       linkedDeployments: linksRemovedWith(skill, deployment),
+      otherLinks: [],
       staying: [],
     },
   };
@@ -673,7 +678,15 @@ export function skillRemovalDescription(preview: SkillRemovalPreview): string {
     preview.staying.length > 0
       ? `The separate ${preview.staying.length === 1 ? "copy" : "copies"} at ${preview.staying.map((copy) => homeRelativePath(copy.path)).join(", ")} stay${preview.staying.length === 1 ? "s" : ""}.`
       : "Separate copies elsewhere stay.";
-  return `${removes} ${stays} This cannot be undone.`;
+  const otherLinks = preview.otherLinks
+    .map((link) => {
+      const deleted = `It also deletes the link at ${homeRelativePath(link.path)}.`;
+      return link.symlink_target
+        ? `${deleted} The folder it points to, ${homeRelativePath(link.symlink_target)}, stays.`
+        : deleted;
+    })
+    .join(" ");
+  return [removes, otherLinks, stays, "This cannot be undone."].filter(Boolean).join(" ");
 }
 
 function parkableDeployment(skill: SkillLifecycleView): Deployment | undefined {

@@ -899,11 +899,34 @@ describe("removing a skills.sh skill that has other real folders", () => {
     expect(availability.available).toBe(true);
   });
 
-  it("lists a link that points outside the Universal folder as removed, not as staying, or the dialog promises it survives", () => {
+  it("lists a link that points outside the Universal folder as its own removed link with the kept target named, or the dialog promises it survives or counts it as a link to the folder", () => {
     const stray = link("Cursor", "/home/u/.cursor/skills/x", "/home/u/dotfiles/x");
     const preview = skillRemovalPreview(skillOf([universal, stray]), scope);
-    expect(preview.linkedDeployments.map(({ id }) => id)).toContain("Cursor-link");
+    expect(preview.otherLinks.map(({ id }) => id)).toEqual(["Cursor-link"]);
+    expect(preview.linkedDeployments).toEqual([]);
     expect(preview.staying).toEqual([]);
+    expect(skillRemovalDescription(preview)).toBe(
+      "This removes 1 folder and 0 links to it. It also deletes the link at ~/.cursor/skills/x. The folder it points to, ~/dotfiles/x, stays. Separate copies elsewhere stay. This cannot be undone.",
+    );
+  });
+
+  it("allows Remove and lists the link when a symlink sits inside a whole-folder link to a dotfiles folder, or rm -rf of a link is refused as lost data", () => {
+    const innerLink = {
+      ...realFolder("Claude Code", "/home/u/.claude/skills/x"),
+      destination: "universal" as const,
+      backing: { kind: "linked-to", deployment_id: "universal" } as const,
+      shared_via_whole_dir_link: true,
+      is_symlink: true,
+      symlink_target: "/home/u/elsewhere/x",
+      resolved_path: "/home/u/elsewhere/x",
+    };
+    const availability = skillRemovalAvailability(skillOf([universal, innerLink]), scope);
+    expect(availability.available).toBe(true);
+    if (availability.available) {
+      expect(availability.preview.otherLinks.map(({ path }) => path)).toEqual([
+        "/home/u/.claude/skills/x",
+      ]);
+    }
   });
 
   it("keeps a separate folder in the stays list for a Copy owner, whose removal leaves it alone, or the dialog hides it", () => {

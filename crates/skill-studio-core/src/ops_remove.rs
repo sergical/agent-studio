@@ -40,7 +40,9 @@ use crate::error::{CoreError, ErrorCode};
 use crate::events::{EventDraft, EventKind, EventStatus};
 use crate::identity::{BackingRelationship, LifecycleOwnerKind, RootKind, RootScope};
 use crate::ops::Operation;
-use crate::ports::{ExclusiveGuard, MutationSession, OpContext, ProcessSpec, Runtime, ScopeFs};
+use crate::ports::{
+    ExclusiveGuard, FileKind, MutationSession, OpContext, ProcessSpec, Runtime, ScopeFs,
+};
 
 /// The `npx` package `req`'s owner kind shells out to, or `None` for
 /// `Copy`/`Fork` (which never call `npx`) - mirrors `ops_install_cli`'s own
@@ -96,6 +98,43 @@ fn remove_cli_args_and_cwd(
         }
         _ => (Vec::new(), None),
     }
+}
+
+/// Folders, relative to a project, that `npx skills remove` of skills.sh CLI 1.7.0 deletes in
+/// project scope on top of the agents' own skills folders: the openclaw, eve and astrbot
+/// agents, whether or not they are installed. A skill-authoring repo keeps its source in
+/// `skills/<name>`, so the CLI would delete it, and the backup of a CLI removal does not
+/// cover it. Issue #382 replaces this guard with a backup.
+const CLI_PROJECT_EXTRA_SKILL_DIRS: [&str; 3] = ["skills", "agent/skills", "data/skills"];
+
+/// Refuses a skills.sh project removal that the CLI would turn into the loss of a real folder
+/// it does not back up. A symlink is fine: the CLI deletes only the link.
+fn refuse_unbacked_cli_deletions(
+    fs: &dyn ScopeFs,
+    owner_kind: LifecycleOwnerKind,
+    name: &str,
+    scope: &RootScope,
+) -> Result<(), CoreError> {
+    let (LifecycleOwnerKind::SkillsSh, RootScope::Project(project)) = (owner_kind, scope) else {
+        return Ok(());
+    };
+    for relative in CLI_PROJECT_EXTRA_SKILL_DIRS {
+        let path = project.0.join(relative).join(name);
+        if fs
+            .symlink_metadata(&path)
+            .is_ok_and(|facts| facts.kind == FileKind::Dir)
+        {
+            return Err(CoreError::new(
+                ErrorCode::Unsupported,
+                format!(
+                    "Removing would also delete the folder at {}, and Undo could not bring it back. Move that folder first.",
+                    path.display()
+                ),
+            )
+            .at(&path));
+        }
+    }
+    Ok(())
 }
 
 /// Runs `owner_kind`'s `remove` argv through the spawner port and checks
@@ -416,6 +455,12 @@ fn remove_body(
     }
     let skill = crate::ops::resolve_skill(&session.fresh, &deployment.id)?.clone();
     let fs = rt.ports.fs.as_ref();
+    refuse_unbacked_cli_deletions(
+        fs,
+        deployment.owner_kind,
+        &skill.name.0,
+        &deployment.root.scope,
+    )?;
     let tree_hash_before = crate::tree_hash::tree_hash(fs, &deployment.path)?;
     // Every harness's link, not just Claude Code's - `RemoveRequest` has no
     // `harnesses` field to restrict this to (see `dto::RemoveRequest`), so
