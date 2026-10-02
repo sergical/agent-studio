@@ -8,3 +8,21 @@ updates:
       github-actions:
         patterns:
           - "*"
+
+  # glib reaches this workspace only through tauri's Linux GTK stack
+  # (gtk 0.18 -> glib 0.18.5) and GHSA-wrw7-89jp-8q8g / RUSTSEC-2024-0429 is
+  # patched only from glib 0.20.0, which no tauri 2.x release can resolve.
+  # Without this entry Dependabot retries that security update on every alert
+  # and every retry ends in `security_update_not_possible`, failing the
+  # scheduled update. The entry carries the `ignore` rule below;
+  # `open-pull-requests-limit: 0` keeps cargo version updates disabled, so the
+  # ignore rule is the only behavior this ecosystem adds. Drop the rule once
+  # tauri's Linux stack moves to glib >= 0.20, so a later glib advisory is not
+  # silenced here.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: "glib"
