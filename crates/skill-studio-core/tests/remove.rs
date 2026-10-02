@@ -52,9 +52,12 @@ const CODEX_ROOT_RELATIVE: &str = ".codex/skills";
 /// `.skill-lock.json` entry, when one exists - both real `npx ... remove`
 /// side effects this op's own post-call check (`remove_via_cli`) and the
 /// CLI trace parity test below rely on.
+/// One `npx` call: its argv, working folder, and extra environment.
+type RecordedCall = (Vec<String>, Option<PathBuf>, Vec<(String, String)>);
+
 struct FakeNpxSpawner {
     home: PathBuf,
-    recorded: Mutex<Vec<(Vec<String>, Option<PathBuf>, Vec<(String, String)>)>>,
+    recorded: Mutex<Vec<RecordedCall>>,
     /// Set by [`FakeNpxSpawner::fail_next_call`]: the next `run` call
     /// returns a nonzero exit before touching disk, simulating an `npx`
     /// process crashing before it deletes anything - the CLI-based
