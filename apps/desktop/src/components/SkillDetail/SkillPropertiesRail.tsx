@@ -1,41 +1,25 @@
 // ============================================================================
 // SkillPropertiesRail - The skill page's right-hand properties: Location,
-// Harnesses, Invocation, Source, Lifecycle, Tokens, Installed/Modified. Every
-// derived fact reuses the Locations card's own helpers (`buildScopeGroups`,
-// `buildInvocationFiles`, the source ledger model) so the rail and the card
-// never disagree about the same skill.
+// Harnesses, Source, Lifecycle, Tokens, Installed/Modified. Invocation lives
+// on the Locations card only, next to the files it sets. Every derived fact
+// reuses the Locations card's own helpers (`buildScopeGroups`, the source
+// ledger model) so the rail and the card never disagree about the same skill.
 // ============================================================================
 
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
-import {
-  Button,
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@skill-studio/ui";
+import { Button, Popover, PopoverContent, PopoverTrigger } from "@skill-studio/ui";
 import { formatTokens } from "@skill-studio/lib";
-import type { AgentId, InstalledSkill, InvocationPolicy } from "@skill-studio/lib";
+import type { AgentId, InstalledSkill } from "@skill-studio/lib";
 import { restoreMovedDeployment, setHarnessEnabled } from "../../lib/skill-api";
 import { useAppStore } from "../../store/appStore";
 import { HarnessStack } from "../SkillList/HarnessStack";
 import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
 import { SwitchControl } from "../ui/SwitchControl";
 import { buildInstalledSkillSourceLedgerModel } from "./installed-skill-source-ledger-model";
-import { setInvocationForFile } from "./skill-location-actions";
 import { canOfferHarnessSwitchForRow, harnessSwitchOffTitle } from "./skill-location-helpers";
-import {
-  buildScopeGroups,
-  INVOCATION_POLICY_OPTIONS,
-  invocationFilesForSkill,
-  scopeGroupsHaveDrift,
-} from "./skill-location-status";
+import { buildScopeGroups, scopeGroupsHaveDrift } from "./skill-location-status";
 import type { AgentLocationRow } from "./skill-location-status";
 import { railHarnessEntries, readerToggleAction } from "./skill-properties-rail-model";
 
@@ -65,10 +49,6 @@ function locationValue(groups: ReturnType<typeof buildScopeGroups>): string {
   return `${groups[0].label} + ${extra} project${extra === 1 ? "" : "s"}`;
 }
 
-function invocationLabel(policy: InvocationPolicy): string {
-  return INVOCATION_POLICY_OPTIONS.find((option) => option.value === policy)?.label ?? "Mixed";
-}
-
 /** Scrolls `SkillLocationsCard` into view and focuses its heading - the Location row's "show locations" affordance. */
 function showLocations() {
   const heading = document.getElementById("skill-locations-heading");
@@ -83,10 +63,8 @@ export function SkillPropertiesRail({ skill }: SkillPropertiesRailProps) {
     text: string;
   } | null>(null);
   const [pendingHarness, setPendingHarness] = useState<AgentId | null>(null);
-  const [isSavingInvocation, setIsSavingInvocation] = useState(false);
 
   const groups = buildScopeGroups(skill);
-  const files = invocationFilesForSkill(skill);
   const ledger = buildInstalledSkillSourceLedgerModel(skill);
   const hasDrift = scopeGroupsHaveDrift(groups);
 
@@ -121,26 +99,6 @@ export function SkillPropertiesRail({ skill }: SkillPropertiesRailProps) {
       );
     }
     setPendingHarness(null);
-  };
-
-  const invocationPolicies = new Set(files.map((file) => file.invocation));
-  const hasEditableFile = files.some((file) => file.editable);
-
-  const handleSetInvocationAll = async (policy: InvocationPolicy) => {
-    setIsSavingInvocation(true);
-    try {
-      // The files are independent writes, so they save in parallel rather than one at a time.
-      await Promise.all(
-        files.flatMap((file) => (file.editable ? [setInvocationForFile(skill, file, policy)] : [])),
-      );
-      setAnnouncement({ kind: "status", text: "Saved" });
-    } catch (err) {
-      announceError(
-        "Couldn't change invocation policy",
-        err instanceof Error ? err.message : "Unknown error",
-      );
-    }
-    setIsSavingInvocation(false);
   };
 
   return (
@@ -204,55 +162,6 @@ export function SkillPropertiesRail({ skill }: SkillPropertiesRailProps) {
               )}
             </PopoverContent>
           </Popover>
-        </PropertyRow>
-
-        <PropertyRow label="Invocation">
-          {files.length === 0 ? (
-            <span className="text-text-tertiary">—</span>
-          ) : invocationPolicies.size <= 1 ? (
-            <Select
-              items={INVOCATION_POLICY_OPTIONS}
-              value={files[0].invocation}
-              disabled={isSavingInvocation || !hasEditableFile}
-              onValueChange={(next) => {
-                if (!next) return;
-                // SAFETY: `items` is INVOCATION_POLICY_OPTIONS, so every value Select can emit is an InvocationPolicy.
-                handleSetInvocationAll(next as InvocationPolicy);
-              }}
-            >
-              <SelectTrigger
-                aria-label={`Invocation: ${invocationLabel(files[0].invocation)}, edit`}
-                className="h-7 w-full min-w-0 justify-between gap-1.5 rounded-sm border-none bg-transparent px-1.5 -mx-1.5 text-small text-text-primary hover:bg-bg-hover dark:bg-transparent dark:hover:bg-bg-hover"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent
-                alignItemWithTrigger={false}
-                className="w-auto min-w-(--anchor-width) gap-px rounded-md border border-border bg-bg-secondary p-1 shadow-md"
-              >
-                {INVOCATION_POLICY_OPTIONS.map((option) => (
-                  <SelectItem
-                    key={option.value}
-                    value={option.value}
-                    className="h-7 rounded-sm px-2.5 text-small text-text-secondary data-highlighted:bg-bg-hover data-highlighted:text-text-primary"
-                  >
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <span className="flex items-center gap-1.5">
-              <span>Mixed</span>
-              <Button
-                variant="link"
-                className="h-auto p-0 text-small font-normal"
-                onClick={showLocations}
-              >
-                Show locations
-              </Button>
-            </span>
-          )}
         </PropertyRow>
 
         <PropertyRow label="Source">

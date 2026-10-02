@@ -919,7 +919,8 @@ export function buildInvocationFiles(groups: ScopeGroup[]): InvocationFile[] {
 
 /** The footer's single note line, from status-spec.md §5: one file explains its own value; several files just point at "each file sets its own". */
 export function invocationFooterNote(files: InvocationFile[], skillName: string): string {
-  if (files.length > 1) return "Each file sets its own. Symlinks follow the folder they point to.";
+  if (files.length > 1)
+    return "All locations sets every file; a file can still differ. Symlinks follow the folder they point to.";
   if (files.length !== 1) return "";
   switch (files[0].invocation) {
     case "both":

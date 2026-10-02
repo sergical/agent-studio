@@ -766,7 +766,7 @@ describe("buildInvocationFiles / invocationFooterNote", () => {
     const files = buildInvocationFiles(groups);
     expect(files).toHaveLength(2);
     expect(invocationFooterNote(files, skill.name)).toBe(
-      "Each file sets its own. Symlinks follow the folder they point to.",
+      "All locations sets every file; a file can still differ. Symlinks follow the folder they point to.",
     );
   });
 });

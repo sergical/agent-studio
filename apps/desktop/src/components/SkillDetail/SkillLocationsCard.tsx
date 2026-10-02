@@ -2,39 +2,29 @@
 // SkillLocationsCard - "Where it lives": one scope block per Global/project,
 // each with the shared-folder accordion (if any) plus every harness's own
 // entry as a flat sibling row, an uppercase scope eyebrow when the skill
-// lives in a project, and, when the skill has two or more SKILL.md files, an
-// Invocation footer - one segmented Both/User only/Model only control per
-// file. A single file is set from the properties rail alone. Row rendering lives in
-// SkillLocationScope/SkillLocationRow so this file stays under
-// react-doctor's line cap.
+// lives in a project, and the Invocation footer (SkillInvocationFooter). Row
+// rendering lives in SkillLocationScope/SkillLocationRow so this file stays
+// under react-doctor's line cap.
 // ============================================================================
 
-import { useState } from "react";
-import { Button, ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
-import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
-import { useAppStore } from "../../store/appStore";
-import { HarnessIcon } from "../ui/HarnessIcon";
+import { Button } from "@skill-studio/ui";
 import { MaterializeRootDialog } from "../ui/MaterializeRootDialog";
 import { MakeIndependentCopyDialog } from "./MakeIndependentCopyDialog";
-import { StatusIcon } from "../ui/StatusIcon";
 import { TooltipControl } from "../ui/TooltipControl";
 import { RemoveDeploymentsDialog } from "./RemoveDeploymentsDialog";
+import { SkillInvocationFooter } from "./SkillInvocationFooter";
 import { SkillLocationScope } from "./SkillLocationScope";
 import { SplitSkillDialog } from "./SplitSkillDialog";
 import { UninstallPluginDialog } from "./UninstallPluginDialog";
-import { useLocationActions, setInvocationForFile } from "./skill-location-actions";
+import { useLocationActions } from "./skill-location-actions";
 import {
   buildInvocationFiles,
   buildScopeGroups,
-  INVOCATION_POLICY_OPTIONS,
-  invocationFooterNote,
   promoteToGlobal,
   scopeGroupsHaveDrift,
   titleLink,
-  toTooltipLines,
 } from "./skill-location-status";
-import type { InvocationFile } from "./skill-location-status";
-import type { InstalledSkill, InvocationPolicy } from "@skill-studio/lib";
+import type { InstalledSkill } from "@skill-studio/lib";
 
 interface SkillLocationsCardProps {
   skill: InstalledSkill;
@@ -55,13 +45,10 @@ const TITLE_LINK_ACTIONS = {
 
 /**
  * "Where it lives": Global first, then one block per project, each folded to
- * its own rollup dot until opened, plus an Invocation footer for two or more
- * files - one file, one segmented control. A dotagents/skills.sh-managed skill's shared file forks
- * first, same rule as the SKILL.md editor, so an invocation change sticks.
+ * its own rollup dot until opened, plus the Invocation footer. A dotagents/skills.sh-managed
+ * skill's shared file forks first, same rule as the SKILL.md editor, so an invocation change sticks.
  */
 export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCardProps) {
-  const addToast = useAppStore((state) => state.addToast);
-  const [savingFile, setSavingFile] = useState<string | null>(null);
   const actions = useLocationActions(skill, onCompareCopies);
 
   const groups = buildScopeGroups(skill);
@@ -70,20 +57,6 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
   const link = titleLink(skill, hasDrift);
   const promote = link ? null : promoteToGlobal(groups);
   const showEyebrows = groups.some((g) => !g.isGlobal);
-
-  const handleSetInvocation = (file: InvocationFile, policy: InvocationPolicy) => {
-    if (!file.editable || savingFile) return;
-    setSavingFile(file.path);
-    setInvocationForFile(skill, file, policy)
-      .catch((err) => {
-        addToast({
-          type: "error",
-          title: "Couldn't change invocation policy",
-          message: err instanceof Error ? err.message : "Unknown error",
-        });
-      })
-      .finally(() => setSavingFile(null));
-  };
 
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border-subtle p-4">
@@ -140,74 +113,7 @@ export function SkillLocationsCard({ skill, onCompareCopies }: SkillLocationsCar
         </div>
       )}
 
-      {files.length > 1 && (
-        <div className="mt-3 flex flex-col gap-1.5 border-t border-border-subtle pt-3">
-          <span className="text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
-            Invocation
-          </span>
-          {files.map((file) => (
-            <div
-              key={file.path}
-              className="grid h-8 grid-cols-[16px_minmax(0,1fr)_auto_auto] items-center gap-2.5"
-            >
-              <StatusIcon
-                icon={<HarnessIcon harness={file.harness} size={16} />}
-                level={file.level ?? undefined}
-                tip={toTooltipLines(file.tip)}
-              />
-              <span className="flex min-w-0 flex-col">
-                <TooltipControl content={[{ text: `${file.path}/SKILL.md`, mono: true }]}>
-                  <span className="w-fit max-w-full truncate text-body text-text-primary">
-                    {file.name}
-                  </span>
-                </TooltipControl>
-                {file.caption && (
-                  <span className="truncate text-caption text-text-tertiary">{file.caption}</span>
-                )}
-              </span>
-              {file.chip && (
-                <span className="rounded-full bg-bg-tertiary px-1.5 py-0.5 text-caption text-text-tertiary">
-                  {file.chip}
-                </span>
-              )}
-              {(() => {
-                const group = (
-                  <ToggleGroup
-                    variant="segmented"
-                    aria-label={`Invocation for ${file.name}`}
-                    value={[file.invocation]}
-                    onValueChange={(next) =>
-                      singleSelectToggleValue<InvocationPolicy>(next, (selected) =>
-                        handleSetInvocation(file, selected),
-                      )
-                    }
-                  >
-                    {INVOCATION_POLICY_OPTIONS.map((option) => (
-                      <ToggleGroupItem
-                        key={option.value}
-                        value={option.value}
-                        className="h-[26px] px-3 text-small"
-                        disabled={
-                          (!file.editable || savingFile === file.path) &&
-                          file.invocation !== option.value
-                        }
-                      >
-                        {option.label}
-                      </ToggleGroupItem>
-                    ))}
-                  </ToggleGroup>
-                );
-                return file.editable ? (
-                  group
-                ) : (
-                  <TooltipControl content={file.disabledReason ?? ""}>{group}</TooltipControl>
-                );
-              })()}
-            </div>
-          ))}
-          <p className="text-small text-text-tertiary">{invocationFooterNote(files, skill.name)}</p>
-        </div>
-      )}
+      {files.length > 0 && <SkillInvocationFooter skill={skill} files={files} />}
 
       {actions.materializeRequest && (
         <MaterializeRootDialog
