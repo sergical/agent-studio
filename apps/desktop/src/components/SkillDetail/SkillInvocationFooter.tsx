@@ -6,7 +6,7 @@
 // still differ from the rest.
 // ============================================================================
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
 import { useOptimisticAction } from "../../hooks/useOptimisticAction";
@@ -106,19 +106,29 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
     .filter(Boolean)
     .join(" · ");
 
+  // An "All locations" save also moves every editable file's control at once, until the snapshot
+  // brings the new shared value.
+  const [allOverride, setAllOverride] = useState<{
+    base: InvocationPolicy | null;
+    value: InvocationPolicy;
+  } | null>(null);
+  if (allOverride !== null && !Object.is(sharedPolicy, allOverride.base)) setAllOverride(null);
+  const allPolicy = allOverride?.value ?? null;
+
   const save = async (
     optimistic: OptimisticAction<InvocationPolicy | null>,
     targets: InvocationFile[],
     policy: InvocationPolicy,
   ) => {
-    if (isSaving.current || targets.length === 0) return;
+    if (isSaving.current || targets.length === 0) return false;
     isSaving.current = true;
-    await optimistic.run(
+    const saved = await optimistic.run(
       policy,
       () => setInvocationForFiles(skill, targets, policy),
       "Couldn't change invocation policy",
     );
     isSaving.current = false;
+    return saved;
   };
 
   return (
@@ -140,7 +150,12 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
             value={sharedPolicy}
             locked={editableFiles.length === 0}
             lockedReason={editableFiles.length === 0 ? files[0].disabledReason : undefined}
-            onSelect={(policy, optimistic) => void save(optimistic, editableFiles, policy)}
+            onSelect={(policy, optimistic) => {
+              setAllOverride({ base: sharedPolicy, value: policy });
+              void save(optimistic, editableFiles, policy).then((saved) => {
+                if (!saved) setAllOverride(null);
+              });
+            }}
           />
         </div>
       )}
@@ -173,7 +188,7 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
           )}
           <InvocationToggle
             label={`Invocation for ${file.name}`}
-            value={file.invocation}
+            value={file.editable ? (allPolicy ?? file.invocation) : file.invocation}
             locked={!file.editable}
             lockedReason={file.editable ? undefined : file.disabledReason}
             onSelect={(policy, optimistic) => void save(optimistic, [file], policy)}

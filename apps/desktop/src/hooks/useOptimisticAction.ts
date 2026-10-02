@@ -32,12 +32,12 @@ interface OptimisticFailureHandlers {
 
 /**
  * Awaits `action`. A throw reverts and reports the error message; a `false` result reverts
- * without a message, for an action that already showed its own error toast.
+ * without a message, for an action that already showed its own error toast. Resolves true on success.
  */
 export async function performOptimisticAction(
   action: () => Promise<boolean | void>,
   { onRevert, onError }: OptimisticFailureHandlers,
-): Promise<void> {
+): Promise<boolean> {
   let failed = false;
   let message: string | null = null;
   try {
@@ -47,9 +47,10 @@ export async function performOptimisticAction(
     failed = true;
     message = invokeErrorMessage(err);
   }
-  if (!failed) return;
+  if (!failed) return true;
   onRevert();
   if (message !== null) onError(message);
+  return false;
 }
 
 export interface OptimisticAction<T> {
@@ -57,9 +58,12 @@ export interface OptimisticAction<T> {
   value: T;
   /** True from the click until the server value changes or the call fails. Show a spinner. */
   pending: boolean;
-  /** Shows `next` at once and awaits `action`. Never rejects. */
-  run: (next: T, action: () => Promise<boolean | void>, errorTitle: string) => Promise<void>;
+  /** Shows `next` at once and awaits `action`. Never rejects; resolves true when the action succeeded. */
+  run: (next: T, action: () => Promise<boolean | void>, errorTitle: string) => Promise<boolean>;
 }
+
+/** How long a successful save keeps its override when no snapshot changes the server value. */
+const SETTLE_MS = 5000;
 
 export function useOptimisticAction<T>(serverValue: T): OptimisticAction<T> {
   const addToast = useAppStore((state) => state.addToast);
@@ -70,11 +74,17 @@ export function useOptimisticAction<T>(serverValue: T): OptimisticAction<T> {
   if (override !== null && !Object.is(serverValue, override.base)) setOverride(null);
 
   const run = async (next: T, action: () => Promise<boolean | void>, errorTitle: string) => {
-    setOverride({ base: serverValue, value: next });
-    await performOptimisticAction(action, {
+    const mine = { base: serverValue, value: next };
+    setOverride(mine);
+    const saved = await performOptimisticAction(action, {
       onRevert: () => setOverride(null),
       onError: (message) => addToast({ type: "error", title: errorTitle, message }),
     });
+    // A save that leaves the server value unchanged never ends the override on its own; drop it
+    // once the snapshot has had time to land so the spinner cannot stick.
+    if (saved)
+      setTimeout(() => setOverride((current) => (current === mine ? null : current)), SETTLE_MS);
+    return saved;
   };
 
   return {
