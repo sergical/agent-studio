@@ -4351,7 +4351,8 @@ fn apply_frontmatter_repair_body(
     }
 
     let step_start = clock.monotonic();
-    let session = crate::ports::MutationSession::begin(rt, ctx);
+    let session =
+        crate::ports::MutationSession::begin_for_deployment(rt, ctx, &preview.deployment_id);
     // Discard the nested scan's timing immediately: an error below must
     // leave `ctx` with this op's own timing or none, never the nested
     // scan's.
@@ -5596,7 +5597,7 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
     let step_start = clock.monotonic();
-    let session = crate::ports::MutationSession::begin(rt, ctx);
+    let session = crate::ports::MutationSession::begin_for_deployment(rt, ctx, &req.deployment_id);
     ctx.take_timing();
     let mut session = session?;
 
@@ -5772,7 +5773,7 @@ fn unpark_body(
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
     let step_start = clock.monotonic();
-    let session = crate::ports::MutationSession::begin(rt, ctx);
+    let session = crate::ports::MutationSession::begin_for_deployment(rt, ctx, &req.deployment_id);
     ctx.take_timing();
     let mut session = session?;
 
@@ -5958,7 +5959,8 @@ fn set_harness_enabled_body(
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
     let step_start = clock.monotonic();
-    let session = crate::ports::MutationSession::begin(rt, ctx);
+    let session =
+        crate::ports::MutationSession::begin_for(rt, ctx, std::slice::from_ref(&req.skill));
     ctx.take_timing();
     let mut session = session?;
 

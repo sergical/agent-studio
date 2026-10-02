@@ -388,7 +388,7 @@ fn remove_body(
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
     let step_start = clock.monotonic();
-    let session = MutationSession::begin(rt, ctx);
+    let session = MutationSession::begin_for_deployment(rt, ctx, &req.deployment_id);
     ctx.take_timing();
     let mut session = session?;
 
