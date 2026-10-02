@@ -25,6 +25,24 @@ Reference validator: `skills-ref validate ./my-skill`.
 Skill Studio enforces these rules in `src-tauri/src/skills/frontmatter.rs`
 (`validate_skill`) and reports failures as `spec_violations`.
 
+## What agents do with a spec violation
+
+Measured 2026-10-01: Claude Code 2.1.287, Codex 0.159.2, OpenCode 1.18.30, pi 0.99.1.
+Cursor: blocked at login; Grok Build: not installed.
+
+| Violation                          | Claude Code             | Codex                 | OpenCode              | pi                    |
+| ---------------------------------- | ----------------------- | --------------------- | --------------------- | --------------------- |
+| No description                     | Loads (first body line) | Skips, warns          | Skips silently        | Skips, warns          |
+| No name                            | Uses folder name        | Uses folder name      | Skips silently        | Uses folder name      |
+| Bad YAML                           | Repairs and loads       | Repairs and loads     | Repairs and loads     | Skips, warns          |
+| Name differs from folder           | Uses folder name        | Uses frontmatter name | Uses frontmatter name | Uses frontmatter name |
+| Bad name format                    | Loads                   | Loads                 | Loads                 | Loads, warns          |
+| Description over 1024 characters   | Loads                   | Loads                 | Loads                 | Loads, warns          |
+| Compatibility over 500, 500+ lines | Loads                   | Loads                 | Loads                 | Loads                 |
+
+`specViolationSeverity` in `packages/lib/src/skill-health.ts` encodes this (error, warning, note).
+Re-check it when an agent changes.
+
 ## Invocation control and disable, per agent
 
 Claude Code, Codex, OpenCode and pi auto-invoke a skill by default when its
@@ -412,8 +430,8 @@ as every other skill - see `ownSkillsView`/`pluginSkillsView` in
 Health issues (`collectDashboardIssues`, `src/lib/skill-health.ts`) are
 surfaced on Home's "Needs attention" card and reachable from the Skills view
 via `filter.issue`. The kinds are: `parked-but-reinstalled`, `duplicate`,
-`broken-symlink`, `spec-violation` (blocking agentskills.io violations only -
-see `isBlockingSpecViolation`), and `lock-only`. Two things that look like
+`broken-symlink`, `spec-violation` (error-severity agentskills.io violations, see
+`specViolationSeverity`), `spec-warning`, and `lock-only`. Two things that look like
 issues deliberately are not: a skill that has never been invoked (noise, not
 something worth fixing for every skill) and a skill with an update available
 (that's the "Updates" section on Home, a routine action, not a health

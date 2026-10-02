@@ -465,6 +465,21 @@ describe("issueDeploymentPath", () => {
     expect(issueDeploymentPath(issue)).toBe("/b/warned");
   });
 
+  it("a_spec_warning_issue_opens_the_copy_with_the_warning_not_an_earlier_copy_with_an_error_or_the_page_shows_a_different_problem_than_the_row", () => {
+    const mismatch = 'name "other" does not match its directory name "find-bugs"';
+    const skill = fixtureSkill({
+      deployments: [
+        fixtureDeployment({
+          path: "/a/errored",
+          spec_violations: ["missing required frontmatter field: description"],
+        }),
+        fixtureDeployment({ path: "/b/mismatch", spec_violations: [mismatch] }),
+      ],
+    });
+    const issue: HealthIssue = { kind: "spec-warning", skill, detail: mismatch };
+    expect(issueDeploymentPath(issue)).toBe("/b/mismatch");
+  });
+
   it("a_non_spec_issue_names_no_copy_so_the_page_opens_its_default", () => {
     const skill = fixtureSkill({
       deployments: [fixtureDeployment({ path: "/b/warned", spec_violations: [ERROR] })],

@@ -327,7 +327,7 @@ function WarningsGroup({
   start: number;
   isExpanded: boolean;
   onToggle: () => void;
-  onSelectSkill: (name: string) => void;
+  onSelectSkill: (name: string, deploymentPath?: string) => void;
   onShowAll: () => void;
   openSkill: (name: string, deploymentPath: string | undefined, intent: "compare") => void;
   onConvertLinkedRoot: (
@@ -356,7 +356,7 @@ function WarningsGroup({
                 rowIndex={rowAt(start, i)}
                 rowRef={rowRef(key)}
                 tabIndex={tabIndexFor(key)}
-                onOpen={() => onSelectSkill(issue.skill.name)}
+                onOpen={() => onSelectSkill(issue.skill.name, issueDeploymentPath(issue))}
                 detail={<span>{issue.detail}</span>}
                 action={
                   <WarningRowAction
@@ -365,7 +365,7 @@ function WarningsGroup({
                     onConvertLinkedRoot={(harness, harnessLabel, root) =>
                       onConvertLinkedRoot(issue.skill, harness, harnessLabel, root)
                     }
-                    onOpen={() => onSelectSkill(issue.skill.name)}
+                    onOpen={() => onSelectSkill(issue.skill.name, issueDeploymentPath(issue))}
                   />
                 }
               />

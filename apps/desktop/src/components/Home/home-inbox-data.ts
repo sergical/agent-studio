@@ -86,9 +86,10 @@ export function homeRowState(
 /** The copy a Home issue row opens: a spec-violation issue opens the copy that has the violation
  * (the skill's first copy may be clean); other kinds open the skill's default copy. */
 export function issueDeploymentPath(issue: HealthIssue): string | undefined {
-  return issue.kind === "spec-violation"
-    ? deploymentWithSpecViolations(issue.skill)?.path
-    : undefined;
+  if (issue.kind === "spec-violation") return deploymentWithSpecViolations(issue.skill)?.path;
+  if (issue.kind === "spec-warning")
+    return deploymentWithSpecViolations(issue.skill, "warning")?.path;
+  return undefined;
 }
 
 /** The row-level action label for one health issue kind - see NeedsAttentionCard's former mapping. */
@@ -102,6 +103,7 @@ export function issueActionLabel(kind: HealthIssueKind): string {
       return "Convert to per-skill links";
     case "parked-but-reinstalled":
     case "spec-violation":
+    case "spec-warning":
     case "lock-only":
       return "Open";
   }
@@ -340,7 +342,7 @@ export function buildHomeRowPlan(params: {
     ]),
     ...warnRows.map((issue): [string, () => void] => [
       issueKey("warn", issue),
-      () => onSelectSkill(issue.skill.name),
+      () => onSelectSkill(issue.skill.name, issueDeploymentPath(issue)),
     ]),
     ...updRows.map((skill): [string, () => void] => [
       skillKey("upd", skill),

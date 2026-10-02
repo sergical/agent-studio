@@ -9,11 +9,13 @@ import { AlertTriangle } from "lucide-react";
 import { Button } from "@skill-studio/ui";
 import {
   describeFrontmatterErrorLine,
+  describeSpecViolations,
   describeFrontmatterRepair,
   isBlockingSpecViolation,
   ownDeployments,
   parseYamlFrontmatterError,
   proposeFrontmatterQuoteRepair,
+  specViolationSeverity,
 } from "@skill-studio/lib";
 import type {
   Deployment,
@@ -23,7 +25,12 @@ import type {
   InstalledSkill,
 } from "@skill-studio/lib";
 import { TooltipControl } from "../ui/TooltipControl";
-import { canOfferLocalQuote, frontmatterRepairKindsFor } from "./skill-frontmatter-repair-policy";
+import {
+  canOfferLocalQuote,
+  fixLineFor,
+  frontmatterRepairKindForViolation,
+  frontmatterRepairKindsFor,
+} from "./skill-frontmatter-repair-policy";
 
 interface InstalledSkillHeaderProps {
   skill: InstalledSkill;
@@ -71,7 +78,9 @@ export function InstalledSkillHeader({
   const noteSources = own.length > 0 ? own : skill.deployments;
   const nonBlockingNotes = [
     ...new Set(
-      noteSources.flatMap((d) => d.spec_violations.filter((v) => !isBlockingSpecViolation(v))),
+      noteSources.flatMap((d) =>
+        d.spec_violations.filter((v) => specViolationSeverity(v) === "note"),
+      ),
     ),
   ];
   const nonBlockingCount = nonBlockingNotes.length;
@@ -82,6 +91,16 @@ export function InstalledSkillHeader({
   const renderedDeployment = deployment ?? skill.deployments.find((d) => d.content_hash);
   const blockingViolations = (renderedDeployment?.spec_violations ?? []).filter(
     isBlockingSpecViolation,
+  );
+  const conflictRepair = frontmatterRepairs.find((repair) => repair.kind === "invocation-conflict");
+  // With a repair, the conflict has its own red line and Fix below; without one, it shows here.
+  const warningViolations = (renderedDeployment?.spec_violations ?? []).filter(
+    (v) =>
+      specViolationSeverity(v) === "warning" &&
+      !(v === "conflicting invocation keys" && conflictRepair),
+  );
+  const nameFormatNote = (renderedDeployment?.spec_violations ?? []).find(
+    (v) => specViolationSeverity(v) === "note" && v.startsWith('name "'),
   );
   const yamlViolation = blockingViolations.find((violation) =>
     violation.startsWith("invalid YAML frontmatter at line "),
@@ -94,7 +113,6 @@ export function InstalledSkillHeader({
     (kind) => kind !== "invocation-conflict",
   );
   const lineRepair = frontmatterRepairs.find((repair) => repair.kind === lineKind);
-  const conflictRepair = frontmatterRepairs.find((repair) => repair.kind === "invocation-conflict");
   // A backend "Fix" preview wins; the local quote repair covers what it declines.
   const canQuote = canOfferLocalQuote({
     isPreviewSettled: isFrontmatterPreviewSettled,
@@ -108,9 +126,21 @@ export function InstalledSkillHeader({
     yamlLocation && skillMdContent && canQuote
       ? describeFrontmatterErrorLine(skillMdContent, yamlLocation.line)
       : null;
+  const fixLine = fixLineFor({
+    lineKind,
+    hasMismatchLine: warningViolations.some(
+      (v) => frontmatterRepairKindForViolation(v) === "name-mismatch",
+    ),
+    hasNameFormatNote: Boolean(nameFormatNote),
+  });
+  const lineFixButton = lineRepair ? (
+    <Button size="sm" variant="outline" onClick={() => onFixRepair(lineRepair.kind)}>
+      Fix
+    </Button>
+  ) : null;
   const violationText = quoteRepair
     ? describeFrontmatterRepair(quoteRepair, yamlLocation?.column)
-    : (lineHint ?? blockingViolations.join("; "));
+    : (lineHint ?? describeSpecViolations(blockingViolations));
 
   return (
     <header className="flex flex-col gap-4">
@@ -152,19 +182,31 @@ export function InstalledSkillHeader({
               Quote the {quoteRepair.key}
             </Button>
           )}
-          {(hasMalformedYaml || lineRepair) && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={
-                lineRepair
-                  ? () => onFixRepair(lineRepair.kind)
-                  : () => onEditManually(yamlLocation?.line)
-              }
-            >
-              {lineRepair ? "Fix" : "Edit manually"}
-            </Button>
-          )}
+          {hasMalformedYaml &&
+            (fixLine === "error" && lineRepair ? (
+              lineFixButton
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onEditManually(yamlLocation?.line)}
+              >
+                Edit manually
+              </Button>
+            ))}
+        </div>
+      )}
+      {warningViolations.length > 0 && (
+        <div className="flex items-center gap-2 text-small text-warning">
+          <AlertTriangle size={13} />
+          <span>{describeSpecViolations(warningViolations)}</span>
+          {fixLine === "warning" && lineFixButton}
+        </div>
+      )}
+      {nameFormatNote && (
+        <div className="flex items-center gap-2 text-small text-text-tertiary">
+          <span>{describeSpecViolations([nameFormatNote])}</span>
+          {fixLine === "note" && lineFixButton}
         </div>
       )}
       {conflictRepair && (
