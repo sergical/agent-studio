@@ -331,7 +331,10 @@ describe("lifecycleTargetForSkill", () => {
   });
 
   it("previews the selected owner group and only links backed by that group", () => {
-    const canonical = deployment("canonical", "owner:selected");
+    const canonical = {
+      ...deployment("canonical", "owner:selected"),
+      owner_kind: "dotagents" as const,
+    };
     const linked = {
       ...deployment("linked", "owner:selected"),
       backing: { kind: "linked-to", deployment_id: "canonical" } as const,
@@ -782,5 +785,103 @@ describe("forkEditedAndUpdate", () => {
       { updateOthers: false },
     );
     expect(updated).toEqual([]);
+  });
+});
+
+describe("removing a skills.sh skill that has other real folders", () => {
+  const universal = deployment("universal", "owner:v1/global/x");
+  const perAgentFolder = (id: string, agent: string, dir: string): Deployment => ({
+    ...deployment(id),
+    owner_id: null,
+    owner_kind: "manual",
+    mutability: "read-only",
+    destination: "per-harness",
+    backing: { kind: "independent" },
+    agent,
+    path: `/home/${dir}/skills/x`,
+  });
+  const link = (id: string, agent: string, dir: string): Deployment => ({
+    ...deployment(id, "owner:v1/global/x"),
+    destination: "per-harness",
+    backing: { kind: "linked-to", deployment_id: "universal" },
+    agent,
+    is_symlink: true,
+    symlink_target: universal.path,
+    path: `/home/${dir}/skills/x`,
+  });
+  const skillOf = (
+    deployments: Deployment[],
+    sourceKind: InstalledSkill["source_kind"] = "skills-sh",
+  ) =>
+    ({ name: "x", source_kind: sourceKind, deployments }) satisfies Pick<
+      InstalledSkill,
+      "name" | "deployments" | "source_kind"
+    >;
+
+  it("refuses Remove and names the folder when a separate real folder sits at another agent, or Undo cannot restore it", () => {
+    const availability = skillRemovalAvailability(
+      skillOf([universal, perAgentFolder("cursor", "Cursor", ".cursor")]),
+      { skillName: "x", scope: "global", projectPath: null },
+    );
+    expect(availability).toEqual({
+      available: false,
+      reason: expect.stringContaining("/home/.cursor/skills/x"),
+    });
+  });
+
+  it("allows Remove when the other agents only hold links or a whole-folder link, or a harmless skill cannot be removed", () => {
+    const wholeFolder = {
+      ...link("claude-root", "Claude Code", ".claude"),
+      shared_via_whole_dir_link: true,
+    };
+    const availability = skillRemovalAvailability(
+      skillOf([universal, link("codex", "Codex", ".codex"), wholeFolder]),
+      { skillName: "x", scope: "global", projectPath: null },
+    );
+    expect(availability.available).toBe(true);
+  });
+
+  it("keeps a separate folder in the stays list for a Copy owner, whose removal leaves it alone", () => {
+    const copy = { ...universal, owner_kind: "copy" as const, owner_id: null };
+    const preview = skillRemovalPreview(
+      skillOf([copy, perAgentFolder("cursor", "Cursor", ".cursor")], "manual"),
+      {
+        skillName: "x",
+        scope: "global",
+        projectPath: null,
+      },
+    );
+    expect(preview.staying.map(({ id }) => id)).toEqual(["cursor"]);
+  });
+
+  it("offers no Remove target for a per-agent Copy alone, or the backend refuses it", () => {
+    const perAgentCopy = {
+      ...perAgentFolder("claude-copy", "Claude Code", ".claude"),
+      owner_kind: "copy" as const,
+      mutability: "mutable" as const,
+    };
+    const availability = skillRemovalAvailability(skillOf([perAgentCopy], "manual"), {
+      skillName: "x",
+      scope: "global",
+      projectPath: null,
+    });
+    expect(availability.available).toBe(false);
+  });
+
+  it("targets the universal Copy when a per-agent Copy sits beside it, or Remove reads as ambiguous", () => {
+    const universalCopy = {
+      ...universal,
+      id: "universal-copy",
+      owner_kind: "copy" as const,
+      owner_id: null,
+    };
+    const perAgentCopy = {
+      ...perAgentFolder("claude-copy", "Claude Code", ".claude"),
+      owner_kind: "copy" as const,
+      mutability: "mutable" as const,
+    };
+    expect(globalRemovalTarget(skillOf([universalCopy, perAgentCopy], "manual"))).toEqual({
+      deployment_id: "universal-copy",
+    });
   });
 });

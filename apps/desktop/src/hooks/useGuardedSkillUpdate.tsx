@@ -55,7 +55,7 @@ interface UpdateRequestOptions {
 export function useGuardedSkillUpdate() {
   const addToast = useAppStore((state) => state.addToast);
   const [pending, setPending] = useState<PendingUpdate | null>(null);
-  const [resolvingSkill, setResolvingSkill] = useState<string | null>(null);
+  const [resolvingSkills, setResolvingSkills] = useState<ReadonlySet<string>>(new Set());
   const updating = useRef(new Set<string>());
 
   const overwriteFor =
@@ -102,7 +102,7 @@ export function useGuardedSkillUpdate() {
     const update = pending;
     setPending(null);
     if (!update) return;
-    setResolvingSkill(update.skill.name);
+    setResolvingSkills((names) => new Set(names).add(update.skill.name));
     updating.current.add(update.skill.name);
     try {
       await run(update);
@@ -114,7 +114,11 @@ export function useGuardedSkillUpdate() {
       });
     }
     updating.current.delete(update.skill.name);
-    setResolvingSkill(null);
+    setResolvingSkills((names) => {
+      const next = new Set(names);
+      next.delete(update.skill.name);
+      return next;
+    });
   };
 
   const overwrite = () => resolve("Update failed", (update) => update.overwrite());
@@ -168,9 +172,9 @@ export function useGuardedSkillUpdate() {
   return {
     requestUpdate,
     pullLatest,
-    isResolving: resolvingSkill !== null,
-    /** The skill whose confirmed update is running, which `pullLatest` has already returned from. */
-    resolvingSkill,
+    isResolving: resolvingSkills.size > 0,
+    /** The skills whose confirmed update is running, which `pullLatest` has already returned from. */
+    resolvingSkills,
     dialog,
   };
 }

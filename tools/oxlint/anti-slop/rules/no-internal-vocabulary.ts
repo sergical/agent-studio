@@ -7,7 +7,7 @@ const BANNED_WORDS =
 
 /** A code, not a sentence: no spaces and a separator, like `harness-unsupported` or `materialize_skill_root`. */
 function looksLikeIdentifier(text: string): boolean {
-  return /^[\w.:/@-]+$/.test(text) && /[-_.:/]/.test(text);
+  return /^[\w.:/@-]+$/.test(text) && /\w[-_.:/@]\w/.test(text);
 }
 
 /** The text of a string literal or the fixed parts of a template literal; `null` for anything else. */

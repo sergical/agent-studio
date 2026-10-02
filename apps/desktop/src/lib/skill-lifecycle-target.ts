@@ -172,7 +172,8 @@ export function lifecycleTargetForSkill(
     );
   }
   const canonicalDeployments = deployments.filter(
-    (deployment) => deployment.backing.kind === "canonical",
+    (deployment) =>
+      deployment.backing.kind === "canonical" && deployment.destination === "universal",
   );
   if (canonicalDeployments.length === 1) {
     return lifecycleTargetForDeployment(canonicalDeployments[0]);
@@ -586,6 +587,20 @@ export function skillRemovalPreview(
   const staying = deploymentsInScope(skill, selection.scope, selection.projectPath).filter(
     (deployment) => !removed.has(deployment) && !deployment.shared_via_whole_dir_link,
   );
+  // `npx skills remove` deletes the folder at every agent's skills directory, and the backend
+  // keeps no backup of those, so a separate real folder there would be lost for good.
+  if (managedDeployments.some((deployment) => deployment.owner_kind === "skills-sh")) {
+    const lost = staying.filter(
+      (deployment) =>
+        !deployment.is_symlink && !deployment.plugin && deployment.destination === "per-harness",
+    );
+    if (lost.length > 0) {
+      const paths = lost.map((copy) => copy.path).join(", ");
+      throw new Error(
+        `Removing would also delete the separate ${lost.length === 1 ? "copy" : "copies"} at ${paths}, and Undo could not bring ${lost.length === 1 ? "it" : "them"} back. Delete or move ${lost.length === 1 ? "that copy" : "those copies"} first.`,
+      );
+    }
+  }
   return { target, managedDeployments, linkedDeployments, staying };
 }
 

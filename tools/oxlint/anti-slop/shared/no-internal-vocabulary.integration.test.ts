@@ -79,6 +79,22 @@ describe("anti-slop no-internal-vocabulary", () => {
 		).toBe(0);
 	});
 
+	it("reports one-word text that ends in punctuation and skips real codes", () => {
+		expect(
+			internalVocabularyDiagnostics(`
+				export function show() {
+					return <p>Harness:</p>;
+				}
+			`),
+		).toBe(1);
+		expect(
+			internalVocabularyDiagnostics(`
+				export const reasonLabel = "skill-name";
+				export const stepText = "a.b";
+			`),
+		).toBe(0);
+	});
+
 	it("flags developer words in user-text props, JSX children, object keys, and text-returning functions", () => {
 		expect(
 			internalVocabularyDiagnostics(`

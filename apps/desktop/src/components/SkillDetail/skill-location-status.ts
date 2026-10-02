@@ -1094,7 +1094,11 @@ export function rowMenu(
         false,
       );
     }
-    if (row.kind === "copy" && row.deployment?.owner_kind === "copy") {
+    if (
+      row.kind === "copy" &&
+      row.deployment?.owner_kind === "copy" &&
+      row.deployment.destination === "universal"
+    ) {
       push(
         {
           label: `Remove ${row.harnessLabel} copy…`,
