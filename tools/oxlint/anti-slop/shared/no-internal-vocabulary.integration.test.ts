@@ -67,6 +67,18 @@ describe("anti-slop no-internal-vocabulary", () => {
 		).toBe(0);
 	});
 
+	it("ignores identifier-like codes with no spaces, even in user-text positions", () => {
+		expect(
+			internalVocabularyDiagnostics(`
+				export const reasonLabel = "harness-unsupported";
+				export const step = { message: "materialize_skill_root", title: "dep:v1/global/harness" };
+				export function show() {
+					return <Panel label="harness-unsupported" />;
+				}
+			`),
+		).toBe(0);
+	});
+
 	it("flags developer words in user-text props, JSX children, object keys, and text-returning functions", () => {
 		expect(
 			internalVocabularyDiagnostics(`

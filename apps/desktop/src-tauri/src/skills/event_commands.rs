@@ -321,7 +321,7 @@ fn validate_materialize_request(
         .as_deref()
         .ok_or("Conversion needs one copy id")?;
     if target.owner_id.is_some() {
-        return Err("Conversion targets one copy, not an group of copies".to_string());
+        return Err("Conversion targets one copy, not a group of copies".to_string());
     }
     let (_, deployment) = super::skill_lifecycle::find_deployment(snapshot, deployment_id)?;
     super::skill_lifecycle::revalidate_deployment(deployment, deployment_id)?;
@@ -447,7 +447,7 @@ pub async fn materialize_harness_root_then_disable(
                 .ok_or("Convert and turn off needs one copy id")?;
             if target.owner_id.is_some() {
                 return Err(
-                    "Convert and turn off targets one copy, not an group of copies".to_string(),
+                    "Convert and turn off targets one copy, not a group of copies".to_string(),
                 );
             }
             let root_path = PathBuf::from(&root);
@@ -534,7 +534,7 @@ pub async fn make_skill_independent_copy(
                 .ok_or("Make independent copy needs one copy id")?;
             if target.owner_id.is_some() {
                 return Err(
-                    "Make independent copy targets one copy, not an group of copies".to_string(),
+                    "Make independent copy targets one copy, not a group of copies".to_string(),
                 );
             }
 

@@ -6,6 +6,7 @@ import {
   lifecycleTargetForHarnessRoot,
   lifecycleTargetForSkill,
   skillCanPark,
+  skillDeploymentRemovalAvailability,
   skillParkVerb,
   skillLifecycleScopeSelection,
   skillMutableLifecycleScopes,
@@ -83,68 +84,145 @@ describe("lifecycleTargetForSkill", () => {
     expect(() => lifecycleTargetForSkill(skill, "global")).toThrow("more than one source");
   });
 
-  describe("one real folder plus links to it, with no owner", () => {
-    function ownerless(id: string, path: string, link?: { to: string }): Deployment {
+  describe("motion as the real scan reports it", () => {
+    // Fixtures copy the fields `skill-studio scan --json` gives for the user's
+    // `motion`: every folder is read-only because no ledger owns it.
+    const home = "/Users/me";
+    const repo = "/Users/me/src/repo-architect";
+    function scanned(overrides: Partial<Deployment> & Pick<Deployment, "id" | "path">): Deployment {
       return {
-        ...deployment(id, undefined, "/p"),
+        ...deployment(overrides.id),
         owner_kind: "manual",
-        backing: { kind: "independent" },
-        path,
-        is_symlink: link !== undefined,
-        symlink_target: link?.to,
+        owner_id: null,
+        mutability: "read-only",
+        ...overrides,
       };
     }
+    const projectFolder = scanned({
+      id: "project-universal",
+      path: `${repo}/.agents/skills/motion`,
+      scope: "project",
+      project_path: repo,
+      owner_kind: "in-repo",
+    });
+    const projectLink = scanned({
+      id: "project-claude",
+      path: `${repo}/.claude/skills/motion`,
+      agent: "Claude Code",
+      scope: "project",
+      project_path: repo,
+      owner_kind: "in-repo",
+      backing: { kind: "linked-to", deployment_id: "project-universal" },
+      is_symlink: true,
+      symlink_target: `${repo}/.agents/skills/motion`,
+    });
+    const globalFolder = scanned({ id: "global-universal", path: `${home}/.agents/skills/motion` });
+    const globalWholeDirLink = scanned({
+      id: "global-claude",
+      path: `${home}/.claude/skills/motion`,
+      agent: "Claude Code",
+      backing: { kind: "linked-to", deployment_id: "global-universal" },
+      shared_via_whole_dir_link: true,
+      resolved_path: `${home}/.agents/skills/motion`,
+    });
 
-    it("removes the folder and its links together, not asking which one", () => {
-      const folder = ownerless("folder", "/p/.agents/skills/x");
-      const link = ownerless("link", "/p/.claude/skills/x", { to: "/p/.agents/skills/x" });
+    it("explains that a repository copy is deleted in the repository, not by Skill Studio", () => {
       const skill = {
-        name: "x",
+        name: "motion",
         source_kind: "manual",
-        deployments: [folder, link],
+        deployments: [projectFolder, projectLink],
+      } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
+
+      expect(() => lifecycleTargetForSkill(skill, "project", repo)).toThrow("part of a repository");
+      expect(skillMutableLifecycleScopes(skill)).toEqual([]);
+    });
+
+    it("explains that a folder no ledger owns is deleted by hand, and says how", () => {
+      const skill = {
+        name: "motion",
+        source_kind: "manual",
+        deployments: [globalFolder, globalWholeDirLink],
+      } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
+
+      expect(() => lifecycleTargetForSkill(skill, "global")).toThrow(
+        "did not install motion, so it will not delete it. Use Reveal in Finder",
+      );
+    });
+
+    it("removes a copy Skill Studio owns with its links, and names the separate Claude folder that stays", () => {
+      const universal = {
+        ...globalFolder,
+        owner_kind: "copy" as const,
+        mutability: "mutable" as const,
+      };
+      const claudeFolder = {
+        ...globalWholeDirLink,
+        id: "global-claude-real",
+        owner_kind: "copy" as const,
+        mutability: "mutable" as const,
+        backing: { kind: "independent" } as const,
+        destination: "per-harness" as const,
+        shared_via_whole_dir_link: false,
+        resolved_path: null,
+      };
+      const skill = {
+        name: "motion",
+        source_kind: "manual",
+        deployments: [universal, claudeFolder],
       } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
 
       const preview = skillRemovalPreview(skill, {
-        skillName: "x",
-        scope: "project",
-        projectPath: "/p",
+        skillName: "motion",
+        scope: "global",
+        projectPath: null,
       });
-      expect(preview.target).toEqual({ deployment_id: "folder" });
-      expect(preview.managedDeployments.map(({ path }) => path)).toEqual(["/p/.agents/skills/x"]);
-      expect(preview.linkedDeployments.map(({ path }) => path)).toEqual(["/p/.claude/skills/x"]);
+      expect(preview.target).toEqual({ deployment_id: "global-universal" });
+      expect(preview.linkedDeployments).toEqual([]);
       expect(skillRemovalDescription(preview)).toBe(
-        "This removes 1 folder and 1 link to it. Separate copies elsewhere stay. This cannot be undone.",
+        `This removes 1 folder and 0 links to it. The separate copy at ${home}/.claude/skills/motion stays. This cannot be undone.`,
       );
     });
 
-    it("still asks when two real folders exist, so a separate copy is never deleted by accident", () => {
+    it("lists the whole-directory link as part of the folder, never as a link the backend deletes", () => {
+      const universal = {
+        ...globalFolder,
+        owner_kind: "copy" as const,
+        mutability: "mutable" as const,
+      };
       const skill = {
-        name: "x",
+        name: "motion",
         source_kind: "manual",
-        deployments: [
-          ownerless("agents", "/p/.agents/skills/x"),
-          ownerless("claude", "/p/.claude/skills/x"),
-        ],
+        deployments: [universal, { ...globalWholeDirLink, mutability: "mutable" as const }],
       } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
 
-      expect(() => lifecycleTargetForSkill(skill, "project", "/p")).toThrow(
-        "Remove each copy from Locations",
-      );
+      const preview = skillRemovalPreview(skill, {
+        skillName: "motion",
+        scope: "global",
+        projectPath: null,
+      });
+      expect(preview.linkedDeployments).toEqual([]);
+      expect(preview.staying).toEqual([]);
     });
 
-    it("still asks when a link points at a different folder than the real one", () => {
+    it("never offers to remove a per-agent folder, which the backend refuses", () => {
+      const perAgent = {
+        ...globalFolder,
+        id: "claude-folder",
+        destination: "per-harness" as const,
+        backing: { kind: "independent" } as const,
+        owner_kind: "copy" as const,
+        mutability: "mutable" as const,
+      };
       const skill = {
-        name: "x",
+        name: "motion",
         source_kind: "manual",
-        deployments: [
-          ownerless("folder", "/p/.agents/skills/x"),
-          ownerless("link", "/p/.claude/skills/x", { to: "/elsewhere/x" }),
-        ],
+        deployments: [perAgent],
       } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
 
-      expect(() => lifecycleTargetForSkill(skill, "project", "/p")).toThrow(
-        "Remove each copy from Locations",
-      );
+      expect(() => lifecycleTargetForSkill(skill, "global")).toThrow("no single Universal folder");
+      expect(skillDeploymentRemovalAvailability(skill, perAgent)).toMatchObject({
+        available: false,
+      });
     });
   });
 
@@ -188,7 +266,7 @@ describe("lifecycleTargetForSkill", () => {
       projectPath: null,
     });
     expect(availability.available).toBe(false);
-    if (!availability.available) expect(availability.reason).toContain("Locations");
+    if (!availability.available) expect(availability.reason).toContain("Reveal in Finder");
   });
 
   it("targets the deployment selected by a linked-root repair", () => {
@@ -258,6 +336,15 @@ describe("lifecycleTargetForSkill", () => {
       ...deployment("linked", "owner:selected"),
       backing: { kind: "linked-to", deployment_id: "canonical" } as const,
       agent: "Claude Code",
+      is_symlink: true,
+      symlink_target: canonical.path,
+    };
+    const unrelatedLink = {
+      ...deployment("unrelated", "owner:selected"),
+      backing: { kind: "linked-to", deployment_id: "canonical" } as const,
+      agent: "Codex",
+      is_symlink: true,
+      symlink_target: "/elsewhere/x",
     };
     const independent = {
       ...deployment("independent", "owner:other"),
@@ -268,7 +355,7 @@ describe("lifecycleTargetForSkill", () => {
     const skill = {
       name: "x",
       source_kind: "skills-sh",
-      deployments: [canonical, linked, independent],
+      deployments: [canonical, linked, unrelatedLink, independent],
     } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
 
     const preview = skillRemovalPreview(skill, {
@@ -280,11 +367,11 @@ describe("lifecycleTargetForSkill", () => {
     expect(preview.managedDeployments.map(({ id }) => id)).toEqual(["canonical"]);
     expect(preview.linkedDeployments.map(({ id }) => id)).toEqual(["linked"]);
     expect(skillRemovalDescription(preview)).toBe(
-      "This removes 1 folder and 1 link to it. Separate copies elsewhere stay. This cannot be undone.",
+      "This removes 1 folder and 1 link to it. The separate copies at /home/.agents/skills/x, /home/.agents/skills/x stay. This cannot be undone.",
     );
   });
 
-  it("previews only the app-managed Claude link for a dotagents owner", () => {
+  it("previews every per-skill link the backend deletes for a dotagents owner, not only Claude's", () => {
     const canonical = {
       ...deployment("canonical", "owner:selected"),
       owner_kind: "dotagents" as const,
@@ -294,12 +381,16 @@ describe("lifecycleTargetForSkill", () => {
       id: "claude-link",
       agent: "Claude Code",
       backing: { kind: "linked-to", deployment_id: canonical.id } as const,
+      is_symlink: true,
+      symlink_target: canonical.path,
     };
     const codexLink = {
       ...canonical,
       id: "codex-link",
       agent: "Codex",
       backing: { kind: "linked-to", deployment_id: canonical.id } as const,
+      is_symlink: true,
+      symlink_target: canonical.path,
     };
     const skill = {
       name: "x",
@@ -313,7 +404,7 @@ describe("lifecycleTargetForSkill", () => {
       projectPath: null,
     });
 
-    expect(preview.linkedDeployments.map(({ id }) => id)).toEqual(["claude-link"]);
+    expect(preview.linkedDeployments.map(({ id }) => id)).toEqual(["claude-link", "codex-link"]);
   });
 });
 

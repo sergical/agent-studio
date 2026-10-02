@@ -5,6 +5,11 @@ import type { ESTree } from "@oxlint/plugins";
 const BANNED_WORDS =
   /\b(deployments?|lifecycle owners?|owner groups?|materializ\w*|mutable|unambiguous|canonical|argv|harnesses|harness)\b/i;
 
+/** A code, not a sentence: no spaces and a separator, like `harness-unsupported` or `materialize_skill_root`. */
+function looksLikeIdentifier(text: string): boolean {
+  return /^[\w.:/@-]+$/.test(text) && /[-_.:/]/.test(text);
+}
+
 /** The text of a string literal or the fixed parts of a template literal; `null` for anything else. */
 function staticText(node: ESTree.Node | null | undefined): string | null {
   if (!node) return null;
@@ -114,7 +119,7 @@ export const noInternalVocabularyRule = defineRule({
   },
   create(context) {
     const check = (node: ESTree.Node, text: string | null) => {
-      const word = text ? BANNED_WORDS.exec(text)?.[0] : undefined;
+      const word = text && !looksLikeIdentifier(text.trim()) ? BANNED_WORDS.exec(text)?.[0] : undefined;
       if (word) context.report({ node, messageId: "internalWord", data: { word } });
     };
     return {

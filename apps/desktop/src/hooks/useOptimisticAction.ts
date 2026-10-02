@@ -25,6 +25,11 @@ export function resolveOptimisticValue<T>(
   return Object.is(serverValue, override.base) ? override.value : serverValue;
 }
 
+/** An updater that drops `mine` but leaves a newer click's override alone. */
+export function clearIfCurrent<O>(mine: O): (current: O | null) => O | null {
+  return (current) => (current === mine ? null : current);
+}
+
 interface OptimisticFailureHandlers {
   onRevert: () => void;
   onError: (message: string) => void;
@@ -58,7 +63,7 @@ export interface OptimisticAction<T> {
 }
 
 /** How long a successful save keeps its override when no snapshot changes the server value. */
-const SETTLE_MS = 5000;
+export const SETTLE_MS = 5000;
 
 export function useOptimisticAction<T>(serverValue: T): OptimisticAction<T> {
   const addToast = useAppStore((state) => state.addToast);
@@ -72,13 +77,12 @@ export function useOptimisticAction<T>(serverValue: T): OptimisticAction<T> {
     const mine = { base: serverValue, value: next };
     setOverride(mine);
     const saved = await performOptimisticAction(action, {
-      onRevert: () => setOverride(null),
+      onRevert: () => setOverride(clearIfCurrent(mine)),
       onError: (message) => addToast({ type: "error", title: errorTitle, message }),
     });
     // A save that leaves the server value unchanged never ends the override on its own; drop it
     // once the snapshot has had time to land so the spinner cannot stick.
-    if (saved)
-      setTimeout(() => setOverride((current) => (current === mine ? null : current)), SETTLE_MS);
+    if (saved) setTimeout(() => setOverride(clearIfCurrent(mine)), SETTLE_MS);
     return saved;
   };
 

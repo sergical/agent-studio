@@ -146,7 +146,8 @@ export function useSkillListAct(
 
   return {
     handleAct,
-    pendingLabelFor: (skill: InstalledSkill) => busy.get(skill.name),
+    pendingLabelFor: (skill: InstalledSkill) =>
+      busy.get(skill.name) ?? (guard.resolvingSkill === skill.name ? "Updating…" : undefined),
     dialog: guard.dialog,
   };
 }

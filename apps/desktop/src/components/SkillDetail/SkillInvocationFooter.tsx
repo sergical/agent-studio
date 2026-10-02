@@ -9,7 +9,7 @@
 import { useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { ToggleGroup, ToggleGroupItem } from "@skill-studio/ui";
-import { useOptimisticAction } from "../../hooks/useOptimisticAction";
+import { SETTLE_MS, clearIfCurrent, useOptimisticAction } from "../../hooks/useOptimisticAction";
 import type { OptimisticAction } from "../../hooks/useOptimisticAction";
 import { singleSelectToggleValue } from "../../lib/single-select-toggle-group";
 import { HarnessIcon } from "../ui/HarnessIcon";
@@ -151,9 +151,14 @@ export function SkillInvocationFooter({ skill, files }: SkillInvocationFooterPro
             locked={editableFiles.length === 0}
             lockedReason={editableFiles.length === 0 ? files[0].disabledReason : undefined}
             onSelect={(policy, optimistic) => {
-              setAllOverride({ base: sharedPolicy, value: policy });
+              // A click during a running save is dropped by `save`; it must not touch the first click's override.
+              if (isSaving.current) return;
+              const mine = { base: sharedPolicy, value: policy };
+              setAllOverride(mine);
               void save(optimistic, editableFiles, policy).then((saved) => {
-                if (!saved) setAllOverride(null);
+                // A save that leaves the shared value unchanged never ends the override on its own.
+                if (saved) setTimeout(() => setAllOverride(clearIfCurrent(mine)), SETTLE_MS);
+                else setAllOverride(clearIfCurrent(mine));
               });
             }}
           />

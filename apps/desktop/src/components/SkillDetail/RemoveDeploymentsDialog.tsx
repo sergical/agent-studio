@@ -18,7 +18,7 @@ import {
 } from "@skill-studio/ui";
 import { removeSkill } from "../../lib/skill-api";
 import {
-  skillDeploymentRemovalPreview,
+  skillDeploymentRemovalAvailability,
   skillRemovalAvailability,
   skillRemovalDescription,
 } from "../../lib/skill-lifecycle-target";
@@ -45,7 +45,7 @@ export function RemoveDeploymentsDialog({
   const addToast = useAppStore((state) => state.addToast);
   const skillName = skill.name;
   const removalAvailability = deployment
-    ? { available: true as const, preview: skillDeploymentRemovalPreview(skill, deployment) }
+    ? skillDeploymentRemovalAvailability(skill, deployment)
     : skillRemovalAvailability(skill, {
         skillName,
         scope: projectPath ? "project" : "global",

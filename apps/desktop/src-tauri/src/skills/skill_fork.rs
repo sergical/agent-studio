@@ -1213,7 +1213,7 @@ pub async fn fork_skill(
             .ok_or("Fork needs one Global Universal folder copy")?;
         if target.owner_id.is_some() {
             return Err(
-                "Fork targets one Global Universal folder, not an group of copies".to_string(),
+                "Fork targets one Global Universal folder, not a group of copies".to_string(),
             );
         }
         let (skill, deployment) = super::skill_lifecycle::find_deployment(&snapshot, id)?;
@@ -1711,8 +1711,7 @@ fn resolve_recorded_fork_target(
         .ok_or("Fork lifecycle needs one Global Universal folder copy")?;
     if target.owner_id.is_some() {
         return Err(
-            "Fork lifecycle targets one Global Universal folder, not an group of copies"
-                .to_string(),
+            "Fork lifecycle targets one Global Universal folder, not a group of copies".to_string(),
         );
     }
     let (skill, deployment) = super::skill_lifecycle::find_deployment(snapshot, id)?;

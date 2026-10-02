@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { performOptimisticAction, resolveOptimisticValue } from "./useOptimisticAction";
+import {
+  clearIfCurrent,
+  performOptimisticAction,
+  resolveOptimisticValue,
+} from "./useOptimisticAction";
 
 describe("resolveOptimisticValue", () => {
   it("a click before the snapshot arrives shows the new value instead of the old server value", () => {
@@ -45,5 +49,18 @@ describe("performOptimisticAction", () => {
     await performOptimisticAction(() => Promise.resolve(), { onRevert, onError });
     expect(onRevert).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
+  });
+});
+
+describe("clearIfCurrent", () => {
+  it("a failed click clears its own override", () => {
+    const mine = { base: "both", value: "user" };
+    expect(clearIfCurrent(mine)(mine)).toBeNull();
+  });
+
+  it("a failed click leaves a newer click's override in place", () => {
+    const first = { base: "both", value: "user" };
+    const second = { base: "both", value: "model" };
+    expect(clearIfCurrent(first)(second)).toBe(second);
   });
 });
