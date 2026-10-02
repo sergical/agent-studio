@@ -276,6 +276,16 @@ impl DeploymentId {
         &self.0
     }
 
+    /// The skill folder name the id was derived for, so a write can scan
+    /// that one skill instead of everything. `None` for an id whose layout
+    /// this build does not recognise; callers then fall back to a full scan.
+    pub fn skill_name(&self) -> Option<SkillName> {
+        // `{scope}/{slot}/{destination}/{name}/{project}/{entry}`; the name
+        // is never percent-encoded because a folder name holds no `/`.
+        let name = self.0.strip_prefix(Self::PREFIX)?.split('/').nth(3)?;
+        (!name.is_empty()).then(|| SkillName(name.to_string()))
+    }
+
     /// Builds an id from a string `ops` already assembled with
     /// [`Self::PREFIX`], skipping the `parse` round trip for a value that
     /// cannot fail its own invariant.
