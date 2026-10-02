@@ -131,7 +131,11 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
       </main>
 
       <ClosingFinale theme={theme}>
-        <section id="download" {...stylex.props(siteLayout.container, styles.closingSection)}>
+        <section
+          id="download"
+          aria-labelledby="download-title"
+          {...stylex.props(siteLayout.container, styles.closingSection)}
+        >
           <img
             src="/skill-studio-logo.png"
             alt=""
@@ -139,7 +143,9 @@ export function CommandCenter({ theme, onToggleTheme }: CommandCenterProps) {
             height={96}
             {...stylex.props(styles.closingMascot)}
           />
-          <h2 {...stylex.props(styles.closingTitle)}>Clear out your skills.</h2>
+          <h2 id="download-title" {...stylex.props(styles.closingTitle)}>
+            Clear out your skills.
+          </h2>
           <p {...stylex.props(styles.closingCopy)}>
             Keep the ones your agents use and park the rest.
           </p>

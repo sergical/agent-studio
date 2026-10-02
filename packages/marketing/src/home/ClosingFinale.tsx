@@ -115,18 +115,6 @@ const subscribeReducedMotion = (onChange: () => void) => {
   return () => media.removeEventListener("change", onChange);
 };
 
-function useInView(ref: React.RefObject<HTMLElement | null>) {
-  const [inView, setInView] = useState(false);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(([entry]) => setInView(entry.isIntersecting));
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [ref]);
-  return inView;
-}
-
 interface ClosingFinaleProps {
   theme: SiteTheme;
   children: ReactNode;
@@ -141,8 +129,6 @@ export function ClosingFinale({ theme, children }: ClosingFinaleProps) {
     () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     () => true,
   );
-  // The shader only runs while the finale is on screen.
-  const inView = useInView(finaleRef);
   const colors = DITHER_COLORS[theme];
 
   return (
@@ -152,6 +138,8 @@ export function ClosingFinale({ theme, children }: ClosingFinaleProps) {
           aria-hidden="true"
           {...stylex.props(styles.dither)}
           style={{
+            // Shows under the canvas only when WebGL fails, so the wordmark stays readable.
+            backgroundColor: colors.front,
             maskImage: `url(${wordmark.url}), ${GLOW_MASK}`,
             maskPosition: `${wordmark.x}px ${wordmark.y}px, 0 0`,
             maskRepeat: "no-repeat",
@@ -168,7 +156,7 @@ export function ClosingFinale({ theme, children }: ClosingFinaleProps) {
             type="4x4"
             size={3}
             scale={0.8}
-            speed={inView && !reducedMotion ? DITHER_SPEED : 0}
+            speed={reducedMotion ? 0 : DITHER_SPEED}
           />
         </div>
       )}

@@ -102,6 +102,10 @@ html[data-site-theme="light"] ::selection {
   outline-offset: 2px;
 }
 
+html[data-site-theme="light"] :focus-visible {
+  outline-color: rgba(0, 0, 0, 0.56);
+}
+
 [id] {
   scroll-margin-top: 72px;
 }
