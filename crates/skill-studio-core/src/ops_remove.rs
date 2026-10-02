@@ -107,32 +107,98 @@ fn remove_cli_args_and_cwd(
 /// cover it. Issue #382 replaces this guard with a backup.
 const CLI_PROJECT_EXTRA_SKILL_DIRS: [&str; 3] = ["skills", "agent/skills", "data/skills"];
 
-/// Refuses a skills.sh project removal that the CLI would turn into the loss of a real folder
-/// it does not back up. A symlink is fine: the CLI deletes only the link.
+/// The CLI's `sanitizeName` (1.7.0, `dist/cli.mjs`): the folder name it deletes for a skill.
+fn cli_sanitize_name(name: &str) -> String {
+    let mut out = String::new();
+    let mut in_run = false;
+    for ch in name.to_lowercase().chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '.' || ch == '_' {
+            out.push(ch);
+            in_run = false;
+        } else if !in_run {
+            out.push('-');
+            in_run = true;
+        }
+    }
+    let trimmed: String = out
+        .trim_matches(|c| c == '.' || c == '-')
+        .chars()
+        .take(255)
+        .collect();
+    if trimmed.is_empty() {
+        "unnamed-skill".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// Every folder skills CLI 1.7.0 deletes for a skills.sh removal beyond the first-class agents'
+/// own skills folders (the desktop's `skillsCliRemovesFolderAt` covers those): in a project the
+/// three folders above plus each eve subagent's `skills` folder, and in the global scope eve's
+/// `<home>/agent/skills`, which it falls back to because eve has no global skills folder.
+fn cli_extra_deletion_paths(
+    fs: &dyn ScopeFs,
+    home: &Path,
+    scope: &RootScope,
+    name: &str,
+) -> Vec<PathBuf> {
+    let name = cli_sanitize_name(name);
+    match scope {
+        RootScope::Global => vec![home.join("agent/skills").join(name)],
+        RootScope::Project(project) => {
+            let mut paths: Vec<PathBuf> = CLI_PROJECT_EXTRA_SKILL_DIRS
+                .iter()
+                .map(|relative| project.0.join(relative).join(&name))
+                .collect();
+            let subagents = project.0.join("agent/subagents");
+            if let Ok(entries) = fs.read_dir(&subagents) {
+                for entry in entries.iter().filter(|e| e.kind == FileKind::Dir) {
+                    paths.push(
+                        subagents
+                            .join(cli_sanitize_name(&entry.name))
+                            .join("skills")
+                            .join(&name),
+                    );
+                }
+            }
+            paths
+        }
+    }
+}
+
+/// Refuses a skills.sh removal that the CLI would turn into the loss of a real folder it does
+/// not back up. A symlink is fine: the CLI deletes only the link. A folder that is the removed
+/// folder itself, reached through a directory link, is fine too.
 fn refuse_unbacked_cli_deletions(
     fs: &dyn ScopeFs,
+    home: &Path,
     owner_kind: LifecycleOwnerKind,
     name: &str,
     scope: &RootScope,
+    removed: &Path,
 ) -> Result<(), CoreError> {
-    let (LifecycleOwnerKind::SkillsSh, RootScope::Project(project)) = (owner_kind, scope) else {
+    if owner_kind != LifecycleOwnerKind::SkillsSh {
         return Ok(());
-    };
-    for relative in CLI_PROJECT_EXTRA_SKILL_DIRS {
-        let path = project.0.join(relative).join(name);
-        if fs
+    }
+    let removed_real = fs.canonicalize(removed).ok();
+    for path in cli_extra_deletion_paths(fs, home, scope, name) {
+        let is_real_folder = fs
             .symlink_metadata(&path)
-            .is_ok_and(|facts| facts.kind == FileKind::Dir)
-        {
-            return Err(CoreError::new(
-                ErrorCode::Unsupported,
-                format!(
-                    "Removing would also delete the folder at {}, and Undo could not bring it back. Move that folder first.",
-                    path.display()
-                ),
-            )
-            .at(&path));
+            .is_ok_and(|facts| facts.kind == FileKind::Dir);
+        if !is_real_folder {
+            continue;
         }
+        if removed_real.is_some() && fs.canonicalize(&path).ok() == removed_real {
+            continue;
+        }
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            format!(
+                "Removing would also delete the folder at {}, and Undo could not bring it back. Move that folder first.",
+                path.display()
+            ),
+        )
+        .at(&path));
     }
     Ok(())
 }
@@ -457,9 +523,11 @@ fn remove_body(
     let fs = rt.ports.fs.as_ref();
     refuse_unbacked_cli_deletions(
         fs,
+        &rt.scope.home.lexical,
         deployment.owner_kind,
         &skill.name.0,
         &deployment.root.scope,
+        &deployment.path,
     )?;
     let tree_hash_before = crate::tree_hash::tree_hash(fs, &deployment.path)?;
     // Every harness's link, not just Claude Code's - `RemoveRequest` has no

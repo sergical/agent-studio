@@ -929,6 +929,35 @@ describe("removing a skills.sh skill that has other real folders", () => {
     }
   });
 
+  it("counts a link reached through a whole-folder link as a link to the removed folder, or the dialog leaves out a link the CLI deletes", () => {
+    const innerLink = {
+      ...realFolder("Claude Code", "/home/u/.claude/skills/x"),
+      destination: "universal" as const,
+      backing: { kind: "linked-to", deployment_id: "universal" } as const,
+      shared_via_whole_dir_link: true,
+      is_symlink: true,
+      symlink_target: universal.path,
+      resolved_path: universal.path,
+    };
+    const preview = skillRemovalPreview(skillOf([universal, innerLink]), scope);
+    expect(preview.linkedDeployments.map(({ path }) => path)).toEqual(["/home/u/.claude/skills/x"]);
+    expect(preview.otherLinks).toEqual([]);
+    expect(skillRemovalDescription(preview)).toContain("1 folder and 1 link to it");
+  });
+
+  it("leaves out the kept-folder sentence for a broken link, or the dialog names a folder that does not exist", () => {
+    const broken = {
+      ...link("Cursor", "/home/u/.cursor/skills/x", "/home/u/gone/x"),
+      symlink_is_broken: true,
+    };
+    const description = skillRemovalDescription(
+      skillRemovalPreview(skillOf([universal, broken]), scope),
+    );
+    expect(description).toContain("It also deletes the link at ~/.cursor/skills/x.");
+    expect(description).not.toContain("stays. Separate");
+    expect(description).not.toContain("~/gone/x");
+  });
+
   it("keeps a separate folder in the stays list for a Copy owner, whose removal leaves it alone, or the dialog hides it", () => {
     const copy = { ...universal, owner_kind: "copy" as const, owner_id: null };
     const preview = skillRemovalPreview(

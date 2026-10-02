@@ -619,7 +619,9 @@ export function skillRemovalPreview(
     const cleaned = staying.filter(skillsCliRemovesFolderAt);
     const managedRealPaths = new Set(managedDeployments.map(realPath));
     const sameFolder = (deployment: Deployment) =>
-      deployment.shared_via_whole_dir_link && managedRealPaths.has(realPath(deployment));
+      !deployment.is_symlink &&
+      deployment.shared_via_whole_dir_link &&
+      managedRealPaths.has(realPath(deployment));
     const lost = cleaned.filter((deployment) => !deployment.is_symlink && !sameFolder(deployment));
     if (lost.length > 0) {
       const paths = lost.map((copy) => homeRelativePath(copy.path)).join(", ");
@@ -628,11 +630,14 @@ export function skillRemovalPreview(
       );
     }
     // A link to a folder elsewhere is deleted too; only the link goes, so nothing is lost.
-    otherLinks.push(
-      ...cleaned.filter((deployment) => deployment.is_symlink && !sameFolder(deployment)),
-    );
-    const otherIds = new Set(otherLinks);
-    staying = staying.filter((deployment) => !otherIds.has(deployment));
+    // A link reached through a whole-folder link can still point at the removed folder.
+    const symlinks = cleaned.filter((deployment) => deployment.is_symlink);
+    const pointsAtRemoved = (deployment: Deployment) =>
+      managedRealPaths.has(deployment.symlink_target ?? realPath(deployment));
+    linkedDeployments.push(...symlinks.filter(pointsAtRemoved));
+    otherLinks.push(...symlinks.filter((deployment) => !pointsAtRemoved(deployment)));
+    const handled = new Set(symlinks);
+    staying = staying.filter((deployment) => !handled.has(deployment));
   }
   return {
     target,
@@ -681,7 +686,7 @@ export function skillRemovalDescription(preview: SkillRemovalPreview): string {
   const otherLinks = preview.otherLinks
     .map((link) => {
       const deleted = `It also deletes the link at ${homeRelativePath(link.path)}.`;
-      return link.symlink_target
+      return link.symlink_target && !link.symlink_is_broken
         ? `${deleted} The folder it points to, ${homeRelativePath(link.symlink_target)}, stays.`
         : deleted;
     })
