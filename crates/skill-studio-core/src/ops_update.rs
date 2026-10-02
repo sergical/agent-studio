@@ -682,7 +682,7 @@ fn update_body(
     let clock = rt.ports.clock.as_ref();
     let op_start = clock.monotonic();
     let step_start = clock.monotonic();
-    let session = MutationSession::begin(rt, ctx);
+    let session = MutationSession::begin_for(rt, ctx, std::slice::from_ref(&req.skill));
     ctx.take_timing();
     let mut session = session?;
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
