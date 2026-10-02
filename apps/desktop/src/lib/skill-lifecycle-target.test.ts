@@ -33,7 +33,7 @@ function deployment(id: string, ownerId?: string, projectPath?: string): Deploym
     backing: { kind: "canonical" },
     agent: "Universal",
     scope: projectPath ? "project" : "global",
-    path: `${projectPath ?? "/home"}/.agents/skills/x`,
+    path: `${projectPath ?? "/home/u"}/.agents/skills/x`,
     is_symlink: false,
     symlink_is_broken: false,
     project_path: projectPath,
@@ -179,7 +179,7 @@ describe("lifecycleTargetForSkill", () => {
       expect(preview.target).toEqual({ deployment_id: "global-universal" });
       expect(preview.linkedDeployments).toEqual([]);
       expect(skillRemovalDescription(preview)).toBe(
-        `This removes 1 folder and 0 links to it. The separate copy at ${home}/.claude/skills/motion stays. This cannot be undone.`,
+        `This removes 1 folder and 0 links to it. The separate copy at ~/.claude/skills/motion stays. This cannot be undone.`,
       );
     });
 
@@ -370,7 +370,7 @@ describe("lifecycleTargetForSkill", () => {
     expect(preview.managedDeployments.map(({ id }) => id)).toEqual(["canonical"]);
     expect(preview.linkedDeployments.map(({ id }) => id)).toEqual(["linked"]);
     expect(skillRemovalDescription(preview)).toBe(
-      "This removes 1 folder and 1 link to it. The separate copies at /home/.agents/skills/x, /home/.agents/skills/x stay. This cannot be undone.",
+      "This removes 1 folder and 1 link to it. The separate copies at ~/.agents/skills/x, ~/.agents/skills/x stay. This cannot be undone.",
     );
   });
 
@@ -790,24 +790,31 @@ describe("forkEditedAndUpdate", () => {
 
 describe("removing a skills.sh skill that has other real folders", () => {
   const universal = deployment("universal", "owner:v1/global/x");
-  const perAgentFolder = (id: string, agent: string, dir: string): Deployment => ({
-    ...deployment(id),
+  const scope = { skillName: "x", scope: "global", projectPath: null } as const;
+  const projectScope = { skillName: "x", scope: "project", projectPath: "/home/u/repo" } as const;
+  const realFolder = (
+    agent: string,
+    path: string,
+    fields: Partial<Deployment> = {},
+  ): Deployment => ({
+    ...deployment(`${agent}-folder`),
     owner_id: null,
     owner_kind: "manual",
     mutability: "read-only",
     destination: "per-harness",
     backing: { kind: "independent" },
     agent,
-    path: `/home/${dir}/skills/x`,
+    path,
+    ...fields,
   });
-  const link = (id: string, agent: string, dir: string): Deployment => ({
-    ...deployment(id, "owner:v1/global/x"),
+  const link = (agent: string, path: string, target = universal.path): Deployment => ({
+    ...deployment(`${agent}-link`, "owner:v1/global/x"),
     destination: "per-harness",
     backing: { kind: "linked-to", deployment_id: "universal" },
     agent,
     is_symlink: true,
-    symlink_target: universal.path,
-    path: `/home/${dir}/skills/x`,
+    symlink_target: target,
+    path,
   });
   const skillOf = (
     deployments: Deployment[],
@@ -817,55 +824,105 @@ describe("removing a skills.sh skill that has other real folders", () => {
       InstalledSkill,
       "name" | "deployments" | "source_kind"
     >;
+  const projectUniversal = deployment(
+    "project-universal",
+    "owner:v1/project/repo/x",
+    "/home/u/repo",
+  );
+  const projectFolder = (agent: string, path: string): Deployment =>
+    realFolder(agent, path, { scope: "project", project_path: "/home/u/repo" });
 
-  it("refuses Remove and names the folder when a separate real folder sits at another agent, or Undo cannot restore it", () => {
+  it("refuses Remove and names the folder with a home-relative path when a separate real folder sits at another agent, or Undo cannot restore it", () => {
     const availability = skillRemovalAvailability(
-      skillOf([universal, perAgentFolder("cursor", "Cursor", ".cursor")]),
-      { skillName: "x", scope: "global", projectPath: null },
+      skillOf([universal, realFolder("Cursor", "/home/u/.cursor/skills/x")]),
+      scope,
     );
     expect(availability).toEqual({
       available: false,
-      reason: expect.stringContaining("/home/.cursor/skills/x"),
+      reason: expect.stringContaining("~/.cursor/skills/x"),
     });
   });
 
-  it("allows Remove when the other agents only hold links or a whole-folder link, or a harmless skill cannot be removed", () => {
+  it("allows Remove when the other agents only hold links or a whole-folder link to the Universal folder, or Remove is refused for a layout that loses nothing", () => {
     const wholeFolder = {
-      ...link("claude-root", "Claude Code", ".claude"),
+      ...realFolder("Claude Code", "/home/u/.claude/skills/x"),
+      destination: "universal" as const,
+      backing: { kind: "linked-to", deployment_id: "universal" } as const,
       shared_via_whole_dir_link: true,
+      resolved_path: universal.path,
     };
     const availability = skillRemovalAvailability(
-      skillOf([universal, link("codex", "Codex", ".codex"), wholeFolder]),
-      { skillName: "x", scope: "global", projectPath: null },
+      skillOf([universal, link("Codex", "/home/u/.codex/skills/x"), wholeFolder]),
+      scope,
     );
     expect(availability.available).toBe(true);
   });
 
-  it("keeps a separate folder in the stays list for a Copy owner, whose removal leaves it alone", () => {
+  it("refuses Remove when a whole-folder link leads to a real folder outside the Universal folder, or a dotfiles copy is deleted", () => {
+    const dotfiles = {
+      ...realFolder("Claude Code", "/home/u/.claude/skills/x"),
+      destination: "universal" as const,
+      backing: { kind: "linked-to", deployment_id: "universal" } as const,
+      shared_via_whole_dir_link: true,
+      resolved_path: "/home/u/dotfiles/claude/skills/x",
+    };
+    expect(skillRemovalAvailability(skillOf([universal, dotfiles]), scope)).toEqual({
+      available: false,
+      reason: expect.stringContaining("~/.claude/skills/x"),
+    });
+  });
+
+  it("allows a project Remove with a real folder at .codex/skills, which the CLI leaves alone, or the dialog refuses for nothing", () => {
+    const availability = skillRemovalAvailability(
+      skillOf([projectUniversal, projectFolder("Codex", "/home/u/repo/.codex/skills/x")]),
+      projectScope,
+    );
+    expect(availability.available).toBe(true);
+  });
+
+  it("refuses a project Remove with a real folder at .claude/skills, or Undo cannot restore it", () => {
+    const availability = skillRemovalAvailability(
+      skillOf([projectUniversal, projectFolder("Claude Code", "/home/u/repo/.claude/skills/x")]),
+      projectScope,
+    );
+    expect(availability).toEqual({
+      available: false,
+      reason: expect.stringContaining("~/repo/.claude/skills/x"),
+    });
+  });
+
+  it("allows Remove with a real folder at OpenCode's singular skill folder, which the CLI never touches, or the dialog refuses for nothing", () => {
+    const availability = skillRemovalAvailability(
+      skillOf([universal, realFolder("OpenCode", "/home/u/.config/opencode/skill/x")]),
+      scope,
+    );
+    expect(availability.available).toBe(true);
+  });
+
+  it("lists a link that points outside the Universal folder as removed, not as staying, or the dialog promises it survives", () => {
+    const stray = link("Cursor", "/home/u/.cursor/skills/x", "/home/u/dotfiles/x");
+    const preview = skillRemovalPreview(skillOf([universal, stray]), scope);
+    expect(preview.linkedDeployments.map(({ id }) => id)).toContain("Cursor-link");
+    expect(preview.staying).toEqual([]);
+  });
+
+  it("keeps a separate folder in the stays list for a Copy owner, whose removal leaves it alone, or the dialog hides it", () => {
     const copy = { ...universal, owner_kind: "copy" as const, owner_id: null };
     const preview = skillRemovalPreview(
-      skillOf([copy, perAgentFolder("cursor", "Cursor", ".cursor")], "manual"),
-      {
-        skillName: "x",
-        scope: "global",
-        projectPath: null,
-      },
+      skillOf([copy, realFolder("Cursor", "/home/u/.cursor/skills/x")], "manual"),
+      scope,
     );
-    expect(preview.staying.map(({ id }) => id)).toEqual(["cursor"]);
+    expect(preview.staying.map(({ id }) => id)).toEqual(["Cursor-folder"]);
   });
 
   it("offers no Remove target for a per-agent Copy alone, or the backend refuses it", () => {
-    const perAgentCopy = {
-      ...perAgentFolder("claude-copy", "Claude Code", ".claude"),
-      owner_kind: "copy" as const,
-      mutability: "mutable" as const,
-    };
-    const availability = skillRemovalAvailability(skillOf([perAgentCopy], "manual"), {
-      skillName: "x",
-      scope: "global",
-      projectPath: null,
+    const perAgentCopy = realFolder("Claude Code", "/home/u/.claude/skills/x", {
+      owner_kind: "copy",
+      mutability: "mutable",
     });
-    expect(availability.available).toBe(false);
+    expect(skillRemovalAvailability(skillOf([perAgentCopy], "manual"), scope).available).toBe(
+      false,
+    );
   });
 
   it("targets the universal Copy when a per-agent Copy sits beside it, or Remove reads as ambiguous", () => {
@@ -875,11 +932,10 @@ describe("removing a skills.sh skill that has other real folders", () => {
       owner_kind: "copy" as const,
       owner_id: null,
     };
-    const perAgentCopy = {
-      ...perAgentFolder("claude-copy", "Claude Code", ".claude"),
-      owner_kind: "copy" as const,
-      mutability: "mutable" as const,
-    };
+    const perAgentCopy = realFolder("Claude Code", "/home/u/.claude/skills/x", {
+      owner_kind: "copy",
+      mutability: "mutable",
+    });
     expect(globalRemovalTarget(skillOf([universalCopy, perAgentCopy], "manual"))).toEqual({
       deployment_id: "universal-copy",
     });

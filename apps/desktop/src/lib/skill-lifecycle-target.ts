@@ -1,4 +1,9 @@
-import { agentIdFromDeploymentLabel, parentDirectory } from "@skill-studio/lib";
+import {
+  agentIdFromDeploymentLabel,
+  basename,
+  homeRelativePath,
+  parentDirectory,
+} from "@skill-studio/lib";
 import type {
   Deployment,
   InstalledSkill,
@@ -570,6 +575,23 @@ export function skillUpdateToast(
   };
 }
 
+/**
+ * Whether `npx skills remove` deletes whatever sits at this folder's path. Skills CLI 1.7.0
+ * (`removeCommand`) runs `rm -rf <skills dir>/<name>` for every agent's skills directory:
+ * all six first-class agents' plural `skills` folders in the global scope, and in a project
+ * only Claude Code, Grok Build and pi, because Codex, Cursor and OpenCode read the project's
+ * `.agents/skills` there. It never touches OpenCode's singular `skill` folder. The folder is
+ * judged by agent, scope and its parent folder's name, so a moved config home still matches.
+ */
+function skillsCliRemovesFolderAt(deployment: Deployment): boolean {
+  if (deployment.plugin || basename(parentDirectory(deployment.path)) !== "skills") return false;
+  const agent = agentIdFromDeploymentLabel(deployment.agent);
+  if (deployment.scope === "global") {
+    return agent !== null && agent !== "shared";
+  }
+  return agent === "claude-code" || agent === "grok-build" || agent === "pi";
+}
+
 /** Describe the managed deployment group and linked locations removed by one exact target. */
 export function skillRemovalPreview(
   skill: SkillLifecycleView,
@@ -584,24 +606,37 @@ export function skillRemovalPreview(
   );
   const linkedDeployments = managedDeployments.flatMap((folder) => linksRemovedWith(skill, folder));
   const removed = new Set([...managedDeployments, ...linkedDeployments]);
-  const staying = deploymentsInScope(skill, selection.scope, selection.projectPath).filter(
-    (deployment) => !removed.has(deployment) && !deployment.shared_via_whole_dir_link,
+  let staying = deploymentsInScope(skill, selection.scope, selection.projectPath).filter(
+    (deployment) => !removed.has(deployment),
   );
-  // `npx skills remove` deletes the folder at every agent's skills directory, and the backend
-  // keeps no backup of those, so a separate real folder there would be lost for good.
   if (managedDeployments.some((deployment) => deployment.owner_kind === "skills-sh")) {
-    const lost = staying.filter(
-      (deployment) =>
-        !deployment.is_symlink && !deployment.plugin && deployment.destination === "per-harness",
+    const cleaned = staying.filter(skillsCliRemovesFolderAt);
+    const managedRealPaths = new Set(managedDeployments.map(realPath));
+    const lost = cleaned.filter((deployment) =>
+      deployment.shared_via_whole_dir_link
+        ? !managedRealPaths.has(realPath(deployment))
+        : !deployment.is_symlink,
     );
     if (lost.length > 0) {
-      const paths = lost.map((copy) => copy.path).join(", ");
+      const paths = lost.map((copy) => homeRelativePath(copy.path)).join(", ");
       throw new Error(
         `Removing would also delete the separate ${lost.length === 1 ? "copy" : "copies"} at ${paths}, and Undo could not bring ${lost.length === 1 ? "it" : "them"} back. Delete or move ${lost.length === 1 ? "that copy" : "those copies"} first.`,
       );
     }
+    // A link to a folder elsewhere is deleted too; only the link goes, so nothing is lost.
+    const strayLinks = cleaned.filter(
+      (deployment) => deployment.is_symlink && !deployment.shared_via_whole_dir_link,
+    );
+    linkedDeployments.push(...strayLinks);
+    const strayIds = new Set(strayLinks);
+    staying = staying.filter((deployment) => !strayIds.has(deployment));
   }
-  return { target, managedDeployments, linkedDeployments, staying };
+  return {
+    target,
+    managedDeployments,
+    linkedDeployments,
+    staying: staying.filter((deployment) => !deployment.shared_via_whole_dir_link),
+  };
 }
 
 /**
@@ -636,7 +671,7 @@ export function skillRemovalDescription(preview: SkillRemovalPreview): string {
   const removes = `This removes ${folderCount} folder${folderCount === 1 ? "" : "s"} and ${linkCount} link${linkCount === 1 ? "" : "s"} to ${folderCount === 1 ? "it" : "them"}.`;
   const stays =
     preview.staying.length > 0
-      ? `The separate ${preview.staying.length === 1 ? "copy" : "copies"} at ${preview.staying.map((copy) => copy.path).join(", ")} stay${preview.staying.length === 1 ? "s" : ""}.`
+      ? `The separate ${preview.staying.length === 1 ? "copy" : "copies"} at ${preview.staying.map((copy) => homeRelativePath(copy.path)).join(", ")} stay${preview.staying.length === 1 ? "s" : ""}.`
       : "Separate copies elsewhere stay.";
   return `${removes} ${stays} This cannot be undone.`;
 }

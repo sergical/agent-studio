@@ -79,7 +79,7 @@ describe("anti-slop no-internal-vocabulary", () => {
 		).toBe(0);
 	});
 
-	it("reports one-word text that ends in punctuation and skips real codes", () => {
+	it("reports one-word text that ends in punctuation and skips real codes, or \"Harness:\" slips through as an identifier", () => {
 		expect(
 			internalVocabularyDiagnostics(`
 				export function show() {

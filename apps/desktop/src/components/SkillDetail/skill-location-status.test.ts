@@ -588,6 +588,22 @@ describe("rowMenu", () => {
     }
   });
 
+  it("hides Remove copy on a per-agent copy row, or the menu offers a Remove the backend refuses", () => {
+    const perAgent = realCopyDeployment(
+      { agent: "Claude Code", path: "/home/.claude/skills/find-bugs" },
+      { owner_kind: "copy", mutability: "mutable" },
+    );
+    const [group] = buildScopeGroups(
+      fixtureSkill({ deployments: [fixtureDeployment(), perAgent] }),
+    );
+    const row = group.rows.find((candidate) => candidate.kind === "copy")!;
+    const menu = rowMenu(row, group.label);
+
+    expect([...menu.entries, ...menu.danger].map((entry) => entry.label)).not.toContain(
+      "Remove Claude Code copy…",
+    );
+  });
+
   it("offers an independent copy only for a healthy enabled Universal-backed link", () => {
     const linked = perSkillLinkDeployment({
       agent: "Claude Code",
