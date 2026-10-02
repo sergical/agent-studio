@@ -47,7 +47,7 @@ pub fn find_deployment<'a>(
         }
     }
     Err(format!(
-        "Deployment {deployment_id} is not in the current snapshot"
+        "Copy {deployment_id} is not in the current snapshot"
     ))
 }
 
@@ -55,29 +55,29 @@ pub fn find_deployment<'a>(
 pub fn revalidate_deployment(deployment: &Deployment, expected_id: &str) -> Result<(), String> {
     if deployment.id != expected_id {
         return Err(format!(
-            "Deployment id drifted: expected {expected_id}, found {}",
+            "Copy id drifted: expected {expected_id}, found {}",
             deployment.id
         ));
     }
-    let parsed = parse_deployment_id(expected_id)
-        .ok_or_else(|| format!("Not a deployment id: {expected_id}"))?;
+    let parsed =
+        parse_deployment_id(expected_id).ok_or_else(|| format!("Not a copy id: {expected_id}"))?;
     let path = Path::new(&deployment.path);
     let leaf = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if leaf != parsed.name && !deployment.path.contains(&parsed.name) {
         return Err(format!(
-            "Deployment path {} no longer matches {}",
+            "Copy path {} no longer matches {}",
             deployment.path, parsed.name
         ));
     }
     if deployment.scope != parsed.scope {
         return Err(format!(
-            "Deployment scope drifted: id has {}, snapshot has {}",
+            "Copy scope drifted: id has {}, snapshot has {}",
             parsed.scope, deployment.scope
         ));
     }
     if deployment.destination != parsed.destination {
         return Err(format!(
-            "Deployment destination drifted: id has {}, snapshot has {}",
+            "Copy destination drifted: id has {}, snapshot has {}",
             parsed.destination.as_str(),
             deployment.destination.as_str()
         ));
@@ -153,7 +153,7 @@ pub fn resolve_lifecycle_target(
                 revalidate_deployment(deployment, &affected_deployment.id)?;
                 if deployment.owner_id.as_deref() != Some(owner_id) {
                     return Err(format!(
-                        "{action} refused: deployment {} changed owner",
+                        "{action} refused: copy {} changed owner",
                         deployment.id
                     ));
                 }
@@ -172,7 +172,7 @@ pub fn resolve_lifecycle_target(
             require_owner_adapter_deployment_mutable(deployment, action)?;
             Ok((skill.clone(), deployment.clone()))
         }
-        _ => Err("Lifecycle target must contain exactly one deployment_id or owner_id".to_string()),
+        _ => Err("Lifecycle target must contain exactly one skill copy or one source".to_string()),
     }
 }
 
@@ -193,7 +193,7 @@ pub fn require_global_universal_park_target(deployment: &Deployment) -> Result<(
         return Ok(());
     }
     Err(
-        "Park is only available for the Global Universal folder. Project and Per harness copies stay independent."
+        "Park is only available for the Global Universal folder. Project and Per agent copies stay independent."
             .to_string(),
     )
 }
@@ -316,7 +316,7 @@ pub fn preview_owner_deployments(
     }
     if out.is_empty() {
         return Err(format!(
-            "Owner {owner_id} has no matching deployments in the current snapshot"
+            "Owner {owner_id} has no matching copies in the current snapshot"
         ));
     }
     Ok(out)
@@ -608,7 +608,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.contains("no matching deployments"));
+        assert!(error.contains("no matching copies"));
     }
 
     #[test]

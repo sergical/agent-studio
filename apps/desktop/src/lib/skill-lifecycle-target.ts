@@ -115,6 +115,27 @@ function deploymentsInScope(
   );
 }
 
+function realPath(deployment: Deployment): string {
+  return deployment.symlink_target ?? deployment.resolved_path ?? deployment.path;
+}
+
+/**
+ * One real folder plus links that resolve to it. `null` when the deployments
+ * are not exactly that shape - two real folders still need a choice.
+ */
+function folderWithLinks(
+  deployments: Deployment[],
+): { folder: Deployment; links: Deployment[] } | null {
+  const folders = deployments.filter(
+    (deployment) => !deployment.is_symlink && realPath(deployment) === deployment.path,
+  );
+  if (folders.length !== 1) return null;
+  const folder = folders[0];
+  const links = deployments.filter((deployment) => deployment !== folder);
+  if (!links.every((link) => realPath(link) === folder.path)) return null;
+  return { folder, links };
+}
+
 /** Resolve an aggregate skill only when one mutable owner matches the requested scope. */
 export function lifecycleTargetForSkill(
   skill: SkillLifecycleView,
@@ -127,7 +148,9 @@ export function lifecycleTargetForSkill(
   const ownerIds = [...new Set(deployments.flatMap((deployment) => deployment.owner_id ?? []))];
   if (ownerIds.length === 1) return { owner_id: ownerIds[0] };
   if (ownerIds.length > 1) {
-    throw new Error(`${skill.name} has multiple lifecycle owners in this scope`);
+    throw new Error(
+      `${skill.name} is installed from more than one source here. Manage each copy in Locations.`,
+    );
   }
   const canonicalDeployments = deployments.filter(
     (deployment) => deployment.backing.kind === "canonical",
@@ -136,10 +159,14 @@ export function lifecycleTargetForSkill(
     return lifecycleTargetForDeployment(canonicalDeployments[0]);
   }
   if (deployments.length === 1) return lifecycleTargetForDeployment(deployments[0]);
+  const group = folderWithLinks(deployments);
+  if (group) return lifecycleTargetForDeployment(group.folder);
   if (skill.deployments.length === 0 && skill.source_kind === "skills-sh" && scope === "global") {
     return { owner_id: `owner:v1/global/${skill.name}` };
   }
-  throw new Error(`${skill.name} has no unambiguous mutable deployment in this scope`);
+  throw new Error(
+    `${skill.name} has more than one separate copy here, so Skill Studio cannot tell which to remove. Remove each copy from Locations.`,
+  );
 }
 
 /** Resolve aggregate removal without throwing during render. */
@@ -152,10 +179,7 @@ export function skillRemovalAvailability(
   } catch (error) {
     return {
       available: false,
-      reason:
-        error instanceof Error
-          ? `${error.message}. Manage each independent Copy deployment in Locations.`
-          : "Manage each independent Copy deployment in Locations.",
+      reason: error instanceof Error ? error.message : "Remove each separate copy from Locations.",
     };
   }
 }
@@ -294,7 +318,7 @@ export function skillUpdateAvailability(
   if (ownerIds.size > 1) {
     return {
       available: false,
-      reason: `${skill.name} has multiple lifecycle owners in this scope. Update a specific deployment in Locations.`,
+      reason: `${skill.name} is installed from more than one source here. Update each copy in Locations.`,
     };
   }
   const ownerId = ownerIds.values().next().value;
@@ -548,13 +572,24 @@ export function skillRemovalPreview(
   const removesDotagentsOwner = managedDeployments.some(
     (deployment) => deployment.owner_kind === "dotagents",
   );
+  const group = target.deployment_id
+    ? folderWithLinks(
+        deploymentsInScope(skill, selection.scope, selection.projectPath).filter(
+          (deployment) => deployment.mutability === "mutable",
+        ),
+      )
+    : null;
+  const groupLinkIds = new Set(
+    group && group.folder.id === target.deployment_id ? group.links.map((link) => link.id) : [],
+  );
   const linkedDeployments = skill.deployments.filter(
     (deployment) =>
-      deployment.backing.kind === "linked-to" &&
-      (targetedIds.has(deployment.id) || backingIds.has(deployment.backing.deployment_id)) &&
-      (!removesDotagentsOwner ||
-        (agentIdFromDeploymentLabel(deployment.agent) === "claude-code" &&
-          !deployment.shared_via_whole_dir_link)),
+      groupLinkIds.has(deployment.id) ||
+      (deployment.backing.kind === "linked-to" &&
+        (targetedIds.has(deployment.id) || backingIds.has(deployment.backing.deployment_id)) &&
+        (!removesDotagentsOwner ||
+          (agentIdFromDeploymentLabel(deployment.agent) === "claude-code" &&
+            !deployment.shared_via_whole_dir_link))),
   );
   return { target, managedDeployments, linkedDeployments };
 }
@@ -577,9 +612,9 @@ export function skillDeploymentRemovalPreview(
 
 /** Describe the owner group and verified links that the target removes. */
 export function skillRemovalDescription(preview: SkillRemovalPreview): string {
-  const deploymentCount = preview.managedDeployments.length;
+  const folderCount = preview.managedDeployments.length;
   const linkCount = preview.linkedDeployments.length;
-  return `This removes ${deploymentCount} managed deployment${deploymentCount === 1 ? "" : "s"} and ${linkCount} verified dependent link${linkCount === 1 ? "" : "s"}. Independent copies outside this group remain. This cannot be undone.`;
+  return `This removes ${folderCount} folder${folderCount === 1 ? "" : "s"} and ${linkCount} link${linkCount === 1 ? "" : "s"} to ${folderCount === 1 ? "it" : "them"}. Separate copies elsewhere stay. This cannot be undone.`;
 }
 
 function parkableDeployment(skill: SkillLifecycleView): Deployment | undefined {
@@ -613,7 +648,7 @@ export function lifecycleTargetForPark(skill: SkillLifecycleView): LifecycleTarg
   const canonical = parkableDeployment(skill);
   if (!canonical) {
     throw new Error(
-      `${skill.name} has no Global Universal folder to park. Project and Per harness copies stay independent.`,
+      `${skill.name} has no Global Universal folder to park. Project and per-agent copies stay separate.`,
     );
   }
   return { deployment_id: canonical.id };

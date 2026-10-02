@@ -152,7 +152,7 @@ export function ActivityFilters({
         >
           <MenuRadioItem value="all" closeOnClick className={ITEM}>
             <Layers size={14} className="text-icon-muted" aria-hidden="true" />
-            All harnesses
+            All agents
             <span className="ml-auto pl-4 text-small text-text-tertiary tabular-nums">
               {formatCount(harnessTotal)}
             </span>

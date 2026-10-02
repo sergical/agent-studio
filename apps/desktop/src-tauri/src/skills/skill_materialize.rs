@@ -249,7 +249,7 @@ fn rename_directory_without_replace(from: &Path, to: &Path) -> Result<(), String
     };
     #[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
     return Err(
-        "Publishing a materialized root without replacement is unsupported on this platform"
+        "Publishing a converted folder link without replacement is unsupported on this platform"
             .to_string(),
     );
 
@@ -258,7 +258,7 @@ fn rename_directory_without_replace(from: &Path, to: &Path) -> Result<(), String
         Ok(())
     } else {
         Err(format!(
-            "Failed to publish staged materialized root at {} without replacing existing content: {}",
+            "Failed to publish staged converted folder link at {} without replacing existing content: {}",
             to.display(),
             std::io::Error::last_os_error()
         ))
@@ -271,7 +271,7 @@ fn materialize_event_path(event: &EventRow, key: &str) -> Result<PathBuf, String
         .get(key)
         .and_then(serde_json::Value::as_str)
         .map(PathBuf::from)
-        .ok_or_else(|| format!("Interrupted materialize event has no {key}"))
+        .ok_or_else(|| format!("Interrupted conversion has no {key}"))
 }
 
 fn finish_recovered_materialized_root(
@@ -316,14 +316,14 @@ pub(crate) fn reconcile_connected_materialize_event_with_hook(
         .payload
         .get("staged_fingerprint")
         .and_then(serde_json::Value::as_str)
-        .ok_or("Interrupted materialize event has no staged_fingerprint")?;
+        .ok_or("Interrupted conversion has no staged_fingerprint")?;
     let expected_staging = root
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", root.display()))?
         .join(format!(".skill-studio-materialize-{}", event.id));
     if staging != expected_staging {
         return Err(
-            "Interrupted materialize event has an inconsistent staging path; preserved the filesystem unchanged"
+            "Interrupted conversion has an inconsistent staging path; preserved the filesystem unchanged"
                 .to_string(),
         );
     }
@@ -346,13 +346,19 @@ pub(crate) fn reconcile_connected_materialize_event_with_hook(
                     )
                 })?;
             } else if !staging_is_absent {
-                return Err("Interrupted materialize event found changed staging content; preserved it unchanged".to_string());
+                return Err(
+                    "Interrupted conversion found changed staging content; preserved it unchanged"
+                        .to_string(),
+                );
             }
             store.finish(&event.id, EventStatus::Failed)
         }
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
             if !staging_is_absent || fingerprint_path(&root) != staged_fingerprint {
-                return Err("Interrupted materialize event found unknown root content; preserved it unchanged".to_string());
+                return Err(
+                    "Interrupted conversion found unknown root content; preserved it unchanged"
+                        .to_string(),
+                );
             }
             finish_recovered_materialized_root(store, event, &root, &shared_root)
         }
@@ -370,15 +376,17 @@ pub(crate) fn reconcile_connected_materialize_event_with_hook(
                 })?;
                 store.finish(&event.id, EventStatus::Failed)
             } else {
-                Err("Interrupted materialize event found changed staging content; preserved it unchanged".to_string())
+                Err(
+                    "Interrupted conversion found changed staging content; preserved it unchanged"
+                        .to_string(),
+                )
             }
         }
         Ok(_) => Err(
-            "Interrupted materialize event found unknown root content; preserved it unchanged"
-                .to_string(),
+            "Interrupted conversion found unknown root content; preserved it unchanged".to_string(),
         ),
         Err(error) => Err(format!(
-            "Failed to identify interrupted materialize root {}: {error}",
+            "Failed to identify interrupted conversion root {}: {error}",
             root.display()
         )),
     }
@@ -485,7 +493,7 @@ fn rollback_unchanged_materialization(
 ) -> Result<bool, String> {
     let event = store
         .get(materialize_event_id)?
-        .ok_or_else(|| format!("Materialize event {materialize_event_id} was not found"))?;
+        .ok_or_else(|| format!("Conversion {materialize_event_id} was not found"))?;
     if event.status != "done" {
         return Ok(false);
     }
@@ -494,7 +502,7 @@ fn rollback_unchanged_materialization(
         .as_ref()
         .and_then(|inverse| inverse.get("post_fingerprint"))
         .and_then(serde_json::Value::as_str)
-        .ok_or("Materialize event has no completed fingerprint")?;
+        .ok_or("Conversion has no completed fingerprint")?;
     if fingerprint_path(root) != expected {
         return Ok(false);
     }
@@ -523,16 +531,14 @@ pub fn reconcile_interrupted_convert_then_disable(
         .payload
         .get("harness")
         .and_then(serde_json::Value::as_str)
-        .ok_or("Interrupted convert-and-disable intent has no harness")?;
+        .ok_or("Interrupted convert-and-disable intent has no agent")?;
     let materialize_event_id = event
         .payload
         .get("materialize_event_id")
         .and_then(serde_json::Value::as_str)
-        .ok_or("Interrupted convert-and-disable intent has no materialize_event_id")?;
+        .ok_or("Interrupted convert-and-disable intent has no conversion id")?;
     if deployment_path != root.join(skill) {
-        return Err(
-            "Interrupted convert-and-disable deployment identity is inconsistent".to_string(),
-        );
+        return Err("Interrupted convert-and-disable copy identity is inconsistent".to_string());
     }
 
     let Some(mut materialize_event) = store.get(materialize_event_id)? else {
@@ -544,14 +550,14 @@ pub fn reconcile_interrupted_convert_then_disable(
             return Ok(());
         }
         return Err(format!(
-            "Materialize event {materialize_event_id} was not found and the original root is not intact"
+            "Conversion {materialize_event_id} was not found and the original root is not intact"
         ));
     };
     if materialize_event.status == "interrupted" {
         reconcile_connected_materialize_event(store, &materialize_event)?;
         materialize_event = store
             .get(materialize_event_id)?
-            .ok_or_else(|| format!("Materialize event {materialize_event_id} was not found"))?;
+            .ok_or_else(|| format!("Conversion {materialize_event_id} was not found"))?;
     }
 
     if fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
@@ -577,7 +583,7 @@ pub fn reconcile_interrupted_convert_then_disable(
             let expected_target = shared_root.join(skill);
             if fs::canonicalize(&deployment_path).ok() != fs::canonicalize(&expected_target).ok() {
                 return Err(
-                    "Interrupted convert-and-disable found a changed selected deployment link"
+                    "Interrupted convert-and-disable found a changed selected copy link"
                         .to_string(),
                 );
             }
@@ -595,9 +601,9 @@ pub fn reconcile_interrupted_convert_then_disable(
                 }
             }
         }
-        Ok(_) => Err(
-            "Interrupted convert-and-disable found changed selected deployment content".to_string(),
-        ),
+        Ok(_) => {
+            Err("Interrupted convert-and-disable found changed selected copy content".to_string())
+        }
         Err(error) => Err(format!(
             "Interrupted convert-and-disable could not inspect {}: {error}",
             deployment_path.display()
@@ -692,7 +698,7 @@ pub fn relink_harness(
 ) -> Result<(), String> {
     let materialized = store
         .materialized_root(root)?
-        .ok_or_else(|| format!("{} is not a materialized root", root.display()))?;
+        .ok_or_else(|| format!("{} is not a converted folder link", root.display()))?;
     let target = PathBuf::from(&materialized.shared_root).join(skill);
     let link = root.join(skill);
     let pre_fingerprint = fingerprint_path(&link);

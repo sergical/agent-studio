@@ -77,11 +77,11 @@ export function SplitSkillDialog({
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Split {skillName} into harness folders?</DialogTitle>
+          <DialogTitle>Split {skillName} into agent folders?</DialogTitle>
           <DialogDescription>
-            Each harness you pick gets its own copy of {skillName}. The Universal folder and its
-            links are removed. Harnesses you don't pick lose this skill. Activity records this
-            change and provides the undo action.
+            Each agent you pick gets its own copy of {skillName}. The Universal folder and its links
+            are removed. Agents you don't pick lose this skill. Activity records this change and
+            provides the undo action.
           </DialogDescription>
         </DialogHeader>
         <ul className="flex flex-col gap-2">
@@ -103,7 +103,7 @@ export function SplitSkillDialog({
           {targets === null ? (
             <p className="text-small text-text-tertiary">Finding folders…</p>
           ) : folders.length === 0 ? (
-            <p className="text-small text-text-tertiary">No harness picked.</p>
+            <p className="text-small text-text-tertiary">No agent picked.</p>
           ) : (
             <ul className="flex flex-col gap-1">
               {folders.map((folder) => (

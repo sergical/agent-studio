@@ -336,7 +336,7 @@ fn exact_snapshot_invocation_deployment<'a>(
     })?;
     if matching.next().is_some() {
         return Err(format!(
-            "Invocation target is ambiguous: {} matches more than one deployment",
+            "Invocation target is ambiguous: {} matches more than one copy",
             requested_skill_md.display()
         ));
     }
@@ -363,7 +363,7 @@ fn exact_snapshot_invocation_deployment<'a>(
         || codex_identity_mismatch
     {
         return Err(format!(
-            "Invocation target is stale: deployment {} no longer matches its snapshot identity",
+            "Invocation target is stale: copy {} no longer matches its snapshot identity",
             deployment.id
         ));
     }

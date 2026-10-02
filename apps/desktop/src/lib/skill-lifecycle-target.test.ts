@@ -80,7 +80,72 @@ describe("lifecycleTargetForSkill", () => {
       source_kind: "skills-sh",
       deployments: [deployment("a", "owner:a"), deployment("b", "owner:b")],
     } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
-    expect(() => lifecycleTargetForSkill(skill, "global")).toThrow("multiple lifecycle owners");
+    expect(() => lifecycleTargetForSkill(skill, "global")).toThrow("more than one source");
+  });
+
+  describe("one real folder plus links to it, with no owner", () => {
+    function ownerless(id: string, path: string, link?: { to: string }): Deployment {
+      return {
+        ...deployment(id, undefined, "/p"),
+        owner_kind: "manual",
+        backing: { kind: "independent" },
+        path,
+        is_symlink: link !== undefined,
+        symlink_target: link?.to,
+      };
+    }
+
+    it("removes the folder and its links together, not asking which one", () => {
+      const folder = ownerless("folder", "/p/.agents/skills/x");
+      const link = ownerless("link", "/p/.claude/skills/x", { to: "/p/.agents/skills/x" });
+      const skill = {
+        name: "x",
+        source_kind: "manual",
+        deployments: [folder, link],
+      } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
+
+      const preview = skillRemovalPreview(skill, {
+        skillName: "x",
+        scope: "project",
+        projectPath: "/p",
+      });
+      expect(preview.target).toEqual({ deployment_id: "folder" });
+      expect(preview.managedDeployments.map(({ path }) => path)).toEqual(["/p/.agents/skills/x"]);
+      expect(preview.linkedDeployments.map(({ path }) => path)).toEqual(["/p/.claude/skills/x"]);
+      expect(skillRemovalDescription(preview)).toBe(
+        "This removes 1 folder and 1 link to it. Separate copies elsewhere stay. This cannot be undone.",
+      );
+    });
+
+    it("still asks when two real folders exist, so a separate copy is never deleted by accident", () => {
+      const skill = {
+        name: "x",
+        source_kind: "manual",
+        deployments: [
+          ownerless("agents", "/p/.agents/skills/x"),
+          ownerless("claude", "/p/.claude/skills/x"),
+        ],
+      } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
+
+      expect(() => lifecycleTargetForSkill(skill, "project", "/p")).toThrow(
+        "Remove each copy from Locations",
+      );
+    });
+
+    it("still asks when a link points at a different folder than the real one", () => {
+      const skill = {
+        name: "x",
+        source_kind: "manual",
+        deployments: [
+          ownerless("folder", "/p/.agents/skills/x"),
+          ownerless("link", "/p/.claude/skills/x", { to: "/elsewhere/x" }),
+        ],
+      } satisfies Pick<InstalledSkill, "name" | "deployments" | "source_kind">;
+
+      expect(() => lifecycleTargetForSkill(skill, "project", "/p")).toThrow(
+        "Remove each copy from Locations",
+      );
+    });
   });
 
   it("targets the exact ownerless Universal Copy instead of its linked Claude deployment", () => {
@@ -215,7 +280,7 @@ describe("lifecycleTargetForSkill", () => {
     expect(preview.managedDeployments.map(({ id }) => id)).toEqual(["canonical"]);
     expect(preview.linkedDeployments.map(({ id }) => id)).toEqual(["linked"]);
     expect(skillRemovalDescription(preview)).toBe(
-      "This removes 1 managed deployment and 1 verified dependent link. Independent copies outside this group remain. This cannot be undone.",
+      "This removes 1 folder and 1 link to it. Separate copies elsewhere stay. This cannot be undone.",
     );
   });
 

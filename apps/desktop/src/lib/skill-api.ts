@@ -650,7 +650,7 @@ export async function setHarnessEnabled(
   enabled: boolean,
 ): Promise<void> {
   if (!target.deployment_id) {
-    throw new Error("Harness visibility needs one exact deployment");
+    throw new Error("Agent visibility needs one exact folder");
   }
   const visibilityTarget: HarnessVisibilityTarget = {
     deployment_id: target.deployment_id,

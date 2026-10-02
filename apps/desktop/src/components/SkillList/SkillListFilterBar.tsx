@@ -263,7 +263,7 @@ export function SkillListFilterBar({
           {harnesses.length > 1 && (
             <>
               <p className="m-0 px-2.5 pt-1.5 pb-0.5 text-caption font-medium tracking-[0.08em] text-text-tertiary uppercase">
-                Harness
+                Agent
               </p>
               <MenuRadioGroup
                 value={filter.harness ?? ""}
@@ -273,7 +273,7 @@ export function SkillListFilterBar({
                 }}
               >
                 <MenuRadioItem value="" closeOnClick>
-                  Any harness
+                  Any agent
                 </MenuRadioItem>
                 {harnesses.map((harness) => {
                   const harnessId = harnessIdFromLabel(harness);

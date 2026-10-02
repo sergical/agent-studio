@@ -195,7 +195,7 @@ fn refuse_name_fix_with_differently_named_peer(
         let same_real = fs::canonicalize(&other.path).is_ok_and(|resolved| resolved == real);
         if same_real && Path::new(&other.path).file_name() != real_name {
             return Err(format!(
-                "Another deployment at {} reaches this SKILL.md under a different folder name, so fixing the name here would break it. Rename or remove that link first.",
+                "Another copy at {} reaches this SKILL.md under a different folder name, so fixing the name here would break it. Rename or remove that link first.",
                 other.path
             ));
         }
@@ -242,9 +242,7 @@ fn validate_bound_preview(
     if preview.expected_content_fingerprint != expected_content_fingerprint
         || preview.proposal_id != expected_proposal_id
     {
-        return Err(
-            "YAML repair refused: the deployment, ownership, or content changed".to_string(),
-        );
+        return Err("YAML repair refused: the copy, ownership, or content changed".to_string());
     }
     if preview.proposed_content == preview.original_content {
         return Err("Choose an option before applying this fix".to_string());
@@ -277,7 +275,7 @@ fn exact_target<'a>(
     let id = target
         .deployment_id
         .as_deref()
-        .ok_or("YAML repair needs one exact deployment_id")?;
+        .ok_or("YAML repair needs one exact copy id")?;
     if target.owner_id.is_some() {
         return Err("YAML repair does not accept an owner target".to_string());
     }
@@ -502,9 +500,7 @@ pub async fn apply_skill_frontmatter_repair(
                 choice,
             )?;
             if !preview.allowed_apply_modes.contains(&mode) {
-                return Err(
-                    "This repair mode is not allowed for the selected deployment".to_string(),
-                );
+                return Err("This repair mode is not allowed for the selected copy".to_string());
             }
             let event_id = allocate_id();
             let pre_fingerprint = fingerprint_path(&skill_md);

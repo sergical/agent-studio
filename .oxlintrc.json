@@ -11,6 +11,7 @@
     "anti-slop/no-chained-type-assertions": "error",
     "anti-slop/no-conditional-empty-object-spread": "error",
     "anti-slop/no-known-value-widening": "error",
+    "anti-slop/no-internal-vocabulary": "off",
     "anti-slop/no-module-mocking": "error",
     "anti-slop/no-object-parameters": "error",
     "anti-slop/no-raw-form-elements": "error",
@@ -51,6 +52,11 @@
   },
   "ignorePatterns": ["**/dist", "**/node_modules", "**/src-tauri/target", "**/src-tauri/gen"],
   "overrides": [
+    {
+      "files": ["apps/desktop/src/**", "packages/ui/**"],
+      "excludeFiles": ["**/*.test.ts", "**/*.test.tsx", "apps/desktop/src/dev/**"],
+      "rules": { "anti-slop/no-internal-vocabulary": "error" }
+    },
     {
       "files": ["packages/ui/**", "apps/tui/**", "packages/marketing/**"],
       "rules": { "anti-slop/no-raw-form-elements": "off" }

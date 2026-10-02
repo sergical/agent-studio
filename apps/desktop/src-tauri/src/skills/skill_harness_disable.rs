@@ -67,7 +67,7 @@ fn refuse_opencode_name_collision<'a>(
         scope != selected_scope || (scope == "project" && project != selected_project)
     }) {
         return Err(
-            "OpenCode disables skills by name. This name has more than one OpenCode deployment, so no deployment was changed."
+            "OpenCode disables skills by name. This name has more than one OpenCode copy, so no copy was changed."
                 .to_string(),
         );
     }
@@ -84,7 +84,7 @@ fn guard_new_opencode_deployment(
     deployment_id: &str,
 ) -> Result<(), String> {
     let parsed = super::skill_deployment::parse_deployment_id(deployment_id)
-        .ok_or_else(|| format!("Not a deployment id: {deployment_id}"))?;
+        .ok_or_else(|| format!("Not a copy id: {deployment_id}"))?;
     let mut visible = Vec::new();
     for root in [
         home.join(".agents/skills"),
@@ -271,7 +271,7 @@ fn set_claude_code_enabled_with_registry_writer(
             return Ok(()); // already enabled, nothing recorded - idempotent.
         };
         if record.deployment_id != deployment_id {
-            return Err("The Claude Code disable record belongs to another deployment".to_string());
+            return Err("The Claude Code disable record belongs to another copy".to_string());
         }
         restore_claude_link_at(link_path, &record.link_target)?;
         if let Some(by_harness) = registry.harness_disabled.get_mut(&record_key) {
@@ -301,7 +301,7 @@ fn set_claude_code_enabled_with_registry_writer(
             })?;
             if resolved != expected {
                 return Err(format!(
-                    "{} no longer points to the selected Universal deployment",
+                    "{} no longer points to the selected Universal folder copy",
                     link_path.display()
                 ));
             }
@@ -415,7 +415,7 @@ pub fn set_harness_enabled_with(
     match agent {
         "codex" => {
             if codex_skill_md_paths.is_empty() {
-                return Err(format!("No Codex-visible deployment found for \"{name}\""));
+                return Err(format!("No Codex-visible copy found for \"{name}\""));
             }
             let rt = super::core_runtime::build_runtime_write_at(home, data_root)?;
             let ctx = skill_studio_core::ports::OpContext::uncancellable(
@@ -489,12 +489,12 @@ pub fn set_harness_enabled_with(
                 .map_err(|e| e.to_string())
             }
         }
-        "claude-code" => Err("Claude Code visibility needs an exact deployment target".to_string()),
+        "claude-code" => Err("Claude Code visibility needs an exact copy target".to_string()),
         "pi" | "cursor" | "grok-build" => Err(format!(
             "{agent} has no per-skill disable - it reads the Universal folder directly; \
-             Park the skill to turn it off for every harness"
+             Park the skill to turn it off for every agent"
         )),
-        other => Err(format!("Unknown harness: {other}")),
+        other => Err(format!("Unknown agent: {other}")),
     }
 }
 
@@ -557,7 +557,7 @@ pub async fn set_harness_enabled(
     crate::timing_log::time_command_blocking(&timing_app, "set_harness_enabled", move || {
         let refresh_state = app.state::<SkillRefreshState>();
         let parsed = super::skill_deployment::parse_deployment_id(&target.deployment_id)
-            .ok_or_else(|| format!("Not a deployment id: {}", target.deployment_id))?;
+            .ok_or_else(|| format!("Not a copy id: {}", target.deployment_id))?;
         let harness =
             skill_studio_core::identity::AgentId::parse_harness(target.reader_agent.cli_name())
                 .map_err(|e| e.message)?;
@@ -639,7 +639,7 @@ fn restore_moved_deployment_for(
     let path_buf = PathBuf::from(&deployment.path);
     let new_path = restore_deployment_at(&path_buf)?;
     let parsed = super::skill_deployment::parse_deployment_id(deployment_id)
-        .ok_or_else(|| format!("Not a deployment id: {deployment_id}"))?;
+        .ok_or_else(|| format!("Not a copy id: {deployment_id}"))?;
     let new_id = super::skill_deployment::deployment_id(
         &parsed.name,
         &parsed.scope,
@@ -674,7 +674,7 @@ pub async fn restore_moved_deployment(
         let deployment_id = target
             .deployment_id
             .clone()
-            .ok_or("Restoring a moved deployment needs one deployment_id")?;
+            .ok_or("Restoring a moved copy needs one copy id")?;
         let resolved = super::skill_lifecycle::resolve_fresh_lifecycle_target(
             &app,
             &refresh_state,
@@ -851,7 +851,7 @@ mod tests {
             &test_guard(tmp.path()),
         )
         .unwrap_err();
-        assert!(err.contains("No Codex-visible deployment"));
+        assert!(err.contains("No Codex-visible copy"));
     }
 
     /// `codex_toggle_under_the_desktop_write_lease_succeeds_or_names_the_scope_busy_deadlock`:
@@ -1044,10 +1044,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(
-            error.contains("more than one OpenCode deployment"),
-            "{error}"
-        );
+        assert!(error.contains("more than one OpenCode copy"), "{error}");
         assert!(!opencode_denies(&home, "find-bugs"));
         assert!(home.join(".agents/skills/find-bugs/SKILL.md").is_file());
     }

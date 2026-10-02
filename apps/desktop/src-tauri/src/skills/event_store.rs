@@ -241,14 +241,14 @@ impl EventStore {
                      FROM legacy.materialized_roots",
                     [],
                 )
-                .map_err(|e| format!("Failed to import legacy materialized_roots: {e}"))?;
+                .map_err(|e| format!("Failed to import legacy converted-folder records: {e}"))?;
             self.conn
                 .execute(
                     "INSERT OR IGNORE INTO materialized_disabled (root_path, skill)
                      SELECT root_path, skill FROM legacy.materialized_disabled",
                     [],
                 )
-                .map_err(|e| format!("Failed to import legacy materialized_disabled: {e}"))?;
+                .map_err(|e| format!("Failed to import legacy converted-folder switches: {e}"))?;
             self.conn
                 .execute_batch("COMMIT")
                 .map_err(|e| format!("Failed to commit legacy import transaction: {e}"))?;
@@ -984,7 +984,7 @@ impl EventStore {
                     created_by,
                 ],
             )
-            .map_err(|e| format!("Failed to register materialized root: {e}"))?;
+            .map_err(|e| format!("Failed to register converted folder link: {e}"))?;
         Ok(())
     }
 
@@ -994,13 +994,13 @@ impl EventStore {
                 "DELETE FROM materialized_disabled WHERE root_path = ?1",
                 params![root.to_string_lossy()],
             )
-            .map_err(|e| format!("Failed to clear materialized_disabled: {e}"))?;
+            .map_err(|e| format!("Failed to clear converted-folder switches: {e}"))?;
         self.conn
             .execute(
                 "DELETE FROM materialized_roots WHERE root_path = ?1",
                 params![root.to_string_lossy()],
             )
-            .map_err(|e| format!("Failed to unregister materialized root: {e}"))?;
+            .map_err(|e| format!("Failed to unregister converted folder link: {e}"))?;
         Ok(())
     }
 
@@ -1019,7 +1019,7 @@ impl EventStore {
                 },
             )
             .optional()
-            .map_err(|e| format!("Failed to query materialized root: {e}"))
+            .map_err(|e| format!("Failed to query converted folder link: {e}"))
     }
 
     pub fn set_materialized_disabled(

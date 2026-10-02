@@ -396,21 +396,21 @@ fn remove_body(
     if deployment.root.kind != RootKind::Universal {
         return Err(CoreError::new(
             ErrorCode::Unsupported,
-            "only a universal deployment can be removed",
+            "only a universal folder copy can be removed",
         )
         .at(&deployment.path));
     }
     if deployment.backing != BackingRelationship::Canonical {
         return Err(CoreError::new(
             ErrorCode::Unsupported,
-            "only the deployment holding the bytes can be removed, not a link",
+            "only the copy holding the bytes can be removed, not a link",
         )
         .at(&deployment.path));
     }
     if !deployment.owner_kind.is_mutable() {
         return Err(CoreError::new(
             ErrorCode::Unsupported,
-            "this deployment's owner kind does not allow Skill Studio to remove it",
+            "this copy's owner kind does not allow Skill Studio to remove it",
         )
         .at(&deployment.path));
     }
@@ -445,7 +445,7 @@ fn remove_body(
         .path
         .parent()
         .ok_or_else(|| {
-            CoreError::new(ErrorCode::Io, "a universal deployment path has no parent")
+            CoreError::new(ErrorCode::Io, "a universal folder copy path has no parent")
                 .at(&deployment.path)
         })?
         .to_path_buf();
@@ -656,7 +656,7 @@ fn remove_and_link(
         _ => {
             return Err(CoreError::new(
                 ErrorCode::Unsupported,
-                "this owner kind is not mutable and was already refused before this step",
+                "this owner kind is not editable and was already refused before this step",
             ))
         }
     }
