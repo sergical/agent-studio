@@ -38,18 +38,13 @@ export async function performOptimisticAction(
   action: () => Promise<boolean | void>,
   { onRevert, onError }: OptimisticFailureHandlers,
 ): Promise<boolean> {
-  let failed = false;
-  let message: string | null = null;
   try {
-    const result = await action();
-    failed = result === false;
+    if ((await action()) !== false) return true;
+    onRevert();
   } catch (err) {
-    failed = true;
-    message = invokeErrorMessage(err);
+    onRevert();
+    onError(invokeErrorMessage(err));
   }
-  if (!failed) return true;
-  onRevert();
-  if (message !== null) onError(message);
   return false;
 }
 
