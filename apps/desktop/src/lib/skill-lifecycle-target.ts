@@ -584,9 +584,9 @@ export function skillUpdateToast(
  * only Claude Code, Grok Build and pi, because Codex, Cursor and OpenCode read the project's
  * `.agents/skills` there. It never touches OpenCode's singular `skill` folder. The folder is
  * judged by agent, scope and its parent folder's name, so a moved config home still matches.
- * The CLI also clears three project folders of agents that are not first-class
- * (`skills`, `agent/skills`, `data/skills`); the backend refuses a removal that would delete a
- * real folder there (`refuse_unbacked_cli_deletions`).
+ * The CLI also clears folders of agents that are not first-class: a project's `skills`,
+ * `agent/skills` and `data/skills`, Eve's subagent folders, and `~/agent/skills`. The backend
+ * refuses a removal that would delete a real folder there (`refuse_unbacked_cli_deletions`).
  */
 function skillsCliRemovesFolderAt(deployment: Deployment): boolean {
   if (deployment.plugin || basename(parentDirectory(deployment.path)) !== "skills") return false;

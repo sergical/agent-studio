@@ -1547,8 +1547,11 @@ fn cli_remove_matches_the_npx_skills_remove_trace_byte_for_byte_apart_from_times
         args, &trace.args,
         "remove_via_cli's argv drifted from the recorded skills.sh trace"
     );
+    // The trace records no cwd for a global remove; the core runs it in the
+    // home folder so the CLI also clears Eve's `~/agent/skills`.
     assert_eq!(
-        cwd, &trace.cwd,
+        cwd,
+        &trace.cwd.clone().or_else(|| Some(home.clone())),
         "remove_via_cli's cwd drifted from the recorded skills.sh trace"
     );
 
@@ -1813,6 +1816,58 @@ fn global_skills_sh_remove_is_refused_when_the_cli_would_delete_a_real_home_agen
     );
     let deployment_id = setup_owner_kind(&rt, &home, LifecycleOwnerKind::SkillsSh, "x");
     let folder = home.join("agent/skills/x");
+    write_skill_md(&folder);
+
+    let error = ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id })
+        .expect_err("the remove must be refused");
+
+    assert!(
+        error.to_string().contains(&folder.display().to_string()),
+        "the refusal names {}, got: {error}",
+        folder.display()
+    );
+    assert!(folder.join("SKILL.md").exists(), "the folder survives");
+    assert!(
+        spawner.recorded.lock().unwrap().is_empty(),
+        "the CLI must not run"
+    );
+}
+
+/// Flow: an Eve project has a subagent folder named `Helper Bot` with a real `skills/x`; the
+/// user removes the project's skills.sh install of `x`.
+/// Expectation: the remove goes through, because the CLI looks for `helper-bot/skills/x`, a
+/// folder that does not exist, and so never touches `Helper Bot/skills/x`.
+/// A failure here means the guard refuses for a folder the CLI leaves alone.
+#[cfg(unix)]
+#[test]
+fn project_skills_sh_remove_is_allowed_when_an_eve_subagent_folder_name_needs_sanitizing_or_names_the_false_refusal(
+) {
+    let fixture = project_install("remove_project_eve_sanitized");
+    let subagent_skill = fixture.project.join("agent/subagents/Helper Bot/skills/x");
+    write_skill_md(&subagent_skill);
+    fixture
+        .remove_install()
+        .expect("the CLI never reaches `Helper Bot`, so the guard must not refuse");
+    assert!(subagent_skill.join("SKILL.md").exists());
+}
+
+/// Flow: a global skills.sh install of `x` and a real `~/agent/subagents/helper-bot/skills/x`,
+/// which the CLI deletes when it runs in the home folder; the user removes the global install.
+/// Expectation: refused with that folder named, and the CLI never runs.
+/// A failure here means a global remove deletes an Eve subagent's skill with no backup.
+#[test]
+fn global_skills_sh_remove_is_refused_when_an_eve_subagent_under_home_has_a_real_skill_folder_or_names_the_lost_folder(
+) {
+    let home = unique_temp_dir("remove_global_eve_subagent");
+    std::fs::create_dir_all(&home).unwrap();
+    let spawner = Arc::new(FakeNpxSpawner::new(home.clone()));
+    let rt = runtime_with(
+        &home,
+        Arc::new(RealFs::new()),
+        Some(spawner.clone() as Arc<dyn ProcessSpawner>),
+    );
+    let deployment_id = setup_owner_kind(&rt, &home, LifecycleOwnerKind::SkillsSh, "x");
+    let folder = home.join("agent/subagents/helper-bot/skills/x");
     write_skill_md(&folder);
 
     let error = ops::remove(&rt, &ctx(), &RemoveRequest { deployment_id })

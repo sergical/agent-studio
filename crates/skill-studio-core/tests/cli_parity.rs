@@ -561,6 +561,9 @@ impl TraceCtx {
             "{trace_name}: ops's argv drifted from the recorded npx call"
         );
         let expected_cwd = match cwd_label.as_deref() {
+            // A global remove runs in the home folder, where the CLI finds
+            // Eve's `~/agent/skills`; a global install has no cwd.
+            Some("GLOBAL") if trace_name.contains("-remove-") => Some(self.home.clone()),
             Some("GLOBAL") => None,
             Some("$PROJECT") => self.project.clone(),
             other => panic!("unrecognized cwd label {other:?}"),
