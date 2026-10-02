@@ -338,7 +338,7 @@ export function UsageSection() {
           aria-labelledby={`use-tab-${mode}`}
           {...stylex.props(styles.panel)}
         >
-          <div {...stylex.props(styles.window)}>
+          <div data-surface="dark" {...stylex.props(styles.window)}>
             <div {...stylex.props(styles.titlebar)}>
               <span {...stylex.props(styles.lights)} aria-hidden="true">
                 <span {...stylex.props(styles.light)} />

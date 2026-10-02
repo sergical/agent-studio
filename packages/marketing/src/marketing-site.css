@@ -102,7 +102,8 @@ html[data-site-theme="light"] ::selection {
   outline-offset: 2px;
 }
 
-html[data-site-theme="light"] :focus-visible {
+/* A surface that stays dark in the light theme keeps the white ring. */
+html[data-site-theme="light"] :focus-visible:where(:not([data-surface="dark"] *)) {
   outline-color: rgba(0, 0, 0, 0.56);
 }
 
