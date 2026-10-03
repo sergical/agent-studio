@@ -271,7 +271,7 @@ function specCondition(violations: string[], path: string): Condition | null {
 function hiddenBySetting(
   agent: AgentId,
   label: string,
-  where: string,
+  verb: string,
   deployment: Deployment,
 ): Condition {
   // The scan sends the path it read, which honours CODEX_HOME and XDG_CONFIG_HOME. The files are global, so a project row opens the global one.
@@ -283,13 +283,13 @@ function hiddenBySetting(
     phrase: "off",
     plural: "off",
     caption: hiddenBySettingCaption(label),
-    what: `${hiddenBySettingCaption(label)} — ${where}.`,
+    what: `${hiddenBySettingCaption(label)} — ${verb} ${config ? homeRelativePath(config.path) : "its config file"}.`,
     fix: config ? `Edit ${config.file} to change it.` : undefined,
     menu: config
       ? [
           {
             label: `Open ${config.file}`,
-            action: { kind: "reveal", path: config.path, label: config.file },
+            action: { kind: "open-editor", path: config.path, label: config.file },
           },
         ]
       : [],
@@ -302,16 +302,11 @@ function offCondition(deployment: Deployment): Condition {
   const base = { level: "off" as const, status: "Off", phrase: "off", plural: "off" };
   switch (deployment.disabled_by) {
     case "codex-config":
-      return hiddenBySetting("codex", "Codex", "switched off in ~/.codex/config.toml", deployment);
+      return hiddenBySetting("codex", "Codex", "switched off in", deployment);
     case "opencode-permission":
-      return hiddenBySetting("open-code", "OpenCode", "denied in opencode.json", deployment);
+      return hiddenBySetting("open-code", "OpenCode", "denied in", deployment);
     case "claude-skill-overrides":
-      return hiddenBySetting(
-        "claude-code",
-        "Claude Code",
-        "switched off in ~/.claude/settings.json",
-        deployment,
-      );
+      return hiddenBySetting("claude-code", "Claude Code", "switched off in", deployment);
     case "claude-link-removed":
       return {
         ...base,
@@ -341,8 +336,8 @@ function offCondition(deployment: Deployment): Condition {
 /** Hidden for a synthesized reader row by the agent's own config - Codex and OpenCode only. */
 function readerOffCondition(agent: AgentId, sharedDeployment: Deployment): Condition {
   return agent === "codex"
-    ? hiddenBySetting("codex", "Codex", "switched off in ~/.codex/config.toml", sharedDeployment)
-    : hiddenBySetting("open-code", "OpenCode", "denied in opencode.json", sharedDeployment);
+    ? hiddenBySetting("codex", "Codex", "switched off in", sharedDeployment)
+    : hiddenBySetting("open-code", "OpenCode", "denied in", sharedDeployment);
 }
 
 /** A global Universal skill Claude Code cannot see: `~/.claude/skills` is a real folder (or missing) with no entry for it. */

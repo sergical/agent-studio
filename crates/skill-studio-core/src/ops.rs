@@ -4205,6 +4205,39 @@ pub fn restore_event(
     })
 }
 
+/// Follows `target_event` links through `Restore` rows. An old restore of a
+/// `harness_disable` or `harness_enable` event would rewrite an agent config
+/// file from a backup, so the whole chain is refused like the event itself.
+fn restore_chain_ends_at_harness_event(
+    store: &dyn crate::ports::HistoryStore,
+    start: &crate::events::EventRecord,
+) -> Result<bool, CoreError> {
+    let mut current = start.clone();
+    // A chain cannot be longer than the table; the cap only stops a cycle.
+    for _ in 0..64 {
+        match current.kind() {
+            Some(
+                crate::events::EventKind::HarnessDisable | crate::events::EventKind::HarnessEnable,
+            ) => return Ok(true),
+            Some(crate::events::EventKind::Restore) => {}
+            _ => return Ok(false),
+        }
+        let Some(next) = current
+            .payload
+            .get("target_event")
+            .and_then(|v| v.as_str())
+            .map(|id| crate::identity::EventId(id.to_string()))
+        else {
+            return Ok(false);
+        };
+        match store.get(&next)? {
+            Some(record) => current = record,
+            None => return Ok(false),
+        }
+    }
+    Ok(false)
+}
+
 fn restore_event_body(
     rt: &Runtime,
     ctx: &OpContext,
@@ -4248,6 +4281,12 @@ fn restore_event_body(
             ))
         }
         crate::dto::RestoreCapability::Yes => {}
+    }
+    if restore_chain_ends_at_harness_event(&*session.store, &target)? {
+        return Err(CoreError::new(
+            ErrorCode::Unsupported,
+            "this event cannot be restored",
+        ));
     }
     let inverse = target.inverse.as_ref().ok_or_else(|| {
         CoreError::new(

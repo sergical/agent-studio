@@ -108,7 +108,7 @@ describe("agent rows", () => {
     expect(codex.caption).toBe("Hidden by Codex setting");
     expect(rowMenu(codex, "Global").entries[0]).toMatchObject({
       label: "Open config.toml",
-      action: { kind: "reveal", path: "/custom/codex-home/config.toml", label: "config.toml" },
+      action: { kind: "open-editor", path: "/custom/codex-home/config.toml", label: "config.toml" },
     });
   });
 
@@ -129,7 +129,7 @@ describe("agent rows", () => {
     const row = groups.find((g) => !g.isGlobal)!.rows.find((r) => r.harness === "claude-code")!;
     expect(rowMenu(row, "Project").entries[0]).toMatchObject({
       label: "Open settings.json",
-      action: { kind: "reveal", path: "/home/.claude/settings.json" },
+      action: { kind: "open-editor", path: "/home/.claude/settings.json" },
     });
   });
 });

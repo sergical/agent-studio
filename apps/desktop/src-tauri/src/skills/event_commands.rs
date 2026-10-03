@@ -52,6 +52,34 @@ fn backup_root_for(app_data: &Path, data_root: &Path, backup_dir: &str) -> Optio
     None
 }
 
+/// Old builds wrote `harness_disable` and `harness_enable` rows to switch a
+/// skill off in an agent's own config. Undoing one, or a restore that points
+/// at one, would put a config file back from a backup, so neither gets an
+/// Undo button.
+fn is_agent_config_event(store: &EventStore, row: &EventRow) -> bool {
+    let mut kind = row.kind.clone();
+    let mut payload = row.payload.clone();
+    // The cap only stops a cycle of restore rows.
+    for _ in 0..64 {
+        match kind.as_str() {
+            "harness_disable" | "harness_enable" => return true,
+            "restore" => {}
+            _ => return false,
+        }
+        let Some(next) = payload.get("target_event").and_then(|v| v.as_str()) else {
+            return false;
+        };
+        match store.get(next) {
+            Ok(Some(target)) => {
+                kind = target.kind;
+                payload = target.payload;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// `pub` (not `pub(crate)`) so `tests/undo_activity_history.rs` can check
 /// exactly what `list_skill_events` would hand the renderer for a row,
 /// without a `tauri::AppHandle`.
@@ -62,6 +90,7 @@ pub fn dto_from_row(
     row: EventRow,
 ) -> SkillEventDto {
     let restorable = row.restorable
+        && !is_agent_config_event(store, &row)
         && row.inverse.is_some()
         && row.reverted_by.is_none()
         && matches!(row.status.as_str(), "done" | "failed" | "interrupted");

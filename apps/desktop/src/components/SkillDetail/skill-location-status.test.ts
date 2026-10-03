@@ -181,7 +181,10 @@ describe("buildScopeGroups", () => {
 
   it.each([
     ["codex-config", "Hidden by Codex setting — switched off in ~/.codex/config.toml."],
-    ["opencode-permission", "Hidden by OpenCode setting — denied in opencode.json."],
+    [
+      "opencode-permission",
+      "Hidden by OpenCode setting — denied in ~/.config/opencode/opencode.json.",
+    ],
     [
       "claude-skill-overrides",
       "Hidden by Claude Code setting — switched off in ~/.claude/settings.json.",
@@ -205,6 +208,11 @@ describe("buildScopeGroups", () => {
       disabled: true,
       disabled_by: disabledBy,
       path: `/home/.${agentLabel.toLowerCase()}/skills/find-bugs`,
+      disabling_config_files: [
+        { agent: "codex", path: "/Users/dev/.codex/config.toml" },
+        { agent: "open-code", path: "/Users/dev/.config/opencode/opencode.json" },
+        { agent: "claude-code", path: "/Users/dev/.claude/settings.json" },
+      ],
     });
     const skill = fixtureSkill({ deployments: [shared, row] });
     const [global] = buildScopeGroups(skill);
@@ -338,7 +346,11 @@ describe("buildScopeGroups", () => {
   it("keeps_the_claude_code_row_visible_with_a_caption_and_no_switch_while_skill_overrides_has_it_off_or_names_the_layout", () => {
     const universalPath = "/home/.agents/skills/find-bugs";
     const path = "/home/.claude/skills/find-bugs";
-    const off = { disabled: true, disabled_by: "claude-skill-overrides" } as const;
+    const off: Partial<Deployment> = {
+      disabled: true,
+      disabled_by: "claude-skill-overrides",
+      disabling_config_files: [{ agent: "claude-code", path: "/Users/dev/.claude/settings.json" }],
+    };
     const layouts = {
       "per-skill link": perSkillLinkDeployment({ agent: "Claude Code", path, universalPath }, off),
       "whole-folder link": wholeFolderDeployment(
@@ -649,7 +661,7 @@ describe("rowMenu", () => {
       symlink_target: "/home/.agents/skills/find-bugs",
       disabled: true,
       disabled_by: "codex-config",
-      disabling_config_files: [{ agent: "codex", path: "/home/.codex/config.toml" }],
+      disabling_config_files: [{ agent: "codex", path: "/Users/dev/.codex/config.toml" }],
       path: "/home/.codex/skills/find-bugs",
     });
     const skill = fixtureSkill({ deployments: [shared, codex] });

@@ -1550,42 +1550,6 @@ pub fn read_claude_skill_overrides(
         .unwrap_or_default()
 }
 
-/// Writes `skillOverrides` into Claude Code's
-/// `<CLAUDE_CONFIG_DIR>/settings.json` (`~/.claude/settings.json` with no
-/// override), preserving every other top-level key byte-for-byte (only the
-/// `skillOverrides` value itself is replaced or inserted). Starts from an
-/// empty object when the file is missing or unparsable, so a first write
-/// still succeeds; a caller that needs to preserve a malformed file's
-/// content should read it before calling this.
-pub fn write_claude_skill_overrides(
-    fs: &dyn ScopeFs,
-    scope: &crate::scope::NormalizedScope,
-    guard: &crate::ports::ExclusiveGuard,
-    home: &Path,
-    config_dir_override: Option<&Path>,
-    overrides: serde_json::Map<String, serde_json::Value>,
-) -> Result<(), crate::error::CoreError> {
-    use crate::error::CoreError;
-    let path = claude_code_config_dir(home, config_dir_override).join("settings.json");
-    let mut map = match fs.read_capped(&path, 1024 * 1024) {
-        Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
-            .ok()
-            .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default(),
-        Err(_) => serde_json::Map::new(),
-    };
-    map.insert(
-        "skillOverrides".to_string(),
-        serde_json::Value::Object(overrides),
-    );
-    let doc = serde_json::Value::Object(map);
-    let bytes = serde_json::to_vec_pretty(&doc)
-        .map_err(|e| CoreError::new(crate::error::ErrorCode::Io, e.to_string()).at(&path))?;
-    let scoped = crate::ports::confine_write_through(scope, fs, &path)?;
-    fs.write_atomic(guard, &scoped, &bytes)
-        .map_err(|e| CoreError::io(&path, e))
-}
-
 /// One [`HarnessAdapter`] per first-class harness, in the same order as
 /// [`HarnessCatalog::builtin`].
 pub fn builtin_adapters() -> Vec<Box<dyn HarnessAdapter>> {
