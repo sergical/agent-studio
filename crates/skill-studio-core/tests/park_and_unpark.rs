@@ -101,7 +101,9 @@ fn park_universal_skill_moves_directory_and_removes_the_claude_link() {
     assert!(outcome.parked_path.join("SKILL.md").exists());
     assert_eq!(
         outcome.parked_path,
-        home.join(PARKED_ROOT_RELATIVE).join("gamma")
+        home.join(PARKED_ROOT_RELATIVE)
+            .join("universal")
+            .join("gamma")
     );
     assert!(std::fs::symlink_metadata(home.join(CLAUDE_ROOT_RELATIVE).join("gamma")).is_err());
 
@@ -407,7 +409,9 @@ fn direct_ops_call_leaves_the_disk_state_every_surface_shares() {
     // since none of them touch the filesystem themselves.
     assert_eq!(
         outcome.parked_path,
-        home.join(PARKED_ROOT_RELATIVE).join("gamma")
+        home.join(PARKED_ROOT_RELATIVE)
+            .join("universal")
+            .join("gamma")
     );
     assert!(!home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma").exists());
     assert!(std::fs::symlink_metadata(home.join(CLAUDE_ROOT_RELATIVE).join("gamma")).is_err());

@@ -442,6 +442,7 @@ mod tests {
             shared_via_whole_dir_link: false,
             spec_violations: Vec::new(),
             invocation: InvocationPolicy::Both,
+            parked_origin: None,
         }
     }
 

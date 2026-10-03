@@ -59,12 +59,14 @@ fn park_and_unpark_by_name_move_the_one_matching_copy() {
     let park = run(&home, &["park", "solo"]);
     assert_eq!(park.status.code(), Some(0), "{}", text(&park.stderr));
     assert!(!home.join(".agents/skills/solo").exists());
-    assert!(home.join(".agents/skills-parked/solo/SKILL.md").exists());
+    assert!(home
+        .join(".agents/skills-parked/universal/solo/SKILL.md")
+        .exists());
 
     let unpark = run(&home, &["unpark", "solo"]);
     assert_eq!(unpark.status.code(), Some(0), "{}", text(&unpark.stderr));
     assert!(home.join(".agents/skills/solo/SKILL.md").exists());
-    assert!(!home.join(".agents/skills-parked/solo").exists());
+    assert!(!home.join(".agents/skills-parked/universal/solo").exists());
 }
 
 /// Flow: `scan`, human output.
@@ -132,7 +134,9 @@ fn park_with_a_name_that_matches_two_copies_lists_them_and_asks_for_an_id() {
         .unwrap();
     let park = run(&home, &["park", "--id", home_id, "--project", project_arg]);
     assert_eq!(park.status.code(), Some(0), "{}", text(&park.stderr));
-    assert!(home.join(".agents/skills-parked/gamma/SKILL.md").exists());
+    assert!(home
+        .join(".agents/skills-parked/universal/gamma/SKILL.md")
+        .exists());
     assert!(project.join(".agents/skills/gamma").exists());
 }
 

@@ -1573,8 +1573,11 @@ impl TargetKind {
         use skill_studio_core::identity::{BackingRelationship, RootKind};
         match self {
             TargetKind::Park => {
-                deployment.root.kind == RootKind::Universal
-                    && deployment.backing == BackingRelationship::Canonical
+                matches!(
+                    deployment.root.kind,
+                    RootKind::Universal | RootKind::Harness(_)
+                ) && deployment.backing == BackingRelationship::Canonical
+                    && deployment.plugin.is_none()
             }
             TargetKind::Remove => {
                 deployment.root.kind == RootKind::Universal
@@ -1673,7 +1676,7 @@ fn run_remove(scope: &ScopeArgs, target: &TargetArgs, json: bool, time: bool) ->
     finish(&envelope, json, time, output::print_remove_outcome_table)
 }
 
-/// Moves a universal deployment to the parked root, via `ops::park`.
+/// Moves one real copy to the parked root, via `ops::park`.
 fn run_park(scope: &ScopeArgs, target: &TargetArgs, json: bool, time: bool) -> ExitCode {
     let rt = match build_runtime_write::<skill_studio_core::dto::ParkOutcome>(
         scope,

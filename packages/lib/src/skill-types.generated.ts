@@ -474,6 +474,11 @@ export interface Deployment {
    * field existed (fixtures, cached snapshots).
    */
   invocation: "both" | "user-only" | "model-only";
+  /**
+   * For a parked copy (`scope == "parked"`): the folder it was parked
+   * from, so Unpark can say where it returns to.
+   */
+  parked_origin?: ParkedOrigin | null;
 }
 /**
  * A plugin that shipped a skill, per the agent-plugins.org convention
@@ -506,6 +511,24 @@ export interface DisablingConfigFile {
    */
   agent: string;
   path: string;
+}
+/**
+ * Where a parked copy came from.
+ */
+export interface ParkedOrigin {
+  /**
+   * `"universal"` for the shared `.agents/skills` folder, or the agent id
+   * (`"codex"`) whose own skills folder held the copy.
+   */
+  kind: string;
+  /**
+   * `"global"` | `"project"`.
+   */
+  scope: string;
+  /**
+   * The project directory, for a project copy.
+   */
+  project_path?: string | null;
 }
 /**
  * Fork provenance shown on a forked skill's detail header - see
@@ -1306,6 +1329,22 @@ export interface ParkOutcome {
   parked_path: string;
 }
 /**
+ * Result of `park_check`.
+ */
+export interface ParkCheck {
+  /**
+   * True when the copy sits in a git work tree and git lists a file under
+   * it, so moving or removing it shows as deleted files in that repo.
+   * False when git is missing, the folder is not in a repo, or git does
+   * not track it (untracked or ignored).
+   */
+  git_tracked: boolean;
+  /**
+   * The project the copy belongs to, when it is a project copy.
+   */
+  project: string | null;
+}
+/**
  * Result of `unpark`.
  */
 export interface UnparkOutcome {
@@ -1318,7 +1357,7 @@ export interface UnparkOutcome {
    */
   deployment_id: string;
   /**
-   * Where the directory now lives, under the universal root.
+   * Where the directory now lives: the folder it was parked from.
    */
   restored_path: string;
 }

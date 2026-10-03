@@ -20,9 +20,10 @@ use tiktoken_rs::CoreBPE;
 use crate::dto::{
     CapabilitiesRequest, Completeness, DeploymentDto, Diagnosis, DriftState, EventDto,
     FrontmatterRepairPreview, HarnessesRequest, InstalledSkillDto, Inventory, Issue, IssueKind,
-    ListEventsRequest, NextAction, Observation, ParkOutcome, ParkRequest, PluginSourceDto,
-    RepairApplyMode, RepairApplyRequest, RepairOutcome, RepairPreviewRequest, RestoreOutcome,
-    RestoreRequest, ScanRequest, Severity, Timing, UnparkOutcome, UnparkRequest,
+    ListEventsRequest, NextAction, Observation, ParkCheck, ParkCheckRequest, ParkOutcome,
+    ParkRequest, PluginSourceDto, RepairApplyMode, RepairApplyRequest, RepairOutcome,
+    RepairPreviewRequest, RestoreOutcome, RestoreRequest, ScanRequest, Severity, Timing,
+    UnparkOutcome, UnparkRequest,
 };
 use crate::error::{CoreError, ErrorCode, ErrorEntry};
 use crate::events::EventFilter;
@@ -45,7 +46,7 @@ use crate::ops_install;
 use crate::ownership;
 use crate::ports::{
     acquire_shared, Clock, DirEntryFacts, ExclusiveGuard, FileKind, HistoryAccess, OpContext,
-    PlanStatus, Runtime, ScopeFs, ScopedReads,
+    PlanStatus, ProcessSpec, Runtime, ScopeFs, ScopedReads,
 };
 use crate::scope::{EffectiveScope, NormalizedScope};
 use crate::SCHEMA_VERSION;
@@ -934,6 +935,7 @@ fn scan_one_plugin_target(
                     in_git_repo: in_git_repo(sc.fs, &sc.rt.scope, &plugin_skill.skill_dir),
                     studio_disabled: false,
                     source_kind: SourceKind::Plugin,
+                    parked_origin: None,
                 };
                 insert_deployment(
                     &mut accum.skills,
@@ -1262,6 +1264,7 @@ fn process_entries(
             content_fingerprint: content_fingerprint.as_ref(),
             disabled: studio_disabled,
             in_git_repo,
+            parked_origin: cx.target.parked_origin.as_ref(),
         });
         let mutability = if owner_kind.is_mutable() {
             DeploymentMutability::Mutable
@@ -1325,6 +1328,7 @@ fn process_entries(
             in_git_repo,
             studio_disabled,
             source_kind,
+            parked_origin: cx.target.parked_origin.clone(),
         };
 
         insert_deployment(&mut accum.skills, &entry.name, description, deployment);
@@ -1521,6 +1525,8 @@ struct ScanTarget {
     kind: RootKind,
     path: PathBuf,
     harness: Option<AgentId>,
+    /// For a parked slot directory, the root its copies came from.
+    parked_origin: Option<RootRef>,
 }
 
 /// Every harness's own skills directory in `scope`, resolved to a concrete
@@ -1570,6 +1576,7 @@ fn scan_targets(rt: &Runtime) -> Vec<ScanTarget> {
                         kind: kind.clone(),
                         path,
                         harness: harness.clone(),
+                        parked_origin: None,
                     });
                 }
             };
@@ -1592,12 +1599,79 @@ fn scan_targets(rt: &Runtime) -> Vec<ScanTarget> {
             }
         }
     }
-    targets.push(ScanTarget {
+    targets.extend(parked_scan_targets(rt));
+    targets
+}
+
+/// One target per parked slot directory (see [`crate::park_layout`]), each
+/// carrying the origin its copies return to, plus the old flat root, whose
+/// copies all came from the global Universal root.
+fn parked_scan_targets(rt: &Runtime) -> Vec<ScanTarget> {
+    let fs = rt.ports.fs.as_ref();
+    let parked_root = rt.scope.home.lexical.join(PARKED_ROOT_RELATIVE);
+    let target = |path: PathBuf, origin: RootRef| ScanTarget {
         scope: RootScope::Global,
         kind: RootKind::Parked,
-        path: rt.scope.home.lexical.join(PARKED_ROOT_RELATIVE),
+        path,
         harness: None,
-    });
+        parked_origin: Some(origin),
+    };
+    // Probes the fixed slot names instead of listing `dir`: the legacy flat
+    // scan already lists the parked root, and a folder is listed once.
+    let slot_targets = |dir: &Path, scope: &RootScope, out: &mut Vec<ScanTarget>| {
+        let slots = std::iter::once(RootKind::Universal).chain(
+            rt.ports
+                .catalog
+                .facts
+                .iter()
+                .map(|facts| RootKind::Harness(facts.id.clone())),
+        );
+        for kind in slots {
+            let Some(slot) = crate::park_layout::slot_for(&kind) else {
+                continue;
+            };
+            let path = dir.join(slot);
+            if fs.symlink_metadata(&path).is_err() {
+                continue;
+            }
+            if let Ok(origin) = RootRef::new(scope.clone(), kind) {
+                out.push(target(path, origin));
+            }
+        }
+    };
+
+    let mut targets = vec![target(
+        parked_root.clone(),
+        RootRef {
+            scope: RootScope::Global,
+            kind: RootKind::Universal,
+        },
+    )];
+    slot_targets(&parked_root, &RootScope::Global, &mut targets);
+    let projects_dir = parked_root.join(crate::park_layout::PARKED_PROJECTS_DIR);
+    let project_entries = if fs.symlink_metadata(&projects_dir).is_ok() {
+        fs.read_dir(&projects_dir).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    for entry in project_entries {
+        let key_dir = projects_dir.join(&entry.name);
+        let marker = key_dir.join(crate::park_layout::PROJECT_ORIGIN_MARKER);
+        let Some(project) = fs
+            .read_capped(&marker, 4096)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(|text| PathBuf::from(text.trim()))
+            .filter(|path| path.is_absolute())
+        else {
+            continue;
+        };
+        slot_targets(
+            &key_dir,
+            &RootScope::Project(ProjectRef(project)),
+            &mut targets,
+        );
+    }
     targets
 }
 
@@ -2055,6 +2129,9 @@ struct OwnerClassifyContext<'a> {
     /// directory (`studio_disabled`).
     disabled: bool,
     in_git_repo: bool,
+    /// For a parked copy, the root it came from. Only a copy from the
+    /// global Universal root answers to the Universal ledgers.
+    parked_origin: Option<&'a RootRef>,
 }
 
 /// Classifies which ledger owns a deployment's lifecycle, per the precedence
@@ -2133,7 +2210,13 @@ fn classify_owner(cx: &OwnerClassifyContext) -> (LifecycleOwnerKind, Option<Owne
         }
     }
 
-    let root_is_universal = matches!(cx.kind, RootKind::Universal | RootKind::Parked);
+    let root_is_universal = match cx.kind {
+        RootKind::Universal => true,
+        RootKind::Parked => cx
+            .parked_origin
+            .is_none_or(|o| o.kind == RootKind::Universal && o.scope == RootScope::Global),
+        _ => false,
+    };
     if !root_is_universal {
         return if cx.in_git_repo {
             (LifecycleOwnerKind::InRepo, None)
@@ -4896,13 +4979,16 @@ pub use crate::ops_remove::{remove, sweep_quarantine};
 pub use crate::ops_split::split;
 pub use crate::ops_update::{update, update_all};
 
-/// Moves a universal deployment's directory into the parked root.
+/// Moves one real copy's directory into the parked root, in the slot for
+/// where it came from ([`crate::park_layout`]).
 ///
-/// Preconditions: exclusive lease; the deployment must resolve exactly once,
-/// live at the universal root ([`RootKind::Universal`]), and hold its own
-/// bytes ([`BackingRelationship::Canonical`]). Undo is not implemented by
-/// this build: the event's `inverse` is `None`, and `restore_event` refuses
-/// it ([`ErrorCode::Unsupported`]); use `unpark` instead.
+/// Preconditions: exclusive lease; the deployment must resolve exactly once
+/// and hold its own bytes: the Universal folder or an agent's own folder, at
+/// global or project scope. A plugin copy, a link, and a copy that is already
+/// parked are refused ([`refuse_unparkable`]), as is a copy whose origin
+/// already has a parked copy of this skill. Undo is not implemented by this
+/// build: the event's `inverse` is `None`, and `restore_event` refuses it
+/// ([`ErrorCode::Unsupported`]); use `unpark` instead.
 ///
 /// Sequence, matching `docs/action-map/primitives-and-call-stack.md`'s Park
 /// row: the journal row is recorded before any filesystem step, every
@@ -4922,20 +5008,7 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
     let mut session = session?;
 
     let deployment = session.resolve_exact(&req.deployment_id)?.clone();
-    if deployment.root.kind != RootKind::Universal {
-        return Err(CoreError::new(
-            ErrorCode::Unsupported,
-            "only a universal folder copy can be parked",
-        )
-        .at(&deployment.path));
-    }
-    if deployment.backing != BackingRelationship::Canonical {
-        return Err(CoreError::new(
-            ErrorCode::Unsupported,
-            "only the copy holding the bytes can be parked, not a link",
-        )
-        .at(&deployment.path));
-    }
+    refuse_unparkable(&deployment)?;
     let skill = resolve_skill(&session.fresh, &deployment.id)?.clone();
     let fs = rt.ports.fs.as_ref();
     let links: Vec<PathBuf> = find_all_links(&skill, &deployment.path, fs)
@@ -4962,16 +5035,30 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
 
     let step_start = clock.monotonic();
-    let parked_dir = rt
-        .scope
-        .home
-        .lexical
-        .join(PARKED_ROOT_RELATIVE)
-        .join(&skill.name.0);
-    if fs.symlink_metadata(&parked_dir).is_ok() {
+    let origin = deployment.root.clone();
+    let parked_root = rt.scope.home.lexical.join(PARKED_ROOT_RELATIVE);
+    let project_key = match &origin.scope {
+        RootScope::Global => None,
+        RootScope::Project(project) => Some(crate::park_layout::project_key(
+            &fs.canonicalize(&project.0)
+                .unwrap_or_else(|_| project.0.clone()),
+        )),
+    };
+    let slot_dir =
+        crate::park_layout::parked_slot_dir(&parked_root, &origin, project_key.as_deref())
+            .ok_or_else(|| {
+                CoreError::new(ErrorCode::Unsupported, "this folder cannot be parked")
+                    .at(&deployment.path)
+            })?;
+    let parked_dir = slot_dir.join(&skill.name.0);
+    let legacy_flat_dir = parked_root.join(&skill.name.0);
+    let legacy_flat_taken = origin.kind == RootKind::Universal
+        && origin.scope == RootScope::Global
+        && fs.symlink_metadata(&legacy_flat_dir).is_ok();
+    if fs.symlink_metadata(&parked_dir).is_ok() || legacy_flat_taken {
         return Err(CoreError::new(
             ErrorCode::InvalidRequest,
-            "a parked copy already exists for this skill",
+            "a parked copy from this folder already exists for this skill",
         )
         .at(&parked_dir));
     }
@@ -4992,6 +5079,7 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
             "deployment_id": deployment.id.as_str(),
             "from": deployment.path,
             "to": parked_dir,
+            "origin": origin,
             "links": links,
             "link_targets": link_targets,
         }),
@@ -5008,9 +5096,20 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
                 .map_err(|e| CoreError::io(link, e))?;
         }
         let parent = parked_dir.parent().unwrap_or(&parked_dir).to_path_buf();
-        let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
-        fs.create_dir_all(&session.guard, &scoped_parent)
-            .map_err(|e| CoreError::io(&parent, e))?;
+        ensure_dir_all(rt, &session, fs, &parent)?;
+        if let (RootScope::Project(project), Some(key)) = (&origin.scope, &project_key) {
+            let marker = parked_root
+                .join(crate::park_layout::PARKED_PROJECTS_DIR)
+                .join(key)
+                .join(crate::park_layout::PROJECT_ORIGIN_MARKER);
+            let scoped_marker = crate::ports::confine(&rt.scope, fs, &marker)?;
+            fs.write_atomic(
+                &session.guard,
+                &scoped_marker,
+                project.0.to_string_lossy().as_bytes(),
+            )
+            .map_err(|e| CoreError::io(&marker, e))?;
+        }
         let scoped_from = crate::ports::confine(&rt.scope, fs, &deployment.path)?;
         let scoped_to = crate::ports::confine(&rt.scope, fs, &parked_dir)?;
         fs.rename(&session.guard, &scoped_from, &scoped_to)
@@ -5054,12 +5153,15 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
     })
 }
 
-/// Moves a parked deployment's directory back to the universal root and
-/// recreates every per-skill link `park` removed.
+/// Moves a parked deployment's directory back to the place it was parked
+/// from and recreates every per-skill link `park` removed.
 ///
 /// Preconditions: exclusive lease; the deployment must resolve exactly once,
 /// live at the parked root ([`RootKind::Parked`]); nothing may already
-/// occupy the universal path this skill would return to.
+/// occupy the path this skill would return to. The place is the `from` the
+/// `park` row recorded; a parked copy with no row returns to the origin its
+/// parked folder names (an old flat copy returns to the global Universal
+/// root).
 ///
 /// This reverses the most recent unreverted `park` event recorded for the
 /// skill (matched by `payload.to` naming this deployment's path), per
@@ -5125,22 +5227,32 @@ fn unpark_body(
     let begin_step = crate::timing::step(clock, "begin_session", step_start);
 
     let step_start = clock.monotonic();
-    let restored_dir = rt
-        .scope
-        .home
-        .lexical
-        .join(UNIVERSAL_ROOT_RELATIVE)
-        .join(&skill.name.0);
     let fs = rt.ports.fs.as_ref();
+    let restored_dir = recorded_origin_dir(park_row.as_ref(), &skill.name)
+        .or_else(|| {
+            let origin = deployment.parked_origin.as_ref()?;
+            Some(origin_skills_dir(rt, origin)?.join(&skill.name.0))
+        })
+        .ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::Unsupported,
+                "this parked copy does not say where it came from",
+            )
+            .at(&deployment.path)
+        })?;
     if fs.symlink_metadata(&restored_dir).is_ok() {
         return Err(CoreError::new(
             ErrorCode::InvalidRequest,
-            "a universal folder copy already exists for this skill",
+            "a copy already exists where this skill was parked from",
         )
         .at(&restored_dir));
     }
-    let scope_label = scope_label(&deployment.root.scope).to_string();
-    let project_path = match &deployment.root.scope {
+    let origin_scope = deployment
+        .parked_origin
+        .as_ref()
+        .map_or(&deployment.root.scope, |origin| &origin.scope);
+    let scope_label = scope_label(origin_scope).to_string();
+    let project_path = match origin_scope {
         RootScope::Global => None,
         RootScope::Project(project) => Some(project.0.clone()),
     };
@@ -5203,6 +5315,141 @@ fn unpark_body(
         deployment_id: deployment.id,
         restored_path: restored_dir,
     })
+}
+
+/// The folder a `park` row recorded as the copy's origin, when it still names
+/// this skill. `unpark` restores here, not to a place recomputed from the
+/// parked path.
+fn recorded_origin_dir(
+    park_row: Option<&crate::events::EventRecord>,
+    name: &SkillName,
+) -> Option<PathBuf> {
+    let from = PathBuf::from(park_row?.payload.get("from")?.as_str()?);
+    (from.is_absolute() && from.file_name().is_some_and(|n| n == name.0.as_str())).then_some(from)
+}
+
+/// The skills folder `origin` names: the Universal root or an agent's own
+/// root, at global or project scope.
+fn origin_skills_dir(rt: &Runtime, origin: &RootRef) -> Option<PathBuf> {
+    let (level, universal_base) = match &origin.scope {
+        RootScope::Global => (ScopeLevel::Global, rt.scope.home.lexical.clone()),
+        RootScope::Project(project) => (ScopeLevel::Project, project.0.clone()),
+    };
+    let RootKind::Harness(id) = &origin.kind else {
+        return (origin.kind == RootKind::Universal)
+            .then(|| universal_base.join(UNIVERSAL_ROOT_RELATIVE));
+    };
+    let root_spec = rt
+        .ports
+        .catalog
+        .facts
+        .iter()
+        .filter(|facts| &facts.id == id)
+        .flat_map(|facts| &facts.roots)
+        .find(|spec| spec.role == RootRole::Own && spec.level == level)?;
+    Some(match &origin.scope {
+        RootScope::Global => rt
+            .scope
+            .global_root_path(Path::new(&root_spec.relative_path)),
+        RootScope::Project(project) => project.0.join(&root_spec.relative_path),
+    })
+}
+
+/// Refuses a copy `park` cannot move, with the reason a person can act on.
+fn refuse_unparkable(deployment: &DeploymentDto) -> Result<(), CoreError> {
+    let refuse =
+        |message: &str| Err(CoreError::new(ErrorCode::Unsupported, message).at(&deployment.path));
+    if deployment.plugin.is_some() || matches!(deployment.root.kind, RootKind::PluginCache(_)) {
+        return refuse("a plugin copy cannot be parked; turn it off with /plugin in the agent");
+    }
+    if deployment.root.kind == RootKind::Parked {
+        return refuse("this copy is already parked");
+    }
+    let is_agent_symlink = deployment.is_symlink && deployment.root.kind != RootKind::Universal;
+    if deployment.backing == BackingRelationship::LinkedTo || is_agent_symlink {
+        return refuse("a link cannot be parked; park the real folder it points to instead");
+    }
+    if crate::park_layout::slot_for(&deployment.root.kind).is_none() {
+        return refuse("only the Universal folder or an agent's own skills folder can be parked");
+    }
+    Ok(())
+}
+
+/// What to know before parking or removing one copy: whether git tracks it.
+///
+/// Read-only and never blocks a park or a remove; the caller uses the answer
+/// to warn that the move shows as deleted files in the project's repository.
+/// A host with no process spawner, no `git` binary, or a folder outside a
+/// repository reports `git_tracked: false`.
+pub fn park_check(
+    rt: &Runtime,
+    ctx: &OpContext,
+    req: &ParkCheckRequest,
+) -> Result<ParkCheck, CoreError> {
+    ctx.checkpoint()?;
+    let skills: Vec<SkillName> = req.deployment_id.skill_name().into_iter().collect();
+    let inventory = scan(
+        rt,
+        ctx,
+        &ScanRequest {
+            skills,
+            timings: false,
+        },
+    )?;
+    let skill = resolve_skill(&inventory, &req.deployment_id)?;
+    let deployment = skill
+        .deployments
+        .iter()
+        .find(|d| d.id == req.deployment_id)
+        .ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::AmbiguousTarget,
+                format!("no copy matches {}", req.deployment_id.as_str()),
+            )
+        })?;
+    let scope = deployment
+        .parked_origin
+        .as_ref()
+        .map_or(&deployment.root.scope, |origin| &origin.scope);
+    let project = match scope {
+        RootScope::Global => None,
+        RootScope::Project(project) => Some(project.0.clone()),
+    };
+    let git_tracked =
+        deployment.parked_origin.is_none() && git_tracks_folder(rt, ctx, &deployment.path);
+    Ok(ParkCheck {
+        git_tracked,
+        project,
+    })
+}
+
+/// True when `folder` is in a git work tree and `git ls-files` lists a file
+/// under it (or the folder itself, for a tracked symlink).
+fn git_tracks_folder(rt: &Runtime, ctx: &OpContext, folder: &Path) -> bool {
+    let Some(spawner) = rt.ports.spawner.as_ref() else {
+        return false;
+    };
+    let (Some(parent), Some(name)) = (folder.parent(), folder.file_name()) else {
+        return false;
+    };
+    let spec = ProcessSpec {
+        program: "git".to_string(),
+        args: vec![
+            "--literal-pathspecs".to_string(),
+            "ls-files".to_string(),
+            "--".to_string(),
+            name.to_string_lossy().into_owned(),
+        ],
+        cwd: Some(parent.to_path_buf()),
+        env: vec![(
+            "HOME".to_string(),
+            rt.scope.home.lexical.display().to_string(),
+        )],
+        timeout_ms: 10_000,
+    };
+    spawner
+        .run(&spec, ctx.cancel.as_ref())
+        .is_ok_and(|output| output.status == Some(0) && !output.stdout.trim().is_empty())
 }
 
 /// The link paths a `park` row removed. Rows written before `links` existed
@@ -5684,6 +5931,7 @@ mod tests {
             in_git_repo: false,
             studio_disabled: false,
             source_kind,
+            parked_origin: None,
         }
     }
 

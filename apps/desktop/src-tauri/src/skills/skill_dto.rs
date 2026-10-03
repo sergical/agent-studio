@@ -243,6 +243,23 @@ pub struct Deployment {
     /// field existed (fixtures, cached snapshots).
     #[serde(default = "default_invocation")]
     pub invocation: InvocationPolicy,
+    /// For a parked copy (`scope == "parked"`): the folder it was parked
+    /// from, so Unpark can say where it returns to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_origin: Option<ParkedOrigin>,
+}
+
+/// Where a parked copy came from.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ParkedOrigin {
+    /// `"universal"` for the shared `.agents/skills` folder, or the agent id
+    /// (`"codex"`) whose own skills folder held the copy.
+    pub kind: String,
+    /// `"global"` | `"project"`.
+    pub scope: String,
+    /// The project directory, for a project copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
 }
 
 impl Default for Deployment {
@@ -273,6 +290,7 @@ impl Default for Deployment {
             shared_via_whole_dir_link: false,
             spec_violations: Vec::new(),
             invocation: default_invocation(),
+            parked_origin: None,
         }
     }
 }

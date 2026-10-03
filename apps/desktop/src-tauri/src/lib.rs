@@ -423,6 +423,7 @@ pub fn run() {
             skills::skill_local_edits::skill_local_edits,
             skills::skill_park::park_skill,
             skills::skill_park::unpark_skill,
+            skills::skill_park::park_check,
             skills::skill_park::park_skills,
             skills::skill_park::unpark_skills,
             skills::skill_split::split_skill,

@@ -86,6 +86,7 @@ export type {
   DoctorViolation,
   BulkTargetResult,
   LocalEditsDto,
+  ParkCheck,
   InvocationTarget,
 } from "./skill-types.generated";
 
