@@ -75,7 +75,7 @@ impl AgentId {
     /// no-separator variants of every first-class harness's wire name,
     /// case-insensitively - `opencode`, `open_code`, and `Open-Code` all
     /// resolve to the same [`Self::OPEN_CODE`]. Every caller that turns a
-    /// harness spelling into an `AgentId` for [`crate::dto::SetHarnessEnabledRequest`]
+    /// harness spelling into an `AgentId` for a request
     /// must go through this, not [`Self::parse`], so `open-code` and
     /// `opencode` (the CLI binary name) never diverge again.
     pub fn parse_harness(raw: &str) -> Result<Self, CoreError> {

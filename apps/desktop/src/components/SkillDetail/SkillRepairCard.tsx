@@ -106,7 +106,6 @@ export function SkillRepairCard({ skill, deployment }: SkillRepairCardProps) {
           scope,
           destination: "universal",
           agents: reinstallAgent === "claude-code" ? ["claude-code"] : [],
-          disabled_harnesses: [],
           link_mode: "link",
           project_path: (scope === "project" ? deployment.project_path : undefined) ?? null,
         });

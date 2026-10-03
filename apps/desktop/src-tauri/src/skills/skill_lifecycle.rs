@@ -437,6 +437,7 @@ mod tests {
             disabled: false,
             disabled_by: None,
             disabled_readers: Vec::new(),
+            disabling_config_files: Vec::new(),
             codex_implicit_invocation: None,
             shared_via_whole_dir_link: false,
             spec_violations: Vec::new(),

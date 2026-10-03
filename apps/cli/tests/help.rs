@@ -31,7 +31,6 @@ const USER_COMMANDS: &[&str] = &[
 
 const HIDDEN_COMMANDS: &[&str] = &[
     "doctor",
-    "set-harness-enabled",
     "split",
     "capabilities",
     "harnesses",

@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # SKILL.md editing
 
 This area reads and writes the SKILL.md file itself: its body, its frontmatter, and the Codex invocation sidecar that mirrors one frontmatter key.

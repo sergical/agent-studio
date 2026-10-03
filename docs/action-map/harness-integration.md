@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Harness integration
 
 Skill Studio meets each harness by discovering its skill folders, classifying who owns each deployment, and, for a headless run, driving that harness's own CLI.

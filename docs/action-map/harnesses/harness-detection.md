@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Harness detection
 
 How the app should know that a harness is installed, which version, how it was installed, and whether it has ever run. Researched on 2026-09-16 against vendor docs and this machine. Folder presence alone is not detection; it is the weakest of four signals and the app today uses only that one (see each harness file).

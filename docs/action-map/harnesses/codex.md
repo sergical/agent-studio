@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Codex
 
 What the code knows about OpenAI Codex CLI, read on 2026-09-17. Each fact says whether it is verified against Codex documentation or source, or assumed from behaviour.

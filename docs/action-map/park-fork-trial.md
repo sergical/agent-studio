@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Park, fork, and trial
 
 > **The trial feature was removed in #285.** Installing a skill no longer offers a

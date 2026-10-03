@@ -40,9 +40,8 @@ use serde::Deserialize;
 use skill_studio_core::dto::{
     CapabilitiesRequest, DiagnoseConflictRequest, DoctorRequest, FixSkillRequest, HarnessesRequest,
     InstallPreferencesRequest, InstallRequest, ListEventsRequest, ParkRequest, RemoveRequest,
-    RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest,
-    SetHarnessEnabledRequest, SweepQuarantineRequest, UnparkRequest, UpdateAllRequest,
-    UpdateRequest,
+    RepairApplyRequest, RepairPreviewRequest, RestoreRequest, ScanRequest, SweepQuarantineRequest,
+    UnparkRequest, UpdateAllRequest, UpdateRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::CorrelationId;
@@ -610,21 +609,6 @@ impl SkillStudioServer {
     ) -> CallToolResult {
         run_op(Operation::Unpark, true, &context, |rt, ctx| {
             ops::unpark(rt, ctx, &req)
-        })
-        .await
-    }
-
-    #[tool(
-        description = "Turn a skill off or on for one agent only: claude-code, codex or open-code. Other agents have no switch; use park to turn a skill off for every agent. Undo with restore_event and the event_id from the result.",
-        annotations(read_only_hint = false, destructive_hint = false)
-    )]
-    async fn set_harness_enabled(
-        &self,
-        Parameters(req): Parameters<SetHarnessEnabledRequest>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        run_op(Operation::SetHarnessEnabled, true, &context, |rt, ctx| {
-            ops::set_harness_enabled(rt, ctx, &req)
         })
         .await
     }

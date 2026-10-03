@@ -78,19 +78,21 @@ If more than one copy has the same name, the CLI lists each copy with its path a
 npx skill-studio park --id <id>
 ```
 
-## Turn a skill off for one agent
+## Turn a skill off
+
+Turning a skill off means parking it. This turns it off for all agents:
 
 ```sh
-npx skill-studio disable my-skill --agent codex
+npx skill-studio disable my-skill
 ```
 
 To turn it on again:
 
 ```sh
-npx skill-studio enable my-skill --agent codex
+npx skill-studio enable my-skill
 ```
 
-The agent can be `claude-code`, `codex` or `opencode`. For other agents, park the skill.
+`disable` and `enable` are the same as `park` and `unpark`. Turning a skill off for one agent only is coming.
 
 ## Undo
 

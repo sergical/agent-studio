@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Plugins and the official specs
 
 How each harness packages skills into plugins, read from the vendor pages on 2026-09-17, and the two cross-harness specs the app validates against. Every fact carries its URL in sources.md. "Open" means the page does not say.

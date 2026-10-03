@@ -5,15 +5,13 @@
 // menu. Status never lives in the name or the chip - see status-spec.md §1.
 // ============================================================================
 
-import { Link2, Loader2, Puzzle } from "lucide-react";
-import { useOptimisticAction } from "../../hooks/useOptimisticAction";
+import { Link2, Puzzle } from "lucide-react";
 import { HarnessIcon } from "../ui/HarnessIcon";
 import { StatusIcon } from "../ui/StatusIcon";
 import { SwitchControl } from "../ui/SwitchControl";
 import { TooltipControl } from "../ui/TooltipControl";
 import { homeRelativePath } from "@skill-studio/lib";
 import { SkillLocationMenu } from "./SkillLocationMenu";
-import { CLAUDE_CODE_SWITCH_NOTE } from "./skill-claude-switch-note";
 import { rowMenu, tipLines } from "./skill-location-status";
 import type { LocationAction, LocationRow } from "./skill-location-status";
 
@@ -29,77 +27,19 @@ function labelTipFor(row: LocationRow) {
 }
 
 /**
- * The switch slot: a live switch where the row has one of its own, a
- * disabled-but-explained switch for an always-on reader or a
- * plugin-disabled-by-Claude row, or an empty placeholder to keep columns
- * aligned.
+ * The switch slot: only a disabled, explained switch (an always-on reader, or a
+ * plugin Claude Code disabled), or an empty placeholder to keep columns aligned.
+ * An agent's own off setting is shown, not switched here.
  */
-function LocationRowSwitch({
-  row,
-  onAction,
-}: {
-  row: LocationRow;
-  onAction: (action: LocationAction) => Promise<boolean>;
-}) {
-  // The switch is never disabled while pending: a disabled control loses keyboard focus.
-  const optimistic = useOptimisticAction(row.switchOn);
-
-  if (row.hasSwitch) {
-    const switchControl = (
-      <SwitchControl
-        checked={optimistic.value}
-        onCheckedChange={(next) =>
-          void optimistic.run(
-            next,
-            () =>
-              onAction(
-                row.kind === "reader"
-                  ? {
-                      kind: "set-reader-enabled",
-                      target: row.lifecycleTarget,
-                      agent: row.harness,
-                      enabled: next,
-                    }
-                  : { kind: "set-enabled", deployment: row.deployment!, enabled: next },
-              ),
-            next ? "Couldn't enable" : "Couldn't disable",
-          )
-        }
-        ariaLabel={`Enabled for ${row.harnessLabel}`}
-      />
-    );
-    return (
-      <span className="relative flex items-center">
-        {/* Out of flow, so rows with and without a live switch keep their columns aligned. */}
-        <span className="absolute right-full mr-1.5 flex size-3 items-center" aria-live="polite">
-          {optimistic.pending && (
-            <Loader2
-              size={12}
-              className="animate-spin text-text-tertiary motion-reduce:animate-none"
-              aria-label="Saving"
-            />
-          )}
-        </span>
-        {row.harness === "claude-code" ? (
-          <TooltipControl content={CLAUDE_CODE_SWITCH_NOTE}>
-            <span className="inline-flex">{switchControl}</span>
-          </TooltipControl>
-        ) : (
-          switchControl
-        )}
-      </span>
-    );
-  }
-
+function LocationRowSwitch({ row }: { row: LocationRow }) {
   const isAlwaysOnReader = row.kind === "reader";
   if (isAlwaysOnReader) {
     return (
       <TooltipControl
         content={
           row.switchOn
-            ? (row.switchDisabledReason ??
-              `Always on because ${row.harnessLabel} has no per-skill switch.`)
-            : `Off because this skill is disabled in the Universal folder.`
+            ? `Always on because ${row.harnessLabel} has no per-skill switch.`
+            : row.caption || `Off because this skill is disabled in the Universal folder.`
         }
       >
         <span className="inline-flex">
@@ -112,21 +52,6 @@ function LocationRowSwitch({
                 ? `Always enabled for ${row.harnessLabel}`
                 : `Disabled for ${row.harnessLabel} while this skill is off`
             }
-          />
-        </span>
-      </TooltipControl>
-    );
-  }
-
-  if (row.switchDisabledReason) {
-    return (
-      <TooltipControl content={row.switchDisabledReason}>
-        <span className="inline-flex">
-          <SwitchControl
-            checked={row.switchOn}
-            disabled
-            onCheckedChange={() => undefined}
-            ariaLabel={row.switchDisabledReason}
           />
         </span>
       </TooltipControl>
@@ -199,7 +124,7 @@ export function SkillLocationRow({
         <span className="truncate text-caption text-text-tertiary">{row.caption}</span>
       </span>
       <span className="flex shrink-0 items-center gap-1">
-        <LocationRowSwitch row={row} onAction={onAction} />
+        <LocationRowSwitch row={row} />
         <SkillLocationMenu
           entries={menu.entries}
           danger={menu.danger}

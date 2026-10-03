@@ -438,6 +438,14 @@ export interface Deployment {
    */
   disabled_readers?: string[];
   /**
+   * The agent config files that hide this skill, with the path Skill
+   * Studio actually read (honours `CODEX_HOME`, `XDG_CONFIG_HOME`). One
+   * entry per hiding agent: this deployment's own agent, or each reader
+   * listed in `disabled_readers`. The files are global, so a project row
+   * carries the global path. Empty when no setting hides the skill.
+   */
+  disabling_config_files?: DisablingConfigFile[];
+  /**
    * Codex's own `agents/openai.yaml` `policy.allow_implicit_invocation`
    * value, read straight off disk - note-only, doesn't affect
    * `InstalledSkill.invocation` (that's driven by SKILL.md frontmatter).
@@ -487,6 +495,17 @@ export interface PluginInfo {
    * `"<plugin>@<marketplace>"`, the id the harness's plugin CLI expects.
    */
   id: string;
+}
+/**
+ * One agent's config file that hides a skill. Skill Studio reads it and
+ * never writes it.
+ */
+export interface DisablingConfigFile {
+  /**
+   * Agent id as in `AgentId`: `"codex"`, `"open-code"` or `"claude-code"`.
+   */
+  agent: string;
+  path: string;
 }
 /**
  * Fork provenance shown on a forked skill's detail header - see
@@ -728,14 +747,6 @@ export interface InstallResult {
   command: string | null;
 }
 /**
- * Exact deployment plus the harness whose visibility will change. Universal
- * deployments are valid for readers that discover that scope directly.
- */
-export interface HarnessVisibilityTarget {
-  deployment_id: string;
-  reader_agent: AgentId;
-}
-/**
  * `add_skill`'s request - see `AddSkillSheet`.
  */
 export interface AddSkillRequest {
@@ -743,12 +754,6 @@ export interface AddSkillRequest {
   method: AddMethod;
   destination: SkillDestination;
   agents: AgentId[];
-  /**
-   * Harnesses to switch off for this skill right after a successful
-   * install: readers of the Universal folder the install itself cannot
-   * avoid reaching. Unused for Per harness Copy.
-   */
-  disabled_harnesses: AgentId[];
   scope: InstallScope;
   project_path: string | null;
   /**
@@ -783,12 +788,6 @@ export interface AddSkillsRequest {
   method: AddMethod;
   destination: SkillDestination;
   agents: AgentId[];
-  /**
-   * Harnesses to switch off for this skill right after a successful
-   * install: readers of the Universal folder the install itself cannot
-   * avoid reaching. Unused for Per harness Copy.
-   */
-  disabled_harnesses: AgentId[];
   scope: InstallScope;
   project_path: string | null;
   /**
@@ -823,11 +822,9 @@ export interface AddSkillResult {
   command: string;
   deployments_created: string[];
   /**
-   * Set when the install itself succeeded but a follow-up step (turning
-   * the skill off for a `disabled_harnesses` entry) failed - the skill is
-   * on disk and usable, it just isn't disabled where it was asked to be.
-   * The sheet shows this as a warning toast rather than treating the
-   * whole request as failed.
+   * Set when the install itself succeeded but a link or copy step had a
+   * problem - the skill is on disk and usable. The sheet shows this as a
+   * warning toast rather than treating the whole request as failed.
    */
   warning: string | null;
 }

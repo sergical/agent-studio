@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Install
 
 This area adds a skill to disk, through the skills.sh CLI, the dotagents CLI, or a plain copy.

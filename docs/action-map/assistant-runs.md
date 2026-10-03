@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Skill assistant runs
 
 Deferred on 2026-09-17: agent runs are out of the first release scope (scope-decision in plan.md). The `ops` functions and their tests stay so the CLI and MCP can still drive them; nothing in user-stories.md depends on this file.

@@ -1161,7 +1161,6 @@ function deriveMethodAndVisibility(
   universalChoice: boolean,
   keptHarnesses: string[],
   defaults: AddMethodDefaults | null,
-  scope: InstallScope,
 ) {
   const parsed = parseSkillSource(source);
   const methods = availableAddSkillMethods(parsed, defaults);
@@ -1194,13 +1193,10 @@ function deriveMethodAndVisibility(
     offeredHarnesses,
     dotagentsOnShared ? null : pickedHarnesses,
     claudeReadsShared,
-    scope,
     universal,
   );
   const destination = installDestinationFields({
-    offered: offeredHarnesses,
     chosen: chosenHarnesses,
-    scope,
     // A pack has its own request; only its agents come from here.
     method: method === "pack" ? "copy" : method,
     universal,
@@ -1355,7 +1351,6 @@ export function AddSkillSheet() {
     universalChoice,
     keptHarnesses,
     defaults,
-    scope,
   );
 
   // A plain git URL has no repo listing to name itself from - fold the

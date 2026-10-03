@@ -358,7 +358,7 @@ Enabled in `apps/desktop/tsconfig.json`:
 
 ## Reference docs
 
-- `docs/agent-skill-conventions.md` — agentskills.io spec rules, per-agent discovery paths, invocation control (explicit vs model-invocable), native disable mechanisms, and the local data sources Skill Studio reads. Check it before researching agent behavior again.
+- `docs/agent-skill-conventions.md` — agentskills.io spec rules, per-agent discovery paths, invocation control (explicit vs model-invocable), the agent settings that hide a skill (read only; Park is the only off), and the local data sources Skill Studio reads. Check it before researching agent behavior again.
 
 ## Skills.sh Integration
 

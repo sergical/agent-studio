@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Release readiness
 
 This file lists what stands between the current checkout and a version people can download, run, and keep updated. Read on 2026-09-16 from the repo and from the Cloudflare account through the executor, read only.

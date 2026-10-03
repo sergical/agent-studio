@@ -427,7 +427,6 @@ pub fn run() {
             skills::skill_park::unpark_skills,
             skills::skill_split::split_skill,
             skills::skill_split::split_skill_targets,
-            skills::skill_harness_disable::set_harness_enabled,
             skills::skill_harness_disable::restore_moved_deployment,
             skills::skill_invocation::set_skill_invocation,
             skills::skill_invocation::set_skills_invocation,

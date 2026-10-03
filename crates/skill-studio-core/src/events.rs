@@ -32,9 +32,9 @@ pub enum EventKind {
     Park,
     /// Parked skill moved back.
     Unpark,
-    /// Native harness disable written.
+    /// Native harness disable written (older builds; kept so old journals load).
     HarnessDisable,
-    /// Native harness disable cleared.
+    /// Native harness disable cleared (older builds; kept so old journals load).
     HarnessEnable,
     /// Folder moved into `.skill-studio-disabled`.
     MoveAsideDisable,
@@ -257,6 +257,12 @@ impl EventRecord {
             self.kind(),
         ) {
             (Some(by), _, _, _) => RestoreCapability::Reverted { by: by.clone() },
+            // Old builds wrote these to turn a skill off in an agent's own
+            // config. Restoring one would put a whole config file back from
+            // a backup and drop every edit the user made since.
+            (None, _, _, Some(EventKind::HarnessDisable | EventKind::HarnessEnable)) => {
+                RestoreCapability::NoInverse
+            }
             (None, false, _, _) | (None, true, None, _) => RestoreCapability::NoInverse,
             (None, true, Some(_), None) => RestoreCapability::UnknownKind,
             (None, true, Some(_), Some(_)) => RestoreCapability::Yes,
@@ -492,8 +498,7 @@ pub(crate) fn restore_backup_inverse(
 /// `inverse` - `restore_event` applies these best-effort, after its own
 /// `path` restore succeeds, via [`crate::ports::ScopeFs::symlink`] rather
 /// than the byte-write `RestorePlan` branches: those would turn a symlink
-/// into a regular file holding its target's text, per this module's own
-/// [`SymlinkInverse`] doc. An old reader that does not know `"links"` still
+/// into a regular file holding its target's text. An old reader that does not know `"links"` still
 /// restores `path` correctly; the field is additive.
 pub(crate) fn restore_backup_inverse_with_links(
     path: &Path,
@@ -608,32 +613,6 @@ pub(crate) fn parse_restore_remove_copies(inverse: &serde_json::Value) -> Vec<(P
         .collect()
 }
 
-/// Adds a `"remove_codex_rows"` array to a `restore_backup` inverse: the
-/// `SKILL.md` paths whose disabled `[[skills.config]]` row the same event
-/// added to Codex's config (`ops::split` carries one to a Codex copy of a
-/// skill that was off). `restore_event` removes exactly those rows.
-pub(crate) fn with_remove_codex_rows(
-    mut inverse: serde_json::Value,
-    rows: &[PathBuf],
-) -> serde_json::Value {
-    if !rows.is_empty() {
-        inverse["remove_codex_rows"] = serde_json::json!(rows);
-    }
-    inverse
-}
-
-/// Reads back the `"remove_codex_rows"` array [`with_remove_codex_rows`]
-/// adds, or an empty list for an inverse that has none.
-pub(crate) fn parse_restore_remove_codex_rows(inverse: &serde_json::Value) -> Vec<PathBuf> {
-    inverse
-        .get("remove_codex_rows")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry.as_str().map(PathBuf::from))
-        .collect()
-}
-
 /// Adds a `"write_back"` array to a `restore_backup` inverse: folders the
 /// same restore removed (a split's copies), to write back from this event's
 /// own backup when the restore is undone. Mirrors `"remove_copies"`.
@@ -688,39 +667,6 @@ pub(crate) fn parse_restore_remove_links(inverse: &serde_json::Value) -> Vec<(Pa
             let path = PathBuf::from(entry.get("path")?.as_str()?);
             let target = PathBuf::from(entry.get("target")?.as_str()?);
             Some((path, target))
-        })
-        .collect()
-}
-
-/// Adds an `"add_codex_rows"` array to a `restore_backup` inverse: the
-/// `SKILL.md` paths whose Codex config row the same restore removed, with
-/// the `enabled` value that row held. Mirrors `"remove_codex_rows"`.
-pub(crate) fn with_add_codex_rows(
-    mut inverse: serde_json::Value,
-    rows: &[(PathBuf, bool)],
-) -> serde_json::Value {
-    if !rows.is_empty() {
-        let rows: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|(path, enabled)| serde_json::json!({ "path": path, "enabled": enabled }))
-            .collect();
-        inverse["add_codex_rows"] = serde_json::Value::Array(rows);
-    }
-    inverse
-}
-
-/// Reads back the `"add_codex_rows"` array [`with_add_codex_rows`] adds, or
-/// an empty list for an inverse that has none.
-pub(crate) fn parse_restore_add_codex_rows(inverse: &serde_json::Value) -> Vec<(PathBuf, bool)> {
-    inverse
-        .get("add_codex_rows")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            let path = PathBuf::from(entry.get("path")?.as_str()?);
-            let enabled = entry.get("enabled")?.as_bool()?;
-            Some((path, enabled))
         })
         .collect()
 }
@@ -792,76 +738,6 @@ pub(crate) fn parse_restore_backup_inverse(
         pre.filter(|s| *s != "absent").map(str::to_string),
         post.filter(|s| *s != "absent").map(str::to_string),
     ))
-}
-
-/// Undo shape for a symlink toggle: `recreate_symlink` (put a link with
-/// `target` back at `path`) or `remove_symlink` (take the link at `path`
-/// back out). Kept apart from `restore_backup`: that shape's restore writes
-/// raw bytes with `write_atomic`, which would turn a symlink into a regular
-/// file carrying its target's content instead of recreating the link.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SymlinkInverse {
-    /// Recreate the link.
-    Recreate {
-        /// Where the link goes.
-        path: PathBuf,
-        /// What it points to.
-        target: PathBuf,
-    },
-    /// Remove the link.
-    Remove {
-        /// The link to remove.
-        path: PathBuf,
-        /// What the link pointed at when it was created - not used to
-        /// remove it, only to refuse the removal if the link has since been
-        /// retargeted to something the event never put there (see
-        /// `restore_symlink_event`'s drift guard). `None` for a row written
-        /// before this field existed: `restore_symlink_event` treats that
-        /// as force-only, since there is nothing recorded to compare the
-        /// live link against.
-        target: Option<PathBuf>,
-    },
-}
-
-pub(crate) fn recreate_symlink_inverse(path: &Path, target: &Path) -> serde_json::Value {
-    serde_json::json!({ "op": "recreate_symlink", "path": path, "target": target })
-}
-
-/// `target` is `None` when a target-less remove row is restored against an
-/// already-absent link; a restore of such a row needs `--force`. Kept
-/// optional so a pre-existing row without one still parses instead of
-/// losing its `restore_capability`.
-pub(crate) fn remove_symlink_inverse(path: &Path, target: Option<&Path>) -> serde_json::Value {
-    match target {
-        Some(target) => {
-            serde_json::json!({ "op": "remove_symlink", "path": path, "target": target })
-        }
-        None => serde_json::json!({ "op": "remove_symlink", "path": path }),
-    }
-}
-
-/// Reads a `recreate_symlink`/`remove_symlink` inverse payload back. Returns
-/// `None` for any other shape. A `remove_symlink` row's `target` is read as
-/// present-but-optional, not required: a row from before that field existed
-/// must still parse, so `restore_capability()` (which only checks that the
-/// row's kind is understood, not the shape underneath) keeps reporting
-/// `Yes` for it instead of silently falling to `UnknownKind`.
-pub(crate) fn parse_symlink_inverse(inverse: &serde_json::Value) -> Option<SymlinkInverse> {
-    let obj = inverse.as_object()?;
-    match obj.get("op").and_then(|v| v.as_str()) {
-        Some("recreate_symlink") => Some(SymlinkInverse::Recreate {
-            path: PathBuf::from(obj.get("path")?.as_str()?),
-            target: PathBuf::from(obj.get("target")?.as_str()?),
-        }),
-        Some("remove_symlink") => Some(SymlinkInverse::Remove {
-            path: PathBuf::from(obj.get("path")?.as_str()?),
-            target: obj
-                .get("target")
-                .and_then(|v| v.as_str())
-                .map(PathBuf::from),
-        }),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -958,27 +834,19 @@ mod tests {
         );
         assert!(parse_restore_write_back(&old).is_empty());
         assert!(parse_restore_remove_links(&old).is_empty());
-        assert!(parse_restore_add_codex_rows(&old).is_empty());
         assert!(parse_restore_secondary_post(&old).is_empty());
     }
 
     #[test]
     fn mirror_fields_round_trip_through_their_parsers() {
-        let inverse = with_add_codex_rows(
-            with_remove_links(
-                with_write_back(serde_json::json!({}), &[PathBuf::from("/c")]),
-                &[(PathBuf::from("/l"), PathBuf::from("../t"))],
-            ),
-            &[(PathBuf::from("/c/SKILL.md"), true)],
+        let inverse = with_remove_links(
+            with_write_back(serde_json::json!({}), &[PathBuf::from("/c")]),
+            &[(PathBuf::from("/l"), PathBuf::from("../t"))],
         );
         assert_eq!(parse_restore_write_back(&inverse), [PathBuf::from("/c")]);
         assert_eq!(
             parse_restore_remove_links(&inverse),
             [(PathBuf::from("/l"), PathBuf::from("../t"))]
-        );
-        assert_eq!(
-            parse_restore_add_codex_rows(&inverse),
-            [(PathBuf::from("/c/SKILL.md"), true)]
         );
     }
 }

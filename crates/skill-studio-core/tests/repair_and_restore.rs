@@ -854,3 +854,146 @@ fn repair_of_a_skill_md_linked_outside_the_scope_refuses_and_leaves_both_files_o
     std::fs::remove_dir_all(&home).ok();
     std::fs::remove_dir_all(&outside).ok();
 }
+
+/// Flow: an old build recorded a `harness_disable` event with a
+/// `restore_backup` inverse over `~/.codex/config.toml`, and the user has
+/// since edited that file. Expect undo of the event to refuse and the file
+/// to stay byte-identical. Fails when undo puts the whole config file back
+/// from the backup, which drops the user's later edits.
+#[test]
+fn undo_of_an_old_harness_disable_event_refuses_and_leaves_the_config_byte_identical_or_names_the_rewrite(
+) {
+    let home = unique_temp_dir("old_harness_disable_undo");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    let config = home.join(".codex/config.toml");
+    std::fs::write(&config, b"model = \"o3\"\n").unwrap();
+    let rt = runtime_for(&home);
+
+    let id = {
+        let mut store = rt
+            .ports
+            .history
+            .open(
+                &rt.scope,
+                skill_studio_core::ports::HistoryAccess::ReadWrite,
+            )
+            .unwrap()
+            .unwrap();
+        let guard =
+            skill_studio_core::ports::acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)
+                .unwrap();
+        let id = rt.ports.ids.next_event_id();
+        let manifest = store
+            .backup_paths(&guard, &id, std::slice::from_ref(&config))
+            .unwrap();
+        let inverse = serde_json::json!({
+            "op": "restore_backup",
+            "path": config,
+            "pre_fingerprint": "absent",
+            "post_fingerprint": "absent",
+        });
+        store
+            .record(
+                &guard,
+                &id,
+                &skill_studio_core::events::EventDraft {
+                    kind: skill_studio_core::events::EventKind::HarnessDisable,
+                    skill: skill_studio_core::identity::SkillName("gamma".into()),
+                    harness: None,
+                    scope: None,
+                    project_path: None,
+                    payload: serde_json::json!({}),
+                    inverse: Some(inverse),
+                    backup_dir: Some(manifest.backup_dir),
+                },
+            )
+            .unwrap();
+        store
+            .finish(
+                &guard,
+                &id,
+                skill_studio_core::events::EventStatus::Done,
+                None,
+            )
+            .unwrap();
+        id
+    };
+    let restore_id = {
+        let mut store = rt
+            .ports
+            .history
+            .open(
+                &rt.scope,
+                skill_studio_core::ports::HistoryAccess::ReadWrite,
+            )
+            .unwrap()
+            .unwrap();
+        let guard =
+            skill_studio_core::ports::acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)
+                .unwrap();
+        let restore_id = rt.ports.ids.next_event_id();
+        let manifest = store
+            .backup_paths(&guard, &restore_id, std::slice::from_ref(&config))
+            .unwrap();
+        store
+            .record(
+                &guard,
+                &restore_id,
+                &skill_studio_core::events::EventDraft {
+                    kind: skill_studio_core::events::EventKind::Restore,
+                    skill: skill_studio_core::identity::SkillName("gamma".into()),
+                    harness: None,
+                    scope: None,
+                    project_path: None,
+                    payload: serde_json::json!({ "target_event": id.0 }),
+                    inverse: Some(serde_json::json!({
+                        "op": "restore_backup",
+                        "path": config,
+                        "pre_fingerprint": "absent",
+                        "post_fingerprint": "absent",
+                    })),
+                    backup_dir: Some(manifest.backup_dir),
+                },
+            )
+            .unwrap();
+        store
+            .finish(
+                &guard,
+                &restore_id,
+                skill_studio_core::events::EventStatus::Done,
+                None,
+            )
+            .unwrap();
+        restore_id
+    };
+    std::fs::write(&config, b"model = \"o3\"\n# edited later by the user\n").unwrap();
+    let before = std::fs::read(&config).unwrap();
+
+    let err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: id,
+            force: true,
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Unsupported);
+    assert_eq!(std::fs::read(&config).unwrap(), before);
+
+    let err = ops::restore_event(
+        &rt,
+        &ctx(),
+        &RestoreRequest {
+            event_id: restore_id,
+            force: true,
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(err.code, skill_studio_core::ErrorCode::Unsupported);
+    assert_eq!(std::fs::read(&config).unwrap(), before);
+
+    std::fs::remove_dir_all(&home).ok();
+}

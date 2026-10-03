@@ -2,28 +2,11 @@
 // Skill Studio - skill location helper tests
 // ============================================================================
 
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
-import { SwitchControl } from "../ui/SwitchControl";
-import {
-  canOfferHarnessSwitch,
-  canOfferHarnessSwitchForRow,
-  harnessSwitchOffTitle,
-  NO_OFF_SWITCH_TITLE,
-  REGISTRY_COPY_NO_SWITCH_TITLE,
-  sharedFolderSwitchPolicy,
-} from "./skill-location-helpers";
+import { sharedFolderSwitchPolicy } from "./skill-location-helpers";
 import { buildScopeGroups, rowMenu } from "./skill-location-status";
-import type { AgentLocationRow } from "./skill-location-status";
-import {
-  perSkillLinkDeployment,
-  realCopyDeployment,
-  universalDeployment,
-  wholeFolderDeployment,
-  withScannerIdentity,
-} from "../../dev/harness/scanned-deployment";
+import { universalDeployment, withScannerIdentity } from "../../dev/harness/scanned-deployment";
 
 /** A Global Universal row with `overrides`; id, destination, and backing follow the scanner. */
 function sharedDeployment(overrides: Partial<Deployment> = {}): Deployment {
@@ -102,179 +85,51 @@ describe("sharedFolderSwitchPolicy", () => {
   });
 });
 
-describe("canOfferHarnessSwitch", () => {
-  it("harness_rail_toggle_is_disabled_for_a_copy_that_cannot_park_or_names_the_row", () => {
-    const projectCopy = sharedDeployment({
-      agent: "Claude Code",
-      scope: "project",
-      project_path: "/repo",
-      path: "/repo/.claude/skills/find-bugs",
-      is_symlink: false,
-      disabled: false,
-      disabled_by: null,
-    });
-
-    // A project-scope copy has no native per-skill disable and was never
-    // moved aside, so the Harnesses rail must not offer a switch for it -
-    // `park`/`unpark` only ever target the Global Universal deployment.
-    expect(canOfferHarnessSwitch(projectCopy)).toBe(false);
-  });
-
-  it("claude_code_switch_is_live_for_every_global_layout_or_names_the_layout", () => {
-    // Claude Code's off switch writes `skillOverrides` in ~/.claude/settings.json,
-    // so it works however the entry reaches ~/.claude/skills.
-    const universalPath = "/home/.agents/skills/find-bugs";
-    const path = "/home/.claude/skills/find-bugs";
-    const layouts = {
-      "per-skill link": perSkillLinkDeployment({ agent: "Claude Code", path, universalPath }),
-      "whole-folder link": wholeFolderDeployment({ agent: "Claude Code", path, universalPath }),
-      "real copy": realCopyDeployment({ agent: "Claude Code", path }),
-    };
-    for (const [layout, deployment] of Object.entries(layouts)) {
-      expect(canOfferHarnessSwitch(deployment), `${layout}: the switch is not offered`).toBe(true);
-    }
-  });
-
-  it("studio_moved_row_keeps_its_switch_or_names_the_missing_native_disable", () => {
-    const movedCopy = sharedDeployment({
-      agent: "pi",
-      scope: "project",
-      project_path: "/repo",
-      path: "/repo/.pi/skills/find-bugs",
-      disabled: true,
-      disabled_by: "studio-moved",
-    });
-
-    expect(canOfferHarnessSwitch(movedCopy)).toBe(true);
-  });
-
-  it("studio_moved_copy_row_has_no_switch_or_names_the_row", () => {
-    const registryCopy = sharedDeployment({
-      agent: "pi",
-      scope: "project",
-      project_path: "/repo",
-      path: "/repo/.pi/skills/find-bugs",
-      owner_kind: "copy",
-      disabled: true,
-      disabled_by: "studio-moved",
-    });
-
-    // `restore_moved_deployment` refuses a Copy-owned row outright
-    // (`refuse_registry_copy_restore`), so the switch must not pretend it
-    // has a way back either.
-    expect(canOfferHarnessSwitch(registryCopy)).toBe(false);
-    const row: AgentLocationRow = {
-      kind: "copy",
-      harness: "pi",
-      harnessLabel: "pi",
-      path: registryCopy.path,
-      caption: "",
-      conditions: [],
-      level: null,
-      deployment: registryCopy,
-      lifecycleTarget: { deployment_id: registryCopy.id },
-      hasSwitch: false,
-      switchOn: false,
-      invocation: null,
-    };
-    expect(harnessSwitchOffTitle(row)).toBe(REGISTRY_COPY_NO_SWITCH_TITLE);
-
-    // `canToggleHarness` alone would read a disabled claude-code/codex/open-code
-    // row as switchable regardless of ownership, so the Copy-owned guard must
-    // run ahead of that branch too, not just the studio-moved fallback.
-    const registryCopyOnClaudeCode = sharedDeployment({
-      agent: "Claude Code",
-      scope: "project",
-      project_path: "/repo",
-      path: "/repo/.claude/skills/find-bugs",
-      owner_kind: "copy",
-      disabled: true,
-      disabled_by: "studio-moved",
-    });
-    expect(canOfferHarnessSwitch(registryCopyOnClaudeCode)).toBe(false);
-  });
-});
-
-// `SkillPropertiesRail`'s Harnesses popover renders `SwitchControl` inline
-// (no standalone row component to import), so this exercises the rail's
-// exact disabled/title wiring - `canOfferHarnessSwitchForRow` +
-// `NO_OFF_SWITCH_TITLE` - against the same `SwitchControl` it renders.
-describe("harness rail switch (canOfferHarnessSwitchForRow + NO_OFF_SWITCH_TITLE)", () => {
-  it("harness_rail_switch_is_disabled_for_a_copy_that_cannot_park_or_names_the_row", () => {
-    const deployment = sharedDeployment({
-      agent: "Claude Code",
-      scope: "project",
-      project_path: "/repo",
-      path: "/repo/.claude/skills/find-bugs",
-    });
-    const row: AgentLocationRow = {
-      kind: "copy",
-      harness: "claude-code",
-      harnessLabel: "Claude Code",
-      path: deployment.path,
-      caption: "",
-      conditions: [],
-      level: null,
-      deployment,
-      lifecycleTarget: { deployment_id: deployment.id },
-      hasSwitch: false,
-      switchOn: false,
-      invocation: null,
-    };
-    const offerSwitch = canOfferHarnessSwitchForRow(row);
-    expect(offerSwitch).toBe(false);
-
-    const markup = renderToStaticMarkup(
-      createElement(SwitchControl, {
-        checked: row.switchOn,
-        disabled: !offerSwitch,
-        onCheckedChange: () => undefined,
-        ariaLabel: "Enabled for Claude Code",
-        title: offerSwitch ? undefined : NO_OFF_SWITCH_TITLE,
-      }),
-    );
-    expect(markup).toContain(`title="${NO_OFF_SWITCH_TITLE}"`);
-    expect(markup).toContain("disabled=");
-  });
-});
-
-describe("per-harness reader switches", () => {
-  it("pi, Cursor and Grok Build reader rows show a disabled switch whose title says to Park", () => {
-    const [global] = buildScopeGroups(skillWithDeployments([sharedDeployment()]));
-    for (const harness of ["pi", "cursor", "grok-build"] as const) {
-      const row = global.rows.find((r): r is AgentLocationRow => r.harness === harness);
-      expect(row, `the Global group lost the ${harness} reader row`).toBeDefined();
-      expect(
-        canOfferHarnessSwitchForRow(row!),
-        `${harness} has no per-skill switch, but its row offers one`,
-      ).toBe(false);
-      expect(
-        harnessSwitchOffTitle(row!),
-        `the ${harness} switch title does not point at Park as the off path`,
-      ).toContain("Park the skill to turn it off for every agent");
-    }
-  });
-
-  it("a project reader row hides the Codex and OpenCode switches and the Global reader row keeps them", () => {
-    const projectShared = sharedDeployment({
-      id: "dep:v1/project/universal/find-bugs",
-      scope: "project",
-      project_path: "/repo",
-      path: "/repo/.agents/skills/find-bugs",
-    });
-    const groups = buildScopeGroups(skillWithDeployments([sharedDeployment(), projectShared]));
+describe("agent rows", () => {
+  it("offers no per-agent switch on any row of a Global Universal skill, or names the row that does", () => {
+    const groups = buildScopeGroups(skillWithDeployments([sharedDeployment()]));
     const global = groups.find((g) => g.isGlobal)!;
-    const project = groups.find((g) => !g.isGlobal)!;
-    for (const harness of ["codex", "open-code"] as const) {
-      const globalRow = global.rows.find((r) => r.harness === harness);
-      const projectRow = project.rows.find((r) => r.harness === harness);
-      expect(globalRow?.kind).toBe("reader");
-      expect(projectRow?.kind).toBe("reader");
-      expect(globalRow?.hasSwitch, `the Global ${harness} reader row lost its switch`).toBe(true);
-      expect(
-        projectRow?.hasSwitch,
-        `the project ${harness} reader row offers a switch that writes the Global config`,
-      ).toBe(false);
-    }
+    const withSwitch = global.rows
+      .filter((row) => row.kind !== "shared" && row.hasSwitch)
+      .map((row) => row.harness);
+    expect(withSwitch, "these agent rows still offer an on/off switch").toEqual([]);
+  });
+
+  it("captions a Codex reader row 'Hidden by Codex setting' and offers 'Open config.toml', or names what the row shows instead", () => {
+    const groups = buildScopeGroups(
+      skillWithDeployments([
+        sharedDeployment({
+          disabled_readers: ["codex"],
+          disabling_config_files: [{ agent: "codex", path: "/custom/codex-home/config.toml" }],
+        }),
+      ]),
+    );
+    const codex = groups.find((g) => g.isGlobal)!.rows.find((r) => r.harness === "codex")!;
+    expect(codex.caption).toBe("Hidden by Codex setting");
+    expect(rowMenu(codex, "Global").entries[0]).toMatchObject({
+      label: "Open config.toml",
+      action: { kind: "open-editor", path: "/custom/codex-home/config.toml", label: "config.toml" },
+    });
+  });
+
+  it("opens_the_global_settings_file_from_a_project_row_hidden_by_a_setting_or_names_the_path_it_opens", () => {
+    const projectClaude = withScannerIdentity({
+      ...sharedDeployment({
+        agent: "Claude Code",
+        scope: "project",
+        project_path: "/proj",
+        path: "/proj/.claude/skills/find-bugs",
+        is_symlink: false,
+        disabled: true,
+        disabled_by: "claude-skill-overrides",
+        disabling_config_files: [{ agent: "claude-code", path: "/home/.claude/settings.json" }],
+      }),
+    });
+    const groups = buildScopeGroups(skillWithDeployments([projectClaude]));
+    const row = groups.find((g) => !g.isGlobal)!.rows.find((r) => r.harness === "claude-code")!;
+    expect(rowMenu(row, "Project").entries[0]).toMatchObject({
+      label: "Open settings.json",
+      action: { kind: "open-editor", path: "/home/.claude/settings.json" },
+    });
   });
 });

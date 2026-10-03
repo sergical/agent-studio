@@ -174,25 +174,16 @@ fn split_to_claude_and_codex_leaves_only_two_real_copies_in_the_scan() {
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// Flow: `gamma` is off in Codex through a `[[skills.config]]` row that names
-/// the Universal `SKILL.md`. Split it to Claude Code and Codex. Expect the
-/// new Codex copy to be off too, and the Claude copy to stay untouched: a
-/// split must not turn a skill on that the user switched off. Fails when the
-/// Codex copy is on, because Codex keys its rows by path and the row still
-/// names the folder the split moved away.
+/// Flow: `gamma` is off in Codex through a user-written `[[skills.config]]`
+/// row that names the Universal `SKILL.md`. Split it to Claude Code and
+/// Codex. Expect `config.toml` byte-identical: Skill Studio never writes an
+/// agent config to follow a skill. Fails when the split rewrote or added a
+/// row, which would change what Codex shows without the user asking.
 #[test]
-fn split_keeps_a_skill_off_in_codex_off_for_the_new_codex_copy_or_names_the_path_left_on() {
+fn split_leaves_a_user_written_codex_row_byte_identical_or_names_the_rewritten_config() {
     let home = unique_temp_dir("split_codex_off");
     splittable_home(&home);
-    std::fs::create_dir_all(home.join(".codex")).unwrap();
-    std::fs::write(
-        home.join(".codex/config.toml"),
-        format!(
-            "model = \"o3\"\n\n[[skills.config]]\npath = \"{}\"\nenabled = false\n",
-            universal(&home).join("SKILL.md").display()
-        ),
-    )
-    .unwrap();
+    let before = codex_config_with_universal_off(&home);
     let rt = runtime_for(&home);
     let deployment_id = universal_deployment_id(&rt);
 
@@ -206,21 +197,10 @@ fn split_keeps_a_skill_off_in_codex_off_for_the_new_codex_copy_or_names_the_path
     )
     .unwrap();
 
-    let fs = RealFs::new();
-    let off = ops::codex_disabled_skill_md_paths(&fs, &home.join(".codex"));
-    assert!(
-        off.contains(&ops::codex_path_form(
-            &fs,
-            &codex_copy(&home).join("SKILL.md")
-        )),
-        "the Codex copy must stay off after the split, off paths: {off:?}"
-    );
-    assert!(
-        !off.contains(&ops::codex_path_form(
-            &fs,
-            &claude_copy(&home).join("SKILL.md")
-        )),
-        "no row may name the Claude copy: {off:?}"
+    assert_eq!(
+        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
+        before,
+        "the split rewrote config.toml"
     );
 
     std::fs::remove_dir_all(&home).ok();
@@ -676,13 +656,12 @@ fn codex_config_with_universal_off(home: &Path) -> String {
     text
 }
 
-/// Flow: the skill is off in Codex, split carries a disabled row to the
-/// Codex copy, then the split is undone. Expect Codex's config back to its
-/// pre-split bytes: the Universal row kept, the carried row gone. Catches
-/// an undo that removes the copy but leaves a row naming a path that no
-/// longer exists, which a later split or install at that path would inherit.
+/// Flow: the skill is off in Codex through a user-written row, the skill is
+/// split, then the split is undone. Expect Codex's config at its pre-split
+/// bytes after the undo. Catches an undo that edits the config the split
+/// never touched.
 #[test]
-fn undo_split_removes_the_codex_row_it_carried_and_keeps_the_universal_row() {
+fn undo_split_leaves_the_user_written_codex_row_in_place_or_names_the_edited_config() {
     let home = unique_temp_dir("split_undo_codex_row");
     splittable_home(&home);
     let before = codex_config_with_universal_off(&home);
@@ -697,12 +676,6 @@ fn undo_split_removes_the_codex_row_it_carried_and_keeps_the_universal_row() {
         },
     )
     .unwrap();
-    assert_ne!(
-        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
-        before,
-        "the split must carry a row to the Codex copy"
-    );
-
     ops::restore_event(
         &rt,
         &ctx(),
@@ -722,11 +695,10 @@ fn undo_split_removes_the_codex_row_it_carried_and_keeps_the_universal_row() {
 }
 
 /// Flow: the skill is off in Codex and a regular file blocks the quarantine
-/// folder, so the split fails after it wrote the Codex copy and its carried
-/// row. Expect Codex's config back to its pre-split bytes. Catches a
-/// rollback that removes the copy folder but leaves its row behind.
+/// folder, so the split fails after it wrote the Codex copy. Expect Codex's
+/// config at its pre-split bytes. Catches a rollback that edits the config.
 #[test]
-fn split_that_fails_part_way_removes_the_codex_row_it_carried() {
+fn split_that_fails_part_way_leaves_codex_config_byte_identical_or_names_the_edit() {
     let home = unique_temp_dir("split_rollback_codex_row");
     splittable_home(&home);
     let before = codex_config_with_universal_off(&home);
@@ -754,16 +726,16 @@ fn split_that_fails_part_way_removes_the_codex_row_it_carried() {
 
 /// Flow: the skill is off in Codex and Codex reads it through its own
 /// per-skill link into the Universal folder; split keeps Codex. Expect the
-/// new Codex copy off. Catches a carried-row check that follows the Codex
-/// link to the Universal `SKILL.md`, finds it already off, and adds no row,
-/// so the real copy starts on.
+/// link to become a real copy and `config.toml` to stay byte-identical.
+/// Catches a split that writes a row for the new copy.
 #[test]
-fn split_keeps_a_skill_off_for_a_codex_copy_that_replaces_a_codex_link() {
+fn split_replaces_a_codex_link_with_a_copy_and_leaves_config_toml_byte_identical_or_names_the_edit()
+{
     let home = unique_temp_dir("split_codex_link_off");
     splittable_home(&home);
     std::fs::create_dir_all(home.join(".codex/skills")).unwrap();
     std::os::unix::fs::symlink(universal(&home), codex_copy(&home)).unwrap();
-    codex_config_with_universal_off(&home);
+    let before = codex_config_with_universal_off(&home);
     let rt = runtime_for(&home);
     let deployment_id = universal_deployment_id(&rt);
 
@@ -778,14 +750,10 @@ fn split_keeps_a_skill_off_for_a_codex_copy_that_replaces_a_codex_link() {
     .unwrap();
 
     assert!(is_real_dir(&codex_copy(&home)));
-    let fs = RealFs::new();
-    let off = ops::codex_disabled_skill_md_paths(&fs, &home.join(".codex"));
-    assert!(
-        off.contains(&ops::codex_path_form(
-            &fs,
-            &codex_copy(&home).join("SKILL.md")
-        )),
-        "the Codex copy must stay off after the split, off paths: {off:?}"
+    assert_eq!(
+        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
+        before,
+        "the split rewrote config.toml"
     );
 
     std::fs::remove_dir_all(&home).ok();
@@ -943,52 +911,6 @@ fn split_that_fails_before_the_codex_copy_keeps_the_users_rows_at_its_path() {
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// Flow: split carries a disabled row to the Codex copy, then Codex's own
-/// toggle turns the copy on by setting that row to `enabled = true`, then
-/// the split is undone. Expect Codex's config back to its pre-split bytes.
-/// Catches an undo that removes only a disabled row: the enabled row stays
-/// and, through the restored link, turns the Universal skill on in Codex.
-#[test]
-fn undo_split_removes_the_carried_codex_row_after_a_toggle_enabled_it() {
-    let home = unique_temp_dir("split_undo_toggled_row");
-    splittable_home(&home);
-    let before = codex_config_with_universal_off(&home);
-    let rt = runtime_for(&home);
-    let deployment_id = universal_deployment_id(&rt);
-    let outcome = ops::split(
-        &rt,
-        &ctx(),
-        &SplitRequest {
-            deployment_id,
-            harnesses: harnesses(&["claude-code", "codex"]),
-        },
-    )
-    .unwrap();
-    let carried = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
-    let toggled_on = format!(
-        "{before}{}",
-        carried[before.len()..].replace("enabled = false", "enabled = true")
-    );
-    std::fs::write(home.join(".codex/config.toml"), &toggled_on).unwrap();
-
-    ops::restore_event(
-        &rt,
-        &ctx(),
-        &RestoreRequest {
-            event_id: outcome.event_id,
-            force: false,
-        },
-    )
-    .unwrap();
-
-    assert_eq!(
-        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
-        before
-    );
-
-    std::fs::remove_dir_all(&home).ok();
-}
-
 /// Splits a Universal `gamma` that is off in Codex to Claude Code and Codex,
 /// then undoes the split. Returns the undo's event id.
 fn split_then_undo_with_codex_off(home: &Path, rt: &Runtime) -> EventId {
@@ -1024,10 +946,9 @@ fn undo(rt: &Runtime, event_id: &EventId, force: bool) -> Result<RestoreOutcome,
     )
 }
 
-/// Flow: split to Claude Code and Codex with the skill off in Codex, undo the
-/// split, then undo that undo. Expect both copies back as real folders with
-/// their files, no Universal folder, no pi link, a Codex row for the copy,
-/// and a scan of two independent deployments. Fails when undoing the undo
+/// Flow: split to Claude Code and Codex, undo the split, then undo that undo.
+/// Expect both copies back as real folders with their files, no Universal
+/// folder, no pi link, and a scan of two independent deployments. Fails when undoing the undo
 /// only removes the Universal folder, which leaves the skill nowhere.
 #[test]
 fn undoing_a_split_undo_brings_back_both_copies_and_drops_the_restored_links() {
@@ -1060,15 +981,6 @@ fn undoing_a_split_undo_brings_back_both_copies_and_drops_the_restored_links() {
     }
     assert!(std::fs::symlink_metadata(universal(&home)).is_err());
     assert!(std::fs::symlink_metadata(pi_link(&home)).is_err());
-    let fs = RealFs::new();
-    let off = ops::codex_disabled_skill_md_paths(&fs, &home.join(".codex"));
-    assert!(
-        off.contains(&ops::codex_path_form(
-            &fs,
-            &codex_copy(&home).join("SKILL.md")
-        )),
-        "the Codex copy must be off again, off paths: {off:?}"
-    );
     let inventory = ops::scan(&rt, &ctx(), &ScanRequest::default()).unwrap();
     let gamma = inventory
         .skills

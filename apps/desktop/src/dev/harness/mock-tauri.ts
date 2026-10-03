@@ -103,20 +103,6 @@ const DISCOVERY_HARNESSES = ["claude-code", "codex", "open-code", "pi", "cursor"
 
 /** Installs the mock Tauri IPC layer and returns the control the harness (or the marketing
  * capture page) drives it with. */
-/** The `disabled_by` a real scan reports after the harness's own off switch. */
-function offMechanismFor(agent: string): Deployment["disabled_by"] {
-  switch (agent) {
-    case "claude-code":
-      return "claude-skill-overrides";
-    case "codex":
-      return "codex-config";
-    case "open-code":
-      return "opencode-permission";
-    default:
-      return "studio-moved";
-  }
-}
-
 export function installMockTauri(initial: SkillSnapshot): HarnessControl {
   let currentSnapshot = initial;
   const addOperations = new Map<string, AddSkillOperationEvent>();
@@ -582,51 +568,6 @@ export function installMockTauri(initial: SkillSnapshot): HarnessControl {
           };
         }
 
-        case "set_harness_enabled": {
-          const { deployment_id, reader_agent: agent } = z
-            .object({ deployment_id: z.string(), reader_agent: z.string() })
-            .parse(payload.target);
-          const enabled = payload.enabled === true;
-          const name = skillNameForTarget({ deployment_id });
-          await updateSkill(name, (item) => ({
-            ...item,
-            deployments: item.deployments.flatMap((entry) => {
-              if (entry.id !== deployment_id) return [entry];
-              if (entry.agent === "shared") {
-                const disabledReaders = new Set(entry.disabled_readers ?? []);
-                if (enabled) disabledReaders.delete(agent);
-                else disabledReaders.add(agent);
-                const updated = { ...entry, disabled_readers: [...disabledReaders] };
-                // Switching on the "Not linked" Claude Code row creates the
-                // per-skill link, as `set_claude_code_switch` does.
-                const createsClaudeLink =
-                  enabled && agent === "claude-code" && entry.disabled_readers?.includes(agent);
-                if (!createsClaudeLink) return [updated];
-                return [
-                  updated,
-                  deployment({
-                    agent: "Claude Code",
-                    scope: entry.scope,
-                    path: `${HARNESS_HOME}/.claude/skills/${name}`,
-                    is_symlink: true,
-                    symlink_target: entry.path,
-                    resolved_path: entry.path,
-                    content_hash: entry.content_hash,
-                  }),
-                ];
-              }
-              if (entry.agent.toLowerCase().replace(/ /g, "-") !== agent) return [entry];
-              return [
-                {
-                  ...entry,
-                  disabled: !enabled,
-                  disabled_by: enabled ? null : offMechanismFor(agent),
-                },
-              ];
-            }),
-          }));
-          return undefined;
-        }
         case "restore_moved_deployment": {
           const { deployment_id, owner_id } = z
             .object({ deployment_id: z.string().nullish(), owner_id: z.string().nullish() })

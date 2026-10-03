@@ -159,22 +159,22 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Turn a skill on for one agent.
+    /// Same as `unpark`: turn a parked skill on again.
     Enable {
         #[command(flatten)]
         scope: ScopeArgs,
         #[command(flatten)]
-        switch: AgentSwitchArgs,
+        target: TargetArgs,
         /// Print the result as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Turn a skill off for one agent. Other agents keep it.
+    /// Same as `park`: turn a skill off for all agents.
     Disable {
         #[command(flatten)]
         scope: ScopeArgs,
         #[command(flatten)]
-        switch: AgentSwitchArgs,
+        target: TargetArgs,
         /// Print the result as JSON.
         #[arg(long)]
         json: bool,
@@ -325,29 +325,6 @@ enum Command {
     },
     /// Start the MCP server so an agent can tidy your skills.
     Mcp,
-    /// Turn a skill's native per-harness switch on or off (Claude Code,
-    /// Codex, `OpenCode`). pi, Cursor, and Grok Build have none: `park`
-    /// turns a skill off for every harness.
-    #[command(hide = true)]
-    SetHarnessEnabled {
-        #[command(flatten)]
-        scope: ScopeArgs,
-        /// Skill to toggle.
-        #[arg(long)]
-        skill: String,
-        /// Harness whose switch to flip.
-        #[arg(long, alias = "agent")]
-        harness: String,
-        /// Sets the switch to enabled; pass `--enabled=false` to disable.
-        #[arg(long, default_value_t = true)]
-        enabled: bool,
-        /// Project the targeted row is scoped to; omit for the global row.
-        /// Only Claude Code's switch (a per-scope symlink slot) reads this.
-        #[arg(long)]
-        project_path: Option<PathBuf>,
-        #[arg(long)]
-        json: bool,
-    },
     /// Run every lifecycle invariant in `docs/action-map/lifecycle-states.md`
     /// over the whole scope; writes nothing. Exit code 0 with an empty
     /// violation list on a healthy home, 1 when any violation is found
@@ -499,19 +476,6 @@ struct TargetArgs {
     id: Option<String>,
 }
 
-/// `enable`'s and `disable`'s shared arguments.
-#[derive(clap::Args)]
-struct AgentSwitchArgs {
-    /// Name of the skill.
-    skill: String,
-    /// Agent to change: claude-code, codex or opencode.
-    #[arg(long, alias = "harness")]
-    agent: String,
-    /// Project the skill is in. Leave it out for your global skills.
-    #[arg(long)]
-    project_path: Option<PathBuf>,
-}
-
 fn main() -> ExitCode {
     // Parse before telemetry starts: `mcp` reports as its own surface, and
     // `run_stdio` sets that up itself.
@@ -590,40 +554,6 @@ fn main() -> ExitCode {
             json,
         } => run_restore(&scope, event_id, force, json, time),
         Command::Undo { scope, force, json } => run_undo(&scope, force, json, time),
-        Command::SetHarnessEnabled {
-            scope,
-            skill,
-            harness,
-            enabled,
-            project_path,
-            json,
-        } => run_set_harness_enabled(&scope, skill, &harness, enabled, project_path, json, time),
-        Command::Enable {
-            scope,
-            switch,
-            json,
-        } => run_set_harness_enabled(
-            &scope,
-            switch.skill,
-            &switch.agent,
-            true,
-            switch.project_path,
-            json,
-            time,
-        ),
-        Command::Disable {
-            scope,
-            switch,
-            json,
-        } => run_set_harness_enabled(
-            &scope,
-            switch.skill,
-            &switch.agent,
-            false,
-            switch.project_path,
-            json,
-            time,
-        ),
         Command::Usage { scope, days, json } => run_usage(&scope, days, json, time),
         Command::Mcp => unreachable!("handled before telemetry starts"),
         Command::Add {
@@ -675,6 +605,11 @@ fn main() -> ExitCode {
             scope,
             target,
             json,
+        }
+        | Command::Disable {
+            scope,
+            target,
+            json,
         } => run_park(&scope, &target, json, time),
         Command::Split {
             scope,
@@ -683,6 +618,11 @@ fn main() -> ExitCode {
             json,
         } => run_split(&scope, &deployment_id, &harnesses, json, time),
         Command::Unpark {
+            scope,
+            target,
+            json,
+        }
+        | Command::Enable {
             scope,
             target,
             json,
@@ -1614,62 +1554,6 @@ fn run_undo(scope: &ScopeArgs, force: bool, json: bool, time: bool) -> ExitCode 
     let result = ops::restore_event(&rt, &ctx, &req);
     let envelope = ResultEnvelope::from_result(Operation::RestoreEvent, &rt.scope, &ctx, result);
     finish(&envelope, json, time, output::print_restore_outcome_table)
-}
-
-/// Turns a skill's native per-harness switch on or off, via
-/// `ops::set_harness_enabled` (Claude Code link, Codex `config.toml` rows,
-/// `OpenCode` `permission.skill`).
-fn run_set_harness_enabled(
-    scope: &ScopeArgs,
-    skill: String,
-    harness: &str,
-    enabled: bool,
-    project_path: Option<PathBuf>,
-    json: bool,
-    time: bool,
-) -> ExitCode {
-    let rt = match build_runtime_write::<skill_studio_core::dto::SetHarnessEnabledOutcome>(
-        scope,
-        Operation::SetHarnessEnabled,
-        json,
-    ) {
-        Ok(rt) => rt,
-        Err(code) => return code,
-    };
-    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-    let harness = match AgentId::parse_harness(harness) {
-        Ok(harness) => harness,
-        Err(err) => {
-            let envelope =
-                ResultEnvelope::<skill_studio_core::dto::SetHarnessEnabledOutcome>::from_result(
-                    Operation::SetHarnessEnabled,
-                    &rt.scope,
-                    &ctx,
-                    Err(err),
-                );
-            return finish(
-                &envelope,
-                json,
-                time,
-                output::print_set_harness_enabled_outcome_table,
-            );
-        }
-    };
-    let req = skill_studio_core::dto::SetHarnessEnabledRequest {
-        skill: SkillName(skill),
-        harness,
-        enabled,
-        project_path,
-    };
-    let result = ops::set_harness_enabled(&rt, &ctx, &req);
-    let envelope =
-        ResultEnvelope::from_result(Operation::SetHarnessEnabled, &rt.scope, &ctx, result);
-    finish(
-        &envelope,
-        json,
-        time,
-        output::print_set_harness_enabled_outcome_table,
-    )
 }
 
 /// Which command a skill name is being matched for: each one accepts a

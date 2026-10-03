@@ -26,7 +26,6 @@ import type {
   LifecycleTarget,
 } from "@skill-studio/lib";
 import type { TooltipLine } from "../ui/TooltipControl";
-import { canOfferHarnessSwitch, REGISTRY_COPY_NO_SWITCH_TITLE } from "./skill-location-helpers";
 
 export type StatusLevel = "error" | "warning" | "off";
 
@@ -38,36 +37,14 @@ interface RollupResult {
 
 const RANK = { error: 3, warning: 2, off: 1 } satisfies Record<StatusLevel, number>;
 
-/**
- * The Locations card's own copy of `SkillPropertiesRail`'s off-switch
- * explanation. Only mentions the header's park control when this scope group
- * actually has a Global Universal deployment to park - a skill with none has
- * no header park action to point at.
- */
-function offSwitchReason(deployment: Deployment, hasGlobalUniversal: boolean): string {
-  // A Copy-owned studio-moved row has its own reason: `restore_moved_deployment`
-  // refuses it outright rather than restoring the folder while leaving the
-  // fork registry's `copies` entry stale - see `refuse_registry_copy_restore`.
-  if (deployment.disabled_by === "studio-moved" && deployment.owner_kind === "copy") {
-    return REGISTRY_COPY_NO_SWITCH_TITLE;
-  }
-  return hasGlobalUniversal
-    ? "This copy has no off switch; park the skill from the header instead"
-    : "This copy has no off switch";
+/** The row caption for a skill an agent's own setting hides, e.g. "Hidden by Codex setting". */
+function hiddenBySettingCaption(label: string): string {
+  return `Hidden by ${label} setting`;
 }
 
-/** The two readers with a per-skill off switch in their own config - see `skill_harness_disable.rs`. */
-const READERS_WITH_A_SWITCH: AgentId[] = ["codex", "open-code"];
-
-/** Why a synthesized reader row's switch is disabled: the harness has no per-skill switch, or its switch covers the Global Universal folder only. */
-function readerNoSwitchReason(agent: AgentId, isGlobal: boolean): string {
-  const label = readerLabel(agent);
-  if (READERS_WITH_A_SWITCH.includes(agent)) {
-    return `${label} can be turned off only for the Global Universal folder`;
-  }
-  return isGlobal
-    ? `${label} has no per-skill switch. Park the skill to turn it off for every agent.`
-    : `${label} has no per-skill switch`;
+/** The caption of the first condition that carries one, or empty. */
+function hiddenCaption(conditions: Condition[]): string {
+  return conditions.find((c) => c.caption)?.caption ?? "";
 }
 
 /** Every action a Locations row's ⋯ menu (or switch) can trigger - handled by `useLocationActions`. */
@@ -80,8 +57,7 @@ export type LocationAction =
   | { kind: "compare" }
   | { kind: "convert-root"; target: LifecycleTarget; harness: AgentId; root: string }
   | { kind: "make-independent-copy"; deployment: Deployment; scopeLabel: string }
-  | { kind: "set-enabled"; deployment: Deployment; enabled: boolean }
-  | { kind: "set-reader-enabled"; target: LifecycleTarget; agent: AgentId; enabled: boolean }
+  | { kind: "restore-moved"; deployment: Deployment }
   | { kind: "set-plugin-enabled"; deployment: Deployment; enabled: boolean }
   | { kind: "uninstall-plugin"; deployment: Deployment }
   | { kind: "park" }
@@ -117,6 +93,8 @@ interface Condition {
   /** Takes over the rollup tooltip's first two lines verbatim instead of the counted summary - parked-but-live only. */
   headline?: boolean;
   menu: MenuEntry[];
+  /** Row caption for a skill an agent's own setting hides. */
+  caption?: string;
   /** A hint line shown under the menu's first item. */
   hint?: string;
 }
@@ -132,10 +110,9 @@ interface BaseLocationRow {
   deployment: Deployment | null;
   /** Exact deployment used by lifecycle actions, including synthesized reader rows. */
   lifecycleTarget: LifecycleTarget;
+  /** True only for the shared-folder row: its switch parks or unparks the folder. */
   hasSwitch: boolean;
   switchOn: boolean;
-  /** Set when `hasSwitch` is false because the row has no off switch at all - see `canOfferHarnessSwitch`. */
-  switchDisabledReason?: string;
   invocation: InvocationPolicy | null;
 }
 
@@ -290,99 +267,88 @@ function specCondition(violations: string[], path: string): Condition | null {
       };
 }
 
+/** Hidden by the agent's own setting. Skill Studio shows it and opens the file, but never edits it. */
+function hiddenBySetting(
+  agent: AgentId,
+  label: string,
+  verb: string,
+  deployment: Deployment,
+): Condition {
+  // The scan sends the path it read, which honours CODEX_HOME and XDG_CONFIG_HOME. The files are global, so a project row opens the global one.
+  const path = deployment.disabling_config_files?.find((file) => file.agent === agent)?.path;
+  const config = path ? { path, file: path.slice(path.lastIndexOf("/") + 1) } : null;
+  return {
+    level: "off",
+    status: "Off",
+    phrase: "off",
+    plural: "off",
+    caption: hiddenBySettingCaption(label),
+    what: `${hiddenBySettingCaption(label)} — ${verb} ${config ? homeRelativePath(config.path) : "its config file"}.`,
+    fix: config ? `Edit ${config.file} to change it.` : undefined,
+    menu: config
+      ? [
+          {
+            label: `Open ${config.file}`,
+            action: { kind: "open-editor", path: config.path, label: config.file },
+          },
+        ]
+      : [],
+  };
+}
+
 /** Off for one harness deployment - which mechanism `disabled_by` names decides the sentence and the fix. */
 function offCondition(deployment: Deployment): Condition {
   const label = harnessLabelFromAgent(deployment.agent);
   const base = { level: "off" as const, status: "Off", phrase: "off", plural: "off" };
-  const enable = (hint: string, what: string): Condition => ({
-    ...base,
-    what,
-    fix: "Use the switch to turn it on.",
-    menu: [
-      { label: `Enable for ${label}`, action: { kind: "set-enabled", deployment, enabled: true } },
-    ],
-    hint,
-  });
   switch (deployment.disabled_by) {
     case "codex-config":
-      return enable(
-        "Turns it back on in Codex's config.toml.",
-        "Off for Codex — switched off in ~/.codex/config.toml.",
-      );
+      return hiddenBySetting("codex", "Codex", "switched off in", deployment);
     case "opencode-permission":
-      return enable(
-        "Allows it again in opencode.json.",
-        "Off for OpenCode — denied in opencode.json.",
-      );
+      return hiddenBySetting("open-code", "OpenCode", "denied in", deployment);
     case "claude-skill-overrides":
-      return enable(
-        "Removes the override in ~/.claude/settings.json.",
-        "Off for Claude Code — switched off in ~/.claude/settings.json.",
-      );
+      return hiddenBySetting("claude-code", "Claude Code", "switched off in", deployment);
     case "claude-link-removed":
-      return enable(
-        "Restores the link in ~/.claude/skills.",
-        "Off for Claude Code — the link under ~/.claude/skills was removed.",
-      );
+      return {
+        ...base,
+        what: "Off for Claude Code — the link under ~/.claude/skills was removed.",
+        menu: [],
+      };
     case "studio-moved":
     default: {
       const parent = homeRelativePath(parentDirectory(deployment.path));
+      // `restore_moved_deployment` refuses a Copy-owned row: restoring it would leave the fork registry's entry stale.
+      const restorable = deployment.owner_kind !== "copy";
       return {
         ...base,
         what: `Off for ${label} — moved into .skill-studio-disabled.`,
-        fix: "Use the switch to move it back.",
-        menu: [
-          {
-            label: `Enable for ${label}`,
-            action: { kind: "set-enabled", deployment, enabled: true },
-          },
-        ],
-        hint: `Moves it back into ${parent}.`,
+        fix: restorable
+          ? undefined
+          : "This copy is tracked by the fork registry; restore it by hand.",
+        menu: restorable
+          ? [{ label: `Move back for ${label}`, action: { kind: "restore-moved", deployment } }]
+          : [],
+        hint: restorable ? `Moves it back into ${parent}.` : undefined,
       };
     }
   }
 }
 
-/** Off for a synthesized reader row - Codex/OpenCode are the only readers with their own switch. */
-function readerOffCondition(agent: AgentId, target: LifecycleTarget): Condition {
-  const base = { level: "off" as const, status: "Off", phrase: "off", plural: "off" };
-  const action: LocationAction = { kind: "set-reader-enabled", target, agent, enabled: true };
+/** Hidden for a synthesized reader row by the agent's own config - Codex and OpenCode only. */
+function readerOffCondition(agent: AgentId, sharedDeployment: Deployment): Condition {
   return agent === "codex"
-    ? {
-        ...base,
-        what: "Off for Codex — switched off in ~/.codex/config.toml.",
-        fix: "Use the switch to turn it on.",
-        menu: [{ label: "Enable for Codex", action }],
-        hint: "Turns it back on in Codex's config.toml.",
-      }
-    : {
-        ...base,
-        what: "Off for OpenCode — denied in opencode.json.",
-        fix: "Use the switch to turn it on.",
-        menu: [{ label: "Enable for OpenCode", action }],
-        hint: "Allows it again in opencode.json.",
-      };
+    ? hiddenBySetting("codex", "Codex", "switched off in", sharedDeployment)
+    : hiddenBySetting("open-code", "OpenCode", "denied in", sharedDeployment);
 }
 
-/**
- * A global Universal skill Claude Code cannot see: `~/.claude/skills` is a
- * real folder (or missing) with no entry for it. The switch links it.
- */
-function claudeNotLinkedCondition(target: LifecycleTarget): Condition {
+/** A global Universal skill Claude Code cannot see: `~/.claude/skills` is a real folder (or missing) with no entry for it. */
+function claudeNotLinkedCondition(): Condition {
   return {
     level: "off",
     status: "Not linked",
     phrase: "not linked",
     plural: "not linked",
     what: "Off for Claude Code — not linked from ~/.claude/skills.",
-    fix: "Use the switch to link it.",
-    menu: [
-      {
-        label: "Link for Claude Code",
-        action: { kind: "set-reader-enabled", target, agent: "claude-code", enabled: true },
-      },
-    ],
-    hint: "Creates a link in ~/.claude/skills to the Universal folder.",
+    menu: [],
   };
 }
 
@@ -619,17 +585,12 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
     const rows: LocationRow[] = restDeployments.map((d) => {
       const conditions = deploymentConditions(d, ctx);
       // A harness whose whole skills dir links to the shared root reads the
-      // folder like any per-skill link; its switch converts the root on demand.
+      // folder like any per-skill link.
       const readsFolder = d.is_symlink || d.shared_via_whole_dir_link;
       const kind: "plugin" | "link" | "copy" = d.plugin ? "plugin" : readsFolder ? "link" : "copy";
       const caption = d.plugin
         ? `${d.plugin.name}${d.plugin.version ? ` v${d.plugin.version}` : ""}`
         : "";
-      // A broken symlink or a plugin row never gets a switch at all (separate
-      // rendering paths cover those); every other row needs an off switch to
-      // reach for - `canOfferHarnessSwitch` is the same gate the rail uses.
-      const offersSwitch = !d.symlink_is_broken && kind !== "plugin";
-      const canToggle = offersSwitch && canOfferHarnessSwitch(d);
       return {
         kind,
         // SAFETY: every deployment Skill Studio scans comes from a
@@ -639,15 +600,13 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
         harness: (harnessId(d.agent) ?? d.agent) as AgentId,
         harnessLabel: harnessLabelFromAgent(d.agent),
         path: d.path,
-        caption,
+        caption: caption || hiddenCaption(conditions),
         conditions,
         level: topLevel(conditions),
         deployment: d,
         lifecycleTarget: { deployment_id: d.id },
-        hasSwitch: canToggle,
+        hasSwitch: false,
         switchOn: !d.disabled && !parkedScope,
-        switchDisabledReason:
-          offersSwitch && !canToggle ? offSwitchReason(d, ctx.anyShared) : undefined,
         invocation: d.invocation ?? skill.invocation,
       };
     });
@@ -658,25 +617,28 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
       for (const agent of AGENTS_READING_SHARED_ROOT_ORDER) {
         if (covered.has(agent)) continue;
         const disabledForReader = disabledReaders.has(agent);
-        const hasSwitch = isGlobal && READERS_WITH_A_SWITCH.includes(agent);
+        const hiddenBySetting =
+          sharedDeployment != null &&
+          isGlobal &&
+          disabledForReader &&
+          (agent === "codex" || agent === "open-code");
         const conditions: Condition[] = parkedScope
           ? [offBecauseParked(readerLabel(agent), live)]
-          : disabledForReader && hasSwitch
-            ? [readerOffCondition(agent, shared.lifecycleTarget)]
+          : hiddenBySetting
+            ? [readerOffCondition(agent, sharedDeployment)]
             : [];
         rows.push({
           kind: "reader",
           harness: agent,
           harnessLabel: readerLabel(agent),
           path: shared.path,
-          caption: "",
+          caption: hiddenCaption(conditions),
           conditions,
           level: topLevel(conditions),
           deployment: null,
           lifecycleTarget: shared.lifecycleTarget,
-          hasSwitch,
+          hasSwitch: false,
           switchOn: !disabledForReader && !parkedScope,
-          switchDisabledReason: hasSwitch ? undefined : readerNoSwitchReason(agent, isGlobal),
           invocation: null,
         });
       }
@@ -686,7 +648,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
         !covered.has("claude-code") &&
         disabledReaders.has("claude-code")
       ) {
-        const conditions = [claudeNotLinkedCondition(shared.lifecycleTarget)];
+        const conditions = [claudeNotLinkedCondition()];
         rows.push({
           kind: "reader",
           harness: "claude-code",
@@ -697,7 +659,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
           level: topLevel(conditions),
           deployment: null,
           lifecycleTarget: shared.lifecycleTarget,
-          hasSwitch: true,
+          hasSwitch: false,
           switchOn: false,
           invocation: null,
         });
@@ -711,15 +673,7 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
       ...(shared?.conditions.map((c) => ({ condition: c, label: "" })) ?? []),
       ...readers.flatMap((r) => r.conditions.map((c) => ({ condition: c, label: r.harnessLabel }))),
     ];
-    // Only rows with a switch of their own count toward "every row off" - an
-    // always-on reader (no switch to flip) can't keep the folder out of the
-    // all-off rollup on its own, see status-spec.md's "all-off" fixture.
-    const switchableRows = readers.filter((r) => r.hasSwitch);
-    const allOff =
-      (shared != null && !shared.switchOn) ||
-      parkedScope ||
-      (switchableRows.length > 0 &&
-        switchableRows.every((r) => r.conditions.some((c) => c.level === "off")));
+    const allOff = (shared != null && !shared.switchOn) || parkedScope;
     const { level: folderLevel, tip: folderTip } = rollup(entries, allOff);
 
     return {
@@ -1120,8 +1074,6 @@ export function rowMenu(
           ? "Manage this plugin with /plugins inside Codex."
           : `Manage this plugin inside ${row.harnessLabel}.`;
   }
-  if (row.kind === "reader" && row.hasSwitch && !hasOff)
-    hint = `Sets it off in ${row.harnessLabel}'s own config.`;
 
   return { entries: plain, danger, hint };
 }

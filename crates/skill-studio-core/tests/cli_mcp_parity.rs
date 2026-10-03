@@ -30,18 +30,13 @@ const EXCLUSIONS: &[Exclusion] = &[
     },
     Exclusion {
         name: "codex_disabled_skill_md_paths",
-        reason: "a read helper the desktop's scan overlay shares with the Codex switch, \
+        reason: "a read helper the desktop's scan overlay shares with the core scan, \
                   not a request/outcome op",
     },
     Exclusion {
         name: "codex_path_form",
         reason: "the path normalization Codex applies before matching a row, shared with \
                   the desktop's scan overlay, not a request/outcome op",
-    },
-    Exclusion {
-        name: "set_codex_skill_disabled_with",
-        reason: "an implementation detail behind the set_harness_enabled surface \
-                  (desktop's skill_harness_disable.rs calls it directly for the Codex arm)",
     },
 ];
 
