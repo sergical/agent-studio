@@ -225,14 +225,24 @@ const styles = stylex.create({
     position: "relative",
     transition: `transform 700ms ${settle}`,
     WebkitTapHighlightColor: "transparent",
+    // A gradient, not a drop-shadow filter: Safari clips a descendant's filter
+    // overflow to the layer it promotes for the transform transition.
+    "::before": {
+      backgroundImage: "radial-gradient(closest-side, oklch(0.45 0.2 293 / .4), transparent)",
+      content: '""',
+      inset: "-20% -30% -40%",
+      pointerEvents: "none",
+      position: "absolute",
+      transform: "translateY(12%)",
+    },
     ":focus-visible": { outline: `2px solid ${siteTokens.text}`, outlineOffset: 4 },
     "@media (prefers-reduced-motion: reduce)": { transition: "none" },
   },
   mascotLift: (y: number) => ({ transform: `translateY(${y}px)` }),
   mascot: {
     display: "block",
-    filter: "drop-shadow(0 24px 40px oklch(0.45 0.2 293 / .45))",
     height: "auto",
+    position: "relative",
     transition: `transform 500ms ${settle}`,
     width: 168,
     "@media (hover: hover) and (pointer: fine)": {
