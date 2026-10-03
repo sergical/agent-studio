@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Skill lifecycle states
 
 One installed skill moves through a fixed set of states, and each state has its own combination of disk layout, registry record, and UI signal.

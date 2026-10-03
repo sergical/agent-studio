@@ -82,7 +82,7 @@ Add it to `opencode.json` in your project, or to `~/.config/opencode/opencode.js
 - Fix broken skills.
 - Park and unpark skills.
 - Remove a duplicate copy.
-- Turn a skill off for one agent: Claude Code, Codex or OpenCode.
+- Turn a skill off for all agents by parking it. Turning it off for one agent only is coming.
 - Install skills, find skills that have a newer version, and update them.
 - List past changes and restore one.
 

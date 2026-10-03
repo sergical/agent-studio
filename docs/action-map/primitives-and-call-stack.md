@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Primitives and the call stack
 
 The eight primitives, how each user job is a short sequence of them, and where each harness's own facts enter. The rule that shapes this file: use the tools the user already has. The app never re-implements a fetch, a merge, or a plugin manager; it calls `npx skills`, `git`, `gh`, `claude plugin`, and the user's editor, and owns only the safe placement of files and the record of what it did.

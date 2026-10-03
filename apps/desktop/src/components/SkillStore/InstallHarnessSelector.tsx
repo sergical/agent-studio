@@ -133,7 +133,7 @@ export function InstallHarnessSelector({
               onCheckedChange={(on) =>
                 onChosenChange(toggleInstallHarness(offered, chosen, id, on))
               }
-              disabled={rowsLocked || installHarnessLocked(id, claudeReadsShared, scope, universal)}
+              disabled={rowsLocked || installHarnessLocked(id, claudeReadsShared, universal)}
               reason={installHarnessLockReason(id, claudeReadsShared, scope, universal)}
             />
           );

@@ -151,7 +151,6 @@ export function SkillStoreInstallFlow({
     offeredHarnesses,
     pickedHarnesses,
     claudeReadsUniversal,
-    installScope,
     universal,
   );
   const destinationError = installDestinationError(universal, chosenHarnesses);
@@ -225,9 +224,7 @@ export function SkillStoreInstallFlow({
             skillName: skill.name,
           }),
           ...installDestinationFields({
-            offered: offeredHarnesses,
             chosen: chosenHarnesses,
-            scope: installScope,
             method: "skills-sh",
             universal,
           }),

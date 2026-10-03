@@ -37,31 +37,6 @@ interface RollupResult {
 
 const RANK = { error: 3, warning: 2, off: 1 } satisfies Record<StatusLevel, number>;
 
-/** The config file each agent keeps its own per-skill off setting in, relative to the home folder. Skill Studio only reads these. */
-function agentConfigSpec(agent: AgentId): { dir: string; file: string } | null {
-  switch (agent) {
-    case "codex":
-      return { dir: ".codex", file: "config.toml" };
-    case "open-code":
-      return { dir: ".config/opencode", file: "opencode.json" };
-    case "claude-code":
-      return { dir: ".claude", file: "settings.json" };
-    default:
-      return null;
-  }
-}
-
-/** The agent's config file next to `path` (a skill folder under that agent's root, or the Universal folder), or null when the agent has none or `path` sits under neither root. */
-function agentConfigFile(agent: AgentId, path: string): { path: string; file: string } | null {
-  const spec = agentConfigSpec(agent);
-  if (!spec) return null;
-  for (const marker of [`/${spec.dir}/`, "/.agents/"]) {
-    const at = path.indexOf(marker);
-    if (at >= 0) return { path: `${path.slice(0, at)}/${spec.dir}/${spec.file}`, file: spec.file };
-  }
-  return null;
-}
-
 /** The row caption for a skill an agent's own setting hides, e.g. "Hidden by Codex setting". */
 function hiddenBySettingCaption(label: string): string {
   return `Hidden by ${label} setting`;
@@ -297,9 +272,11 @@ function hiddenBySetting(
   agent: AgentId,
   label: string,
   where: string,
-  configPath: string,
+  deployment: Deployment,
 ): Condition {
-  const config = agentConfigFile(agent, configPath);
+  // The scan sends the path it read, which honours CODEX_HOME and XDG_CONFIG_HOME. The files are global, so a project row opens the global one.
+  const path = deployment.disabling_config_files?.find((file) => file.agent === agent)?.path;
+  const config = path ? { path, file: path.slice(path.lastIndexOf("/") + 1) } : null;
   return {
     level: "off",
     status: "Off",
@@ -325,20 +302,15 @@ function offCondition(deployment: Deployment): Condition {
   const base = { level: "off" as const, status: "Off", phrase: "off", plural: "off" };
   switch (deployment.disabled_by) {
     case "codex-config":
-      return hiddenBySetting(
-        "codex",
-        "Codex",
-        "switched off in ~/.codex/config.toml",
-        deployment.path,
-      );
+      return hiddenBySetting("codex", "Codex", "switched off in ~/.codex/config.toml", deployment);
     case "opencode-permission":
-      return hiddenBySetting("open-code", "OpenCode", "denied in opencode.json", deployment.path);
+      return hiddenBySetting("open-code", "OpenCode", "denied in opencode.json", deployment);
     case "claude-skill-overrides":
       return hiddenBySetting(
         "claude-code",
         "Claude Code",
         "switched off in ~/.claude/settings.json",
-        deployment.path,
+        deployment,
       );
     case "claude-link-removed":
       return {
@@ -367,10 +339,10 @@ function offCondition(deployment: Deployment): Condition {
 }
 
 /** Hidden for a synthesized reader row by the agent's own config - Codex and OpenCode only. */
-function readerOffCondition(agent: AgentId, sharedPath: string): Condition {
+function readerOffCondition(agent: AgentId, sharedDeployment: Deployment): Condition {
   return agent === "codex"
-    ? hiddenBySetting("codex", "Codex", "switched off in ~/.codex/config.toml", sharedPath)
-    : hiddenBySetting("open-code", "OpenCode", "denied in opencode.json", sharedPath);
+    ? hiddenBySetting("codex", "Codex", "switched off in ~/.codex/config.toml", sharedDeployment)
+    : hiddenBySetting("open-code", "OpenCode", "denied in opencode.json", sharedDeployment);
 }
 
 /** A global Universal skill Claude Code cannot see: `~/.claude/skills` is a real folder (or missing) with no entry for it. */
@@ -651,11 +623,14 @@ export function buildScopeGroups(skill: InstalledSkill): ScopeGroup[] {
         if (covered.has(agent)) continue;
         const disabledForReader = disabledReaders.has(agent);
         const hiddenBySetting =
-          isGlobal && disabledForReader && (agent === "codex" || agent === "open-code");
+          sharedDeployment != null &&
+          isGlobal &&
+          disabledForReader &&
+          (agent === "codex" || agent === "open-code");
         const conditions: Condition[] = parkedScope
           ? [offBecauseParked(readerLabel(agent), live)]
           : hiddenBySetting
-            ? [readerOffCondition(agent, shared.path)]
+            ? [readerOffCondition(agent, sharedDeployment)]
             : [];
         rows.push({
           kind: "reader",

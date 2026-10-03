@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Settings, tracked projects, and editor choice
 
 This area covers the Settings view's Project folders and Open in editor cards: which folders Skill Studio scans for skills, which discovery sources feed that list, and which editor opens a skill's files.

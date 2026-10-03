@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Frontend to keep
 
 What the Claude stack #73 to #134 built in `apps/desktop/src`, `packages/ui`, and `packages/lib`, and what the new core work must not undo. Read from the PR bodies, the `docs/spec-native-feel-*.md` files, and the area files on 2026-09-17.

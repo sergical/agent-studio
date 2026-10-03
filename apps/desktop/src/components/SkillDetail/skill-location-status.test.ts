@@ -649,6 +649,7 @@ describe("rowMenu", () => {
       symlink_target: "/home/.agents/skills/find-bugs",
       disabled: true,
       disabled_by: "codex-config",
+      disabling_config_files: [{ agent: "codex", path: "/home/.codex/config.toml" }],
       path: "/home/.codex/skills/find-bugs",
     });
     const skill = fixtureSkill({ deployments: [shared, codex] });

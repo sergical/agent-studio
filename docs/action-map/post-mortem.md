@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Post-mortem: why the two finished stacks missed the target
 
 Read on 2026-09-16 from the session transcripts on disk. Claude Code sessions live under `~/.claude/projects/-Users-sergiydybskiy-src-agent-studio*/`. Codex sessions live under `~/.codex/sessions/2026/09/`. The question was: the prompts that produced pull requests #73 to #134 and #79 to #141 were written by the same person with the same goal, so why did neither stack reach the rules in the README?

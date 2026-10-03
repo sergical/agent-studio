@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # System overview
 
 Skill Studio manages agent skills on disk across five harnesses, and the core has to guarantee that a write either lands whole or leaves a repairable trace, never a half-written folder with no record of what was mid-flight.

@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Definition of done
 
 Done means every gap in this folder is closed and every check below is green in CI, on a fresh clone, with no single-thread flag.

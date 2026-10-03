@@ -97,13 +97,39 @@ describe("agent rows", () => {
 
   it("captions a Codex reader row 'Hidden by Codex setting' and offers 'Open config.toml', or names what the row shows instead", () => {
     const groups = buildScopeGroups(
-      skillWithDeployments([sharedDeployment({ disabled_readers: ["codex"] })]),
+      skillWithDeployments([
+        sharedDeployment({
+          disabled_readers: ["codex"],
+          disabling_config_files: [{ agent: "codex", path: "/custom/codex-home/config.toml" }],
+        }),
+      ]),
     );
     const codex = groups.find((g) => g.isGlobal)!.rows.find((r) => r.harness === "codex")!;
     expect(codex.caption).toBe("Hidden by Codex setting");
     expect(rowMenu(codex, "Global").entries[0]).toMatchObject({
       label: "Open config.toml",
-      action: { kind: "reveal", path: "/home/.codex/config.toml", label: "config.toml" },
+      action: { kind: "reveal", path: "/custom/codex-home/config.toml", label: "config.toml" },
+    });
+  });
+
+  it("opens_the_global_settings_file_from_a_project_row_hidden_by_a_setting_or_names_the_path_it_opens", () => {
+    const projectClaude = withScannerIdentity({
+      ...sharedDeployment({
+        agent: "Claude Code",
+        scope: "project",
+        project_path: "/proj",
+        path: "/proj/.claude/skills/find-bugs",
+        is_symlink: false,
+        disabled: true,
+        disabled_by: "claude-skill-overrides",
+        disabling_config_files: [{ agent: "claude-code", path: "/home/.claude/settings.json" }],
+      }),
+    });
+    const groups = buildScopeGroups(skillWithDeployments([projectClaude]));
+    const row = groups.find((g) => !g.isGlobal)!.rows.find((r) => r.harness === "claude-code")!;
+    expect(rowMenu(row, "Project").entries[0]).toMatchObject({
+      label: "Open settings.json",
+      action: { kind: "reveal", path: "/home/.claude/settings.json" },
     });
   });
 });

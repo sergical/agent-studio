@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Shared root
 
 The universal skills folder and the three ledgers that describe it. Read from the code on 2026-09-17. This is the one place every harness meets, so it is the deployment target for install and the anchor for park, fork, and outdated.

@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Sources
 
 The pages to open when a harness question comes up. Every URL was fetched and returned a real page on 2026-09-16 unless the row says Open. When a fact in a harness file has no row here, it came from the code or from a local machine and says so.

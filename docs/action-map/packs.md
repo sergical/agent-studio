@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Skill packs
 
 Deferred on 2026-09-17: packs are out of the first release scope (plan.md, unit 4.3). The `ops` functions and tests stay; the `skill-packs` runtime flag goes away and the module is simply not registered with a surface.

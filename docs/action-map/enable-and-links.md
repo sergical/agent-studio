@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Enable and links
 
 This area turns a skill deployment on or off, per harness or per reader.

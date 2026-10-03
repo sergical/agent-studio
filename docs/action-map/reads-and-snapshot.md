@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Reads and snapshot
 
 This area answers one question: what skills exist, and how are they used.

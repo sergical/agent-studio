@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Remove and update
 
 This area takes a skill off disk, or refreshes it in place, and checks whether a newer version exists.

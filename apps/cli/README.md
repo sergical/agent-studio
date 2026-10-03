@@ -17,8 +17,8 @@ skill-studio usage      [--days <n>] [--json]
 skill-studio park       <skill> | --id <id>
 skill-studio unpark     <skill> | --id <id>
 skill-studio remove     <skill> | --id <id>
-skill-studio enable     <skill> --agent <agent> [--project-path <dir>]
-skill-studio disable    <skill> --agent <agent> [--project-path <dir>]
+skill-studio enable     <skill> | --id <id>   (same as unpark)
+skill-studio disable    <skill> | --id <id>   (same as park)
 skill-studio mcp
 ```
 

@@ -41,7 +41,7 @@ const questions: ReadonlyArray<{ question: string; answer: ReactNode }> = [
   {
     question: "Can I turn a skill off for one agent only?",
     answer:
-      "Yes. A skill in one agent's own folder belongs to that agent only, so parking it turns it off there and nowhere else. A shared skill can also be switched off for Claude Code, Codex or OpenCode alone.",
+      "Not yet. Turning a skill off parks it, which turns it off for all agents. A skill in one agent's own folder belongs to that agent only, so parking it turns it off there and nowhere else. Turning a shared skill off for one agent is coming.",
   },
   {
     question: "Does it send my data anywhere?",

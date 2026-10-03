@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Action map
 
 This folder describes every action the desktop app can take, area by area. Each file answers four questions about one area: what the code does today, what the Claude stack changed, what the Codex stack changed, and where we want it to be.

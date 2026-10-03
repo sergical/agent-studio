@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Shared state on disk
 
 This area covers every file the app writes, who writes each one, and what stops two writers from colliding.

@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # pi
 
 What the code knows about the pi coding agent, read on 2026-09-17. Facts are verified against the code unless marked assumed or doc-only.

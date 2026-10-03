@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Work plan
 
 How the target in the README gets built: the architecture in units, the rule for cutting work, the list of units, how each unit is baselined and measured, the test strategy, the lint set, what done means, and how we work. The GitHub epic mirrors this file; when they differ, fix both in one pull request.

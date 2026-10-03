@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # Performance
 
 What blocks the UI thread today, what the scan budget is, what timing exists, and the minimal baseline to add first. Audited on 2026-09-17 from apps/desktop/src-tauri/src/skills/. Budgets are in definition-of-done.md: scan under 100 ms, any local mutation under 50 ms, UI event within one frame of the journal commit.

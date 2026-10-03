@@ -1,3 +1,5 @@
+> Historical snapshot. `set_harness_enabled` was removed in #387; Park is now the only way to turn a skill off.
+
 # User stories
 
 One person doing one thing end to end. Each story says what happens today, what the target is, which primitives and harness facts it uses, and the check that marks it done. The stories are the vertical slices in plan.md, group 3, in the same order.
