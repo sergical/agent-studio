@@ -5,8 +5,12 @@
 
 import type { SkillAgentRunState, SkillAgentRunStatus } from "../../hooks/useSkillAgentRun";
 
-/** Returns the terminal transcript label for a completed or failed skill agent run. */
+/** Returns the terminal transcript label for a completed, cancelled, or
+ * failed skill agent run. A user-initiated cancel is distinguished from a
+ * genuine failure via the `cancelled` run status the runner's cancel branch
+ * drives `applyEvent` to set. */
 export function skillAgentRunTerminalLabel(status: SkillAgentRunStatus): string | undefined {
+  if (status === "cancelled") return "Cancelled";
   if (status === "error") return "Failed";
   if (status === "finished") return "Finished";
   return undefined;
