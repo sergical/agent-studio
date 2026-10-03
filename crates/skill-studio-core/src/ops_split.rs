@@ -230,26 +230,14 @@ fn split_body(
         .iter()
         .map(|copy| (copy.path.clone(), pre_fingerprint.clone()))
         .collect();
-    let universal_skill_md = deployment.path.join("SKILL.md");
-    let mut codex_rows: Vec<PathBuf> = Vec::new();
-    for copy in &copies {
-        if copy.harness.as_str() == AgentId::CODEX
-            && crate::ops::codex_needs_carried_row(rt, &universal_skill_md, &copy.path)?
-        {
-            codex_rows.push(copy.path.join("SKILL.md"));
-        }
-    }
-    let inverse = crate::events::with_remove_codex_rows(
-        crate::events::with_remove_copies(
-            crate::events::restore_backup_inverse_with_links(
-                &deployment.path,
-                Some(&pre_fingerprint),
-                None,
-                &link_targets,
-            ),
-            &copy_fingerprints,
+    let inverse = crate::events::with_remove_copies(
+        crate::events::restore_backup_inverse_with_links(
+            &deployment.path,
+            Some(&pre_fingerprint),
+            None,
+            &link_targets,
         ),
-        &codex_rows,
+        &copy_fingerprints,
     );
 
     let draft = EventDraft {
@@ -270,17 +258,14 @@ fn split_body(
     };
     session.store.record(&session.guard, &id, &draft)?;
 
-    let mut appended_codex_rows = Vec::new();
     let write_result = write_split(
         rt,
         &session,
         fs,
-        &mut appended_codex_rows,
         &SplitWrites {
             links: &links,
             scoped_links: &scoped_links,
             copies: &copies,
-            codex_rows: &codex_rows,
             files: &files,
             universal: &deployment.path,
             quarantine_dir: &quarantine_dir,
@@ -288,14 +273,7 @@ fn split_body(
         },
     );
     if let Err(e) = write_result {
-        roll_back_split(
-            rt,
-            &session,
-            fs,
-            &copies,
-            &appended_codex_rows,
-            &link_targets,
-        );
+        roll_back_split(rt, &session, fs, &copies, &link_targets);
         let _ = session
             .store
             .finish(&session.guard, &id, EventStatus::Failed, None);
@@ -366,7 +344,6 @@ struct SplitWrites<'a> {
     links: &'a [PathBuf],
     scoped_links: &'a [crate::ports::ScopedPath],
     copies: &'a [SplitCopy],
-    codex_rows: &'a [PathBuf],
     files: &'a [crate::fsops::StageFile],
     universal: &'a Path,
     quarantine_dir: &'a Path,
@@ -374,13 +351,10 @@ struct SplitWrites<'a> {
 }
 
 /// Links come down first: a Claude Code copy lands where its link was.
-/// `appended_codex_rows` collects each carried Codex row once it is written,
-/// so a rollback removes only rows this split added.
 fn write_split(
     rt: &Runtime,
     session: &MutationSession,
     fs: &dyn ScopeFs,
-    appended_codex_rows: &mut Vec<PathBuf>,
     writes: &SplitWrites<'_>,
 ) -> Result<(), CoreError> {
     for (link, scoped_link) in writes.links.iter().zip(writes.scoped_links) {
@@ -391,11 +365,6 @@ fn write_split(
         let root = copy.path.parent().unwrap_or(&copy.path);
         crate::ops::ensure_dir_all(rt, session, fs, root)?;
         crate::ops::restore_write_dir(rt, &session.guard, &copy.path, writes.files)?;
-        let skill_md = copy.path.join("SKILL.md");
-        if writes.codex_rows.contains(&skill_md) {
-            crate::ops::codex_append_carried_row(rt, &session.guard, &skill_md, false)?;
-            appended_codex_rows.push(skill_md);
-        }
     }
     crate::ops::ensure_dir_all(rt, session, fs, writes.quarantine_dir)?;
     let scoped_from = crate::ports::confine(&rt.scope, fs, writes.universal)?;
@@ -412,12 +381,8 @@ fn roll_back_split(
     session: &MutationSession,
     fs: &dyn ScopeFs,
     copies: &[SplitCopy],
-    appended_codex_rows: &[PathBuf],
     link_targets: &[(PathBuf, PathBuf)],
 ) {
-    for skill_md in appended_codex_rows {
-        let _ = crate::ops::codex_remove_carried_row(rt, &session.guard, skill_md);
-    }
     for copy in copies {
         if fs
             .symlink_metadata(&copy.path)

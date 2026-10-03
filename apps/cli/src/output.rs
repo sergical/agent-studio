@@ -8,8 +8,8 @@ use skill_studio_core::doctor::DoctorInvariant;
 use skill_studio_core::dto::{
     CommandHealth, ConflictReport, Diagnosis, DoctorReport, EventDto, FixApplied, FixSkillOutcome,
     FrontmatterRepairPreview, InstallHarnessResult, InstallOutcome, InstallPreferences, Inventory,
-    IssueKind, ParkOutcome, RemoveOutcome, RepairOutcome, RestoreOutcome, ScanRequest,
-    SetHarnessEnabledOutcome, Severity, UnparkOutcome, UpdateAllOutcome, UpdateOutcome,
+    IssueKind, ParkOutcome, RemoveOutcome, RepairOutcome, RestoreOutcome, ScanRequest, Severity,
+    UnparkOutcome, UpdateAllOutcome, UpdateOutcome,
 };
 use skill_studio_core::harness::{Capabilities, HarnessReport};
 use skill_studio_core::ops::ResultEnvelope;
@@ -519,24 +519,6 @@ pub fn print_update_all_outcome_table(envelope: &ResultEnvelope<UpdateAllOutcome
     }
 }
 
-/// Prints `set-harness-enabled`'s table: how many of the harness's paths
-/// for this skill were toggled, out of how many it needed to touch.
-pub fn print_set_harness_enabled_outcome_table(
-    envelope: &ResultEnvelope<SetHarnessEnabledOutcome>,
-) {
-    print_errors(envelope);
-    let Some(outcome) = &envelope.data else {
-        return;
-    };
-    println!(
-        "{} on {}: {} of {} path(s) toggled",
-        outcome.skill.0,
-        outcome.harness.as_str(),
-        outcome.toggled,
-        outcome.total,
-    );
-}
-
 /// Prints `remove`'s table: the skill removed and, when the deployment was
 /// `Copy`/`Fork` (quarantined rather than deleted), where its bytes landed.
 pub fn print_remove_outcome_table(envelope: &ResultEnvelope<RemoveOutcome>) {
@@ -743,12 +725,6 @@ pub fn write_schemas(out: Option<PathBuf>) -> ExitCode {
         }),
         ("unpark_outcome", || {
             schemars::schema_for!(skill_studio_core::dto::UnparkOutcome)
-        }),
-        ("set_harness_enabled_request", || {
-            schemars::schema_for!(skill_studio_core::dto::SetHarnessEnabledRequest)
-        }),
-        ("set_harness_enabled_outcome", || {
-            schemars::schema_for!(skill_studio_core::dto::SetHarnessEnabledOutcome)
         }),
         (
             "outdated_result",

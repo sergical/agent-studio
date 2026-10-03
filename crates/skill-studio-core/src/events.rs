@@ -32,9 +32,9 @@ pub enum EventKind {
     Park,
     /// Parked skill moved back.
     Unpark,
-    /// Native harness disable written.
+    /// Native harness disable written (older builds; kept so old journals load).
     HarnessDisable,
-    /// Native harness disable cleared.
+    /// Native harness disable cleared (older builds; kept so old journals load).
     HarnessEnable,
     /// Folder moved into `.skill-studio-disabled`.
     MoveAsideDisable,
@@ -608,32 +608,6 @@ pub(crate) fn parse_restore_remove_copies(inverse: &serde_json::Value) -> Vec<(P
         .collect()
 }
 
-/// Adds a `"remove_codex_rows"` array to a `restore_backup` inverse: the
-/// `SKILL.md` paths whose disabled `[[skills.config]]` row the same event
-/// added to Codex's config (`ops::split` carries one to a Codex copy of a
-/// skill that was off). `restore_event` removes exactly those rows.
-pub(crate) fn with_remove_codex_rows(
-    mut inverse: serde_json::Value,
-    rows: &[PathBuf],
-) -> serde_json::Value {
-    if !rows.is_empty() {
-        inverse["remove_codex_rows"] = serde_json::json!(rows);
-    }
-    inverse
-}
-
-/// Reads back the `"remove_codex_rows"` array [`with_remove_codex_rows`]
-/// adds, or an empty list for an inverse that has none.
-pub(crate) fn parse_restore_remove_codex_rows(inverse: &serde_json::Value) -> Vec<PathBuf> {
-    inverse
-        .get("remove_codex_rows")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry.as_str().map(PathBuf::from))
-        .collect()
-}
-
 /// Adds a `"write_back"` array to a `restore_backup` inverse: folders the
 /// same restore removed (a split's copies), to write back from this event's
 /// own backup when the restore is undone. Mirrors `"remove_copies"`.
@@ -688,39 +662,6 @@ pub(crate) fn parse_restore_remove_links(inverse: &serde_json::Value) -> Vec<(Pa
             let path = PathBuf::from(entry.get("path")?.as_str()?);
             let target = PathBuf::from(entry.get("target")?.as_str()?);
             Some((path, target))
-        })
-        .collect()
-}
-
-/// Adds an `"add_codex_rows"` array to a `restore_backup` inverse: the
-/// `SKILL.md` paths whose Codex config row the same restore removed, with
-/// the `enabled` value that row held. Mirrors `"remove_codex_rows"`.
-pub(crate) fn with_add_codex_rows(
-    mut inverse: serde_json::Value,
-    rows: &[(PathBuf, bool)],
-) -> serde_json::Value {
-    if !rows.is_empty() {
-        let rows: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|(path, enabled)| serde_json::json!({ "path": path, "enabled": enabled }))
-            .collect();
-        inverse["add_codex_rows"] = serde_json::Value::Array(rows);
-    }
-    inverse
-}
-
-/// Reads back the `"add_codex_rows"` array [`with_add_codex_rows`] adds, or
-/// an empty list for an inverse that has none.
-pub(crate) fn parse_restore_add_codex_rows(inverse: &serde_json::Value) -> Vec<(PathBuf, bool)> {
-    inverse
-        .get("add_codex_rows")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            let path = PathBuf::from(entry.get("path")?.as_str()?);
-            let enabled = entry.get("enabled")?.as_bool()?;
-            Some((path, enabled))
         })
         .collect()
 }
@@ -958,27 +899,19 @@ mod tests {
         );
         assert!(parse_restore_write_back(&old).is_empty());
         assert!(parse_restore_remove_links(&old).is_empty());
-        assert!(parse_restore_add_codex_rows(&old).is_empty());
         assert!(parse_restore_secondary_post(&old).is_empty());
     }
 
     #[test]
     fn mirror_fields_round_trip_through_their_parsers() {
-        let inverse = with_add_codex_rows(
-            with_remove_links(
-                with_write_back(serde_json::json!({}), &[PathBuf::from("/c")]),
-                &[(PathBuf::from("/l"), PathBuf::from("../t"))],
-            ),
-            &[(PathBuf::from("/c/SKILL.md"), true)],
+        let inverse = with_remove_links(
+            with_write_back(serde_json::json!({}), &[PathBuf::from("/c")]),
+            &[(PathBuf::from("/l"), PathBuf::from("../t"))],
         );
         assert_eq!(parse_restore_write_back(&inverse), [PathBuf::from("/c")]);
         assert_eq!(
             parse_restore_remove_links(&inverse),
             [(PathBuf::from("/l"), PathBuf::from("../t"))]
-        );
-        assert_eq!(
-            parse_restore_add_codex_rows(&inverse),
-            [(PathBuf::from("/c/SKILL.md"), true)]
         );
     }
 }

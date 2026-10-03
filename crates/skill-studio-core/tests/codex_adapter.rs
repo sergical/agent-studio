@@ -3,9 +3,8 @@
 // the same allow needs to be declared here too.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Real-disk integration tests for the Codex adapter: the `[[skills.config]]`
-//! disable row, `ops::park`'s fix for the stale-row bug it leaves behind, and
-//! `CODEX_HOME` support. Like `park_and_unpark.rs`, these run against
+//! Real-disk integration tests for the Codex adapter: `ops::park` and
+//! `ops::unpark` leaving Codex's config alone, and `CODEX_HOME` support. Like `park_and_unpark.rs`, these run against
 //! `skill-studio-host`'s real adapters rather than the in-memory `FixtureFs`.
 
 use std::path::Path;
@@ -13,11 +12,10 @@ use std::sync::{Arc, Mutex};
 
 use skill_studio_core::discovery_sources::DiscoverySources;
 use skill_studio_core::dto::{ParkRequest, UnparkRequest};
-use skill_studio_core::error::CoreError;
 use skill_studio_core::harness::HarnessCatalog;
 use skill_studio_core::identity::RootKind;
 use skill_studio_core::ops;
-use skill_studio_core::ports::{acquire_exclusive, Ports, Runtime};
+use skill_studio_core::ports::{Ports, Runtime};
 use skill_studio_core::scope::RuntimeScope;
 use skill_studio_core::testing::golden::{ctx, unique_temp_dir};
 use skill_studio_core::testing::{FakeClock, FakeIds, RecordingSink};
@@ -56,99 +54,14 @@ fn runtime_for(home: &Path, codex_home: Option<&Path>) -> Runtime {
     Runtime::new(&scope, ports).unwrap()
 }
 
-/// `ops::set_codex_skill_disabled_with` takes the exclusive lease from its
-/// caller, because the desktop command that drives it already holds one and
-/// advisory locks do not nest in-process. These tests hold none, so this
-/// acquires the lease the same way that command does before handing it over.
-fn set_codex_skill_disabled(
-    rt: &Runtime,
-    skill_md_path: &Path,
-    disabled: bool,
-) -> Result<(), CoreError> {
-    let guard = acquire_exclusive(rt.ports.leases.as_ref(), &rt.scope)?;
-    ops::set_codex_skill_disabled_with(rt, &ctx(), &guard, skill_md_path, disabled)
-}
-
-/// `codex_disable_writes_the_skills_config_row_and_keeps_other_tables_and_comments_or_names_the_dropped_content`:
-/// disabling a skill adds a `[[skills.config]]` row, but every other byte of
-/// an existing `config.toml` - an unrelated table, and the comment above it -
-/// survives untouched, since `set_codex_skill_disabled_with` edits the parsed
-/// document in place rather than re-serializing a plain value.
+/// `parking_a_skill_with_a_user_written_codex_disable_row_leaves_config_toml_byte_identical_or_names_the_rewritten_row`:
+/// the user's own `[[skills.config]] enabled = false` row names the skill's
+/// `SKILL.md`. Park moves the folder and nothing else: Codex's config is the
+/// user's, so a rewrite of the row (the old carry) is the failure.
 #[test]
-fn codex_disable_writes_the_skills_config_row_and_keeps_other_tables_and_comments_or_names_the_dropped_content(
+fn parking_a_skill_with_a_user_written_codex_disable_row_leaves_config_toml_byte_identical_or_names_the_rewritten_row(
 ) {
-    let home = unique_temp_dir("codex_disable_preserves");
-    let codex_home = home.join(".codex");
-    std::fs::create_dir_all(&codex_home).unwrap();
-    let original =
-        "# a user comment\nmodel = \"o3\"\n\n[projects.\"/my-project\"]\ntrusted = true\n";
-    std::fs::write(codex_home.join("config.toml"), original).unwrap();
-    let rt = runtime_for(&home, None);
-    let skill_md = home
-        .join(UNIVERSAL_ROOT_RELATIVE)
-        .join("gamma")
-        .join("SKILL.md");
-
-    set_codex_skill_disabled(&rt, &skill_md, true).unwrap();
-
-    let written = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
-    assert!(
-        written.contains("# a user comment"),
-        "dropped content: the leading comment did not survive: {written}"
-    );
-    assert!(
-        written.contains("[projects.\"/my-project\"]") && written.contains("trusted = true"),
-        "dropped content: the unrelated projects table did not survive: {written}"
-    );
-    assert!(
-        written.contains(&skill_md.to_string_lossy().to_string())
-            && written.contains("enabled = false"),
-        "the new skills.config row was not written: {written}"
-    );
-
-    std::fs::remove_dir_all(&home).ok();
-}
-
-/// `codex_disable_refuses_a_mistyped_skills_key_or_names_the_panic`: a
-/// `config.toml` with `skills` already bound to a string, not a table,
-/// makes disable return an error naming `skills` rather than panic on an
-/// `.expect()` that assumed the user's own document.
-#[test]
-fn codex_disable_refuses_a_mistyped_skills_key_or_names_the_panic() {
-    let home = unique_temp_dir("codex_disable_mistyped");
-    let codex_home = home.join(".codex");
-    std::fs::create_dir_all(&codex_home).unwrap();
-    let original = "skills = \"oops\"\n";
-    std::fs::write(codex_home.join("config.toml"), original).unwrap();
-    let rt = runtime_for(&home, None);
-    let skill_md = home
-        .join(UNIVERSAL_ROOT_RELATIVE)
-        .join("gamma")
-        .join("SKILL.md");
-
-    let err = set_codex_skill_disabled(&rt, &skill_md, true).unwrap_err();
-    assert!(
-        err.message.contains("skills"),
-        "the error did not name the mistyped key: {}",
-        err.message
-    );
-
-    let unchanged = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
-    assert_eq!(
-        unchanged, original,
-        "config.toml was written to despite the error"
-    );
-
-    std::fs::remove_dir_all(&home).ok();
-}
-
-/// `codex_park_updates_the_skills_config_row_path_or_names_the_stale_row`: a
-/// skill disabled through Codex's config, then parked, keeps its disabled
-/// row pointing at the directory it actually lives in now - not the one
-/// `park` just moved it out of (`docs/action-map/harnesses/codex.md`).
-#[test]
-fn codex_park_updates_the_skills_config_row_path_or_names_the_stale_row() {
-    let home = unique_temp_dir("codex_park_row");
+    let home = unique_temp_dir("codex_park_leaves_config");
     let dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -156,9 +69,14 @@ fn codex_park_updates_the_skills_config_row_path_or_names_the_stale_row() {
         b"---\nname: gamma\ndescription: a parkable skill\n---\nBody.\n",
     )
     .unwrap();
+    let config_path = home.join(".codex").join("config.toml");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    let original = format!(
+        "# a user comment\nmodel = \"o3\"\n\n[[skills.config]]\npath = \"{}\"\nenabled = false\n",
+        dir.join("SKILL.md").display()
+    );
+    std::fs::write(&config_path, &original).unwrap();
     let rt = runtime_for(&home, None);
-    let old_skill_md = dir.join("SKILL.md");
-    set_codex_skill_disabled(&rt, &old_skill_md, true).unwrap();
 
     let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
     let deployment_id = inventory
@@ -172,73 +90,19 @@ fn codex_park_updates_the_skills_config_row_path_or_names_the_stale_row() {
         .unwrap()
         .id
         .clone();
-
     let outcome = ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap();
-    let new_skill_md = outcome.parked_path.join("SKILL.md");
     assert_eq!(
-        new_skill_md,
-        home.join(PARKED_ROOT_RELATIVE)
-            .join("gamma")
-            .join("SKILL.md")
+        outcome.parked_path,
+        home.join(PARKED_ROOT_RELATIVE).join("gamma")
     );
-
-    let config = std::fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
-    assert!(
-        !config.contains(&old_skill_md.to_string_lossy().to_string()),
-        "the stale row: config.toml still names the pre-park path: {config}"
+    assert_eq!(
+        std::fs::read_to_string(&config_path).unwrap(),
+        original,
+        "park rewrote the user's config.toml"
     );
-    assert!(
-        config.contains(&new_skill_md.to_string_lossy().to_string()),
-        "config.toml never picked up the parked path: {config}"
-    );
-
-    std::fs::remove_dir_all(&home).ok();
-}
-
-/// `codex_unpark_rewrites_the_disable_row_back_to_the_live_path_or_names_the_stale_parked_path`:
-/// disable, park, then unpark - the row `park` rewrote to the parked
-/// `SKILL.md` path must come back to naming the live path, or Codex still
-/// treats the restored skill as disabled at a directory that no longer
-/// exists.
-#[test]
-fn codex_unpark_rewrites_the_disable_row_back_to_the_live_path_or_names_the_stale_parked_path() {
-    let home = unique_temp_dir("codex_unpark_row");
-    let dir = home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("SKILL.md"),
-        b"---\nname: gamma\ndescription: a parkable skill\n---\nBody.\n",
-    )
-    .unwrap();
-    let rt = runtime_for(&home, None);
-    let live_skill_md = dir.join("SKILL.md");
-    set_codex_skill_disabled(&rt, &live_skill_md, true).unwrap();
 
     let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
-    let deployment_id = inventory
-        .skills
-        .iter()
-        .find(|s| s.name.0 == "gamma")
-        .unwrap()
-        .deployments
-        .iter()
-        .find(|d| d.root.kind == RootKind::Universal)
-        .unwrap()
-        .id
-        .clone();
-
-    let park_outcome = ops::park(
-        &rt,
-        &ctx(),
-        &ParkRequest {
-            deployment_id: deployment_id.clone(),
-        },
-    )
-    .unwrap();
-    let parked_skill_md = park_outcome.parked_path.join("SKILL.md");
-
-    let inventory = ops::scan(&rt, &ctx(), &Default::default()).unwrap();
-    let parked_deployment_id = inventory
+    let parked_id = inventory
         .skills
         .iter()
         .find(|s| s.name.0 == "gamma")
@@ -249,24 +113,18 @@ fn codex_unpark_rewrites_the_disable_row_back_to_the_live_path_or_names_the_stal
         .unwrap()
         .id
         .clone();
-
     ops::unpark(
         &rt,
         &ctx(),
         &UnparkRequest {
-            deployment_id: parked_deployment_id,
+            deployment_id: parked_id,
         },
     )
     .unwrap();
-
-    let config = std::fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
-    assert!(
-        !config.contains(&parked_skill_md.to_string_lossy().to_string()),
-        "the stale parked path: config.toml still names it after unpark: {config}"
-    );
-    assert!(
-        config.contains(&live_skill_md.to_string_lossy().to_string()),
-        "config.toml never picked up the live path after unpark: {config}"
+    assert_eq!(
+        std::fs::read_to_string(&config_path).unwrap(),
+        original,
+        "unpark rewrote the user's config.toml"
     );
 
     std::fs::remove_dir_all(&home).ok();
@@ -274,8 +132,8 @@ fn codex_unpark_rewrites_the_disable_row_back_to_the_live_path_or_names_the_stal
 
 /// `codex_honours_codex_home_for_config_and_rollouts_or_names_the_path_read_from_the_default`:
 /// with `CODEX_HOME` pointed somewhere other than `<home>/.codex`, both the
-/// disable-config writer and the rollout reader follow it - neither one
-/// falls back to reading or writing under the default path.
+/// disable-config reader and the rollout reader follow it - neither one
+/// falls back to reading under the default path.
 #[test]
 fn codex_honours_codex_home_for_config_and_rollouts_or_names_the_path_read_from_the_default() {
     let _guard = CODEX_HOME_ENV_LOCK.lock().unwrap();
@@ -290,20 +148,25 @@ fn codex_honours_codex_home_for_config_and_rollouts_or_names_the_path_read_from_
     std::fs::create_dir_all(&custom_codex_home).unwrap();
     std::env::set_var("CODEX_HOME", &custom_codex_home);
 
-    // Config: the writer must land under the override, not `<home>/.codex`.
-    let rt = runtime_for(&home, Some(&skill_studio_host::codex_home(&home)));
+    // Config: the disable rows are read from the override, not `<home>/.codex`.
     let skill_md = home
         .join(UNIVERSAL_ROOT_RELATIVE)
         .join("gamma")
         .join("SKILL.md");
-    set_codex_skill_disabled(&rt, &skill_md, true).unwrap();
+    std::fs::write(
+        custom_codex_home.join("config.toml"),
+        format!(
+            "[[skills.config]]\npath = \"{}\"\nenabled = false\n",
+            skill_md.display()
+        ),
+    )
+    .unwrap();
+    let fs = RealFs::new();
+    let codex_home = skill_studio_host::codex_home(&home);
     assert!(
-        custom_codex_home.join("config.toml").exists(),
-        "the path read from the default: config.toml was not written under CODEX_HOME"
-    );
-    assert!(
-        !home.join(".codex").join("config.toml").exists(),
-        "the path read from the default: config.toml leaked into <home>/.codex despite CODEX_HOME"
+        ops::codex_disabled_skill_md_paths(&fs, &codex_home)
+            .contains(&ops::codex_path_form(&fs, &skill_md)),
+        "the path read from the default: the disable row under CODEX_HOME was not read"
     );
 
     // Rollouts: the reader must find a session file under the override.

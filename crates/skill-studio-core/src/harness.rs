@@ -378,15 +378,7 @@ impl CapabilityReport {
             Support::Unknown => Some(format!("{name}: no primary source found")),
             _ => None,
         };
-        let native = facts
-            .native_disable
-            .as_ref()
-            .map_or(Support::Unknown, |d| d.writable.clone());
         let operations = vec![
-            OperationSupport {
-                operation: "set_harness_enabled".into(),
-                support: native,
-            },
             OperationSupport {
                 operation: "set_claude_link".into(),
                 support: facts.follows_per_skill_link.clone(),
@@ -791,7 +783,7 @@ fn pi() -> HarnessFacts {
             // The `settings.json` `skills` array accepts `!pattern` and
             // `-path` exclusions, but the exact entry the interactive
             // `pi config` writes is undocumented, so Skill Studio writes
-            // none: `set_harness_enabled` refuses pi and Park is the off path.
+            // none: Park is the off path.
             writable: Support::Unknown,
             disabled_by: DisabledBy::PiSettings,
             evidence: Evidence::verified(PI_PACKAGES_DOC),

@@ -3,17 +3,17 @@
 // the same allow needs to be declared here too.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Real-disk tests for the per-harness switches other than Claude Code's:
-//! Codex's `[[skills.config]]` row and `OpenCode`'s `permission.skill` deny.
-//! Every test runs against a temp home.
+//! Real-disk tests for reading the per-skill settings Codex
+//! (`[[skills.config]]`) and `OpenCode` (`permission.skill`) keep in their own
+//! config files. Skill Studio never writes them. Every test runs against a
+//! temp home.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use skill_studio_core::dto::{DeploymentDto, Inventory, SetHarnessEnabledRequest};
-use skill_studio_core::error::{CoreError, ErrorCode};
+use skill_studio_core::dto::{DeploymentDto, Inventory};
 use skill_studio_core::harness::{DisabledBy, HarnessCatalog};
-use skill_studio_core::identity::{AgentId, RootKind, SkillName};
+use skill_studio_core::identity::{AgentId, RootKind};
 use skill_studio_core::ops;
 use skill_studio_core::ports::{Ports, Runtime};
 use skill_studio_core::scope::RuntimeScope;
@@ -54,20 +54,6 @@ fn write_skill(dir: &Path, name: &str) {
     .unwrap();
 }
 
-fn switch(rt: &Runtime, name: &str, harness: &'static str, enabled: bool) {
-    ops::set_harness_enabled(
-        rt,
-        &ctx(),
-        &SetHarnessEnabledRequest {
-            skill: SkillName(name.into()),
-            harness: AgentId::from(harness),
-            enabled,
-            project_path: None,
-        },
-    )
-    .unwrap_or_else(|e| panic!("the {harness} switch for {name} failed: {}", e.message));
-}
-
 fn scan(rt: &Runtime) -> Inventory {
     ops::scan(rt, &ctx(), &Default::default()).unwrap()
 }
@@ -97,55 +83,40 @@ fn codex_config_turns_off(home: &Path, skill_dir: &Path) -> bool {
 }
 
 #[test]
-fn codex_disable_over_a_row_left_enabled_turns_it_off_and_the_rescan_shows_the_skill_off() {
-    let home = unique_temp_dir("codex_enabled_row");
+fn codex_row_with_enabled_false_reads_as_off_and_enabled_true_reads_as_on_or_names_the_wrong_reading(
+) {
+    let home = unique_temp_dir("codex_row_readings");
     let skill_dir = home.join(".codex/skills/gamma");
     write_skill(&skill_dir, "gamma");
     let config_path = home.join(".codex/config.toml");
-    std::fs::write(
-        &config_path,
+    let row = |enabled: bool| {
         format!(
-            "model = \"o3\"\n\n[[skills.config]]\npath = \"{}\"\nenabled = true\n",
+            "model = \"o3\"\n\n[[skills.config]]\npath = \"{}\"\nenabled = {enabled}\n",
             skill_dir.join("SKILL.md").display()
-        ),
-    )
-    .unwrap();
+        )
+    };
     let rt = runtime_for(&home);
 
-    switch(&rt, "gamma", AgentId::CODEX, false);
-
-    let text = std::fs::read_to_string(&config_path).unwrap();
-    assert!(
-        text.contains("enabled = false") && !text.contains("enabled = true"),
-        "the disable left the user's enabled = true row in place, so Codex still loads the skill:\n{text}"
-    );
-    assert_eq!(
-        text.matches("[[skills.config]]").count(),
-        1,
-        "the disable added a second row instead of turning the existing one off:\n{text}"
-    );
-    assert!(
-        text.starts_with("model = \"o3\""),
-        "the disable dropped unrelated config:\n{text}"
-    );
-    assert_eq!(
-        deployment_in(&scan(&rt), "gamma", &codex_root()).disabled_by,
-        Some(DisabledBy::CodexConfig),
-        "the rescan does not show the Codex row off after the disable"
-    );
-
-    switch(&rt, "gamma", AgentId::CODEX, true);
+    std::fs::write(&config_path, row(true)).unwrap();
     assert_eq!(
         deployment_in(&scan(&rt), "gamma", &codex_root()).disabled_by,
         None,
-        "the rescan still shows the skill off after the enable"
+        "the scan shows the skill off although the user's row says enabled = true"
+    );
+
+    std::fs::write(&config_path, row(false)).unwrap();
+    assert_eq!(
+        deployment_in(&scan(&rt), "gamma", &codex_root()).disabled_by,
+        Some(DisabledBy::CodexConfig),
+        "the scan does not show the Codex row off for a user-written enabled = false row"
     );
     std::fs::remove_dir_all(&home).ok();
 }
 
 #[cfg(unix)]
 #[test]
-fn codex_row_codex_wrote_through_a_symlinked_skills_folder_reads_as_off_and_the_enable_clears_it() {
+fn codex_row_codex_wrote_through_a_symlinked_skills_folder_reads_as_off_or_names_the_missed_canonical_path(
+) {
     let home = unique_temp_dir("codex_symlinked_root");
     let real_root = home.join("dotfiles/codex-skills");
     write_skill(&real_root.join("gamma"), "gamma");
@@ -153,9 +124,8 @@ fn codex_row_codex_wrote_through_a_symlinked_skills_folder_reads_as_off_and_the_
     std::os::unix::fs::symlink(&real_root, home.join(".codex/skills")).unwrap();
     // Codex's own `/skills` toggle writes the canonical path.
     let canonical_skill_md = real_root.join("gamma/SKILL.md").canonicalize().unwrap();
-    let config_path = home.join(".codex/config.toml");
     std::fs::write(
-        &config_path,
+        home.join(".codex/config.toml"),
         format!(
             "[[skills.config]]\npath = \"{}\"\nenabled = false\n",
             canonical_skill_md.display()
@@ -169,38 +139,32 @@ fn codex_row_codex_wrote_through_a_symlinked_skills_folder_reads_as_off_and_the_
         Some(DisabledBy::CodexConfig),
         "the scan compared the lexical deployment path with Codex's canonical row and missed that the skill is off"
     );
-
-    switch(&rt, "gamma", AgentId::CODEX, true);
-
-    let text = std::fs::read_to_string(&config_path).unwrap();
-    assert!(
-        !text.contains("enabled = false"),
-        "the enable did not find Codex's canonical row, so the skill stays off:\n{text}"
-    );
     std::fs::remove_dir_all(&home).ok();
 }
 
 #[cfg(unix)]
 #[test]
-fn codex_disable_through_a_symlinked_universal_folder_reads_as_off_in_the_overlay_check() {
+fn codex_row_for_a_skill_in_a_symlinked_universal_folder_reads_as_off_in_the_overlay_check() {
     let home = unique_temp_dir("codex_symlinked_universal");
     let real_root = home.join("dotfiles/agents-skills");
     write_skill(&real_root.join("gamma"), "gamma");
     std::fs::create_dir_all(home.join(".agents")).unwrap();
     std::os::unix::fs::symlink(&real_root, home.join(".agents/skills")).unwrap();
-    let rt = runtime_for(&home);
     let universal_dir = home.join(".agents/skills/gamma");
+    let canonical_skill_md = universal_dir.join("SKILL.md").canonicalize().unwrap();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(
+        home.join(".codex/config.toml"),
+        format!(
+            "[[skills.config]]\npath = \"{}\"\nenabled = false\n",
+            canonical_skill_md.display()
+        ),
+    )
+    .unwrap();
 
-    switch(&rt, "gamma", AgentId::CODEX, false);
     assert!(
         codex_config_turns_off(&home, &universal_dir),
-        "after the disable, the overlay check does not see the Universal skill as off for Codex"
-    );
-
-    switch(&rt, "gamma", AgentId::CODEX, true);
-    assert!(
-        !codex_config_turns_off(&home, &universal_dir),
-        "after the enable, the overlay check still sees the Universal skill as off for Codex"
+        "the overlay check does not see the Universal skill as off for Codex"
     );
     std::fs::remove_dir_all(&home).ok();
 }
@@ -209,85 +173,26 @@ fn opencode_root() -> RootKind {
     RootKind::Harness(AgentId::from(AgentId::OPEN_CODE))
 }
 
-fn try_switch(
-    rt: &Runtime,
-    name: &str,
-    harness: &'static str,
-    enabled: bool,
-) -> Result<(), CoreError> {
-    ops::set_harness_enabled(
-        rt,
-        &ctx(),
-        &SetHarnessEnabledRequest {
-            skill: SkillName(name.into()),
-            harness: AgentId::from(harness),
-            enabled,
-            project_path: None,
-        },
-    )
-    .map(|_| ())
-}
-
 #[test]
-fn opencode_disable_writes_the_config_root_the_scan_reads_and_the_rescan_shows_the_skill_off() {
+fn opencode_deny_in_the_config_root_the_scan_reads_shows_the_skill_off_or_names_the_ignored_root() {
     let home = unique_temp_dir("opencode_config_root");
     // An adapter that honours `XDG_CONFIG_HOME` hands the core this root,
     // and OpenCode then reads its skills from under it too.
     let config_root = home.join("xdg/opencode");
     write_skill(&config_root.join("skills/delta"), "delta");
+    std::fs::write(
+        config_root.join("opencode.json"),
+        "{\"permission\": {\"skill\": {\"delta\": \"deny\"}}}",
+    )
+    .unwrap();
     let mut scope = RuntimeScope::fixture(&home);
-    scope.opencode_config_root = Some(config_root.clone());
+    scope.opencode_config_root = Some(config_root);
     let rt = runtime_with_scope(&home, &scope);
 
-    switch(&rt, "delta", AgentId::OPEN_CODE, false);
-
-    let text = std::fs::read_to_string(config_root.join("opencode.json")).unwrap_or_else(|e| {
-        panic!("the disable did not write opencode.json under the config root the scan reads: {e}")
-    });
-    assert!(
-        text.contains("\"delta\": \"deny\""),
-        "the config root's opencode.json holds no deny for delta:\n{text}"
-    );
-    assert!(
-        !home.join(".config/opencode/opencode.json").exists(),
-        "the disable wrote the default ~/.config/opencode/opencode.json that the scan does not read"
-    );
     assert_eq!(
         deployment_in(&scan(&rt), "delta", &opencode_root()).disabled_by,
         Some(DisabledBy::OpencodePermission),
-        "the rescan does not show the OpenCode row off after the disable"
-    );
-    std::fs::remove_dir_all(&home).ok();
-}
-
-#[test]
-fn opencode_enable_under_a_permissions_deny_rule_is_refused_and_leaves_the_config_unchanged() {
-    let home = unique_temp_dir("opencode_v2_deny");
-    write_skill(&home.join(".config/opencode/skills/delta"), "delta");
-    let config_path = home.join(".config/opencode/opencode.json");
-    let original = "{\n  \"permission\": { \"skill\": { \"delta\": \"deny\" } },\n  \"permissions\": [\n    { \"action\": \"skill\", \"resource\": \"del*\", \"effect\": \"deny\" }\n  ]\n}\n";
-    std::fs::write(&config_path, original).unwrap();
-    let rt = runtime_for(&home);
-
-    let err = try_switch(&rt, "delta", AgentId::OPEN_CODE, true).expect_err(
-        "the enable reported success while a permissions[] rule still denies the skill in OpenCode",
-    );
-
-    assert_eq!(
-        err.code,
-        ErrorCode::Unsupported,
-        "the refused enable returned the wrong error: {}",
-        err.message
-    );
-    assert!(
-        err.message.contains("del*"),
-        "the refusal does not name the permissions[] rule to edit: {}",
-        err.message
-    );
-    assert_eq!(
-        std::fs::read_to_string(&config_path).unwrap(),
-        original,
-        "the refused enable still rewrote opencode.json"
+        "the scan does not show the OpenCode row off for a deny in the config root"
     );
     std::fs::remove_dir_all(&home).ok();
 }

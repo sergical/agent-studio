@@ -15,22 +15,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use skill_studio_core::doctor::check_link_resolves_in_root;
-use skill_studio_core::dto::{
-    Diagnosis, HarnessesRequest, Inventory, ScanRequest, SetHarnessEnabledRequest,
-};
+use skill_studio_core::dto::{Diagnosis, HarnessesRequest, Inventory, ScanRequest};
 use skill_studio_core::harness::{HarnessCatalog, HarnessState};
-use skill_studio_core::identity::{AgentId, ProjectRef, RootKind, RootRef, RootScope, SkillName};
+use skill_studio_core::identity::{AgentId, ProjectRef, RootKind, RootRef, RootScope};
 use skill_studio_core::lock_file::{read_lock_file, InstalledSkillEntry};
 use skill_studio_core::ops;
 use skill_studio_core::ports::{Ports, Runtime, ScopeFs};
 use skill_studio_core::scope::{ProjectSelection, RuntimeScope};
-use skill_studio_core::testing::golden::{ctx, unique_temp_dir};
+use skill_studio_core::testing::golden::ctx;
 use skill_studio_core::testing::{
     FakeClock, FakeIds, FakeLease, FakeToolLookup, FixtureBuilder, NoHistory, RecordingSink,
 };
 use skill_studio_core::testing_shapes as shapes;
-
-use skill_studio_host::{FileLease, RealFs, SqliteHistoryOpener};
 
 /// Absolute home every in-memory fixture is rooted at. `FixtureFs` has no
 /// directory of its own, and [`RuntimeScope`] needs an absolute home.
@@ -536,80 +532,6 @@ fn scan_ignores_project_root_skills_dir_and_cursor_root_or_names_the_row() {
                 .collect::<Vec<_>>()
         );
     }
-}
-
-/// pi has no per-skill switch Skill Studio writes
-/// (`docs/agent-skill-conventions.md`: "pi, Cursor, Grok Build: no
-/// per-skill disable"), so a pi disable is refused and Park is the off path.
-/// The refusal must leave pi's own `settings.json` exactly as it was.
-#[test]
-fn pi_disable_is_refused_as_unsupported_and_leaves_pi_settings_byte_for_byte_unchanged() {
-    let home = unique_temp_dir("real_home_shapes_pi_settings");
-    std::fs::create_dir_all(&home).unwrap();
-    let home = home.canonicalize().unwrap();
-
-    let skill_dir = home.join(".agents/skills/toggle-me");
-    std::fs::create_dir_all(&skill_dir).unwrap();
-    std::fs::write(
-        skill_dir.join("SKILL.md"),
-        "---\nname: toggle-me\ndescription: A skill whose pi switch is flipped in this test.\n---\nBody.\n",
-    )
-    .unwrap();
-    let settings_path = home.join(".pi/agent/settings.json");
-    std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
-    let before = r#"{"theme":"dark","telemetry":false,"editor":{"tabWidth":2}}"#;
-    std::fs::write(&settings_path, before).unwrap();
-
-    let scope = RuntimeScope::fixture(&home);
-    let ports = Ports {
-        fs: Arc::new(RealFs::new()),
-        clock: Arc::new(FakeClock::at(0)),
-        ids: Arc::new(FakeIds::default()),
-        leases: Arc::new(FileLease::new(home.join(".leases"))),
-        history: Arc::new(SqliteHistoryOpener::new(
-            home.join(".history/events.sqlite3"),
-        )),
-        sink: Arc::new(RecordingSink::default()),
-        spawner: None,
-        discovery: None,
-        tools: None,
-        catalog: Arc::new(HarnessCatalog::builtin()),
-
-        telemetry: std::sync::Arc::new(skill_studio_core::ports::NoopTelemetry),
-    };
-    let rt = Runtime::new(&scope, ports).expect("runtime");
-
-    let err = ops::set_harness_enabled(
-        &rt,
-        &ctx(),
-        &SetHarnessEnabledRequest {
-            skill: SkillName("toggle-me".into()),
-            harness: AgentId::from(AgentId::PI),
-            enabled: false,
-            project_path: None,
-        },
-    )
-    .expect_err("the pi disable reported success, but nothing turns the skill off in pi");
-
-    assert_eq!(
-        err.code,
-        skill_studio_core::ErrorCode::Unsupported,
-        "the pi disable failed for the wrong reason: {}",
-        err.message
-    );
-    assert!(
-        err.message.contains("Park"),
-        "the refusal does not point at Park as the off path: {}",
-        err.message
-    );
-    assert_eq!(
-        std::fs::read_to_string(&settings_path).unwrap(),
-        before,
-        "the refused pi disable still rewrote {}",
-        settings_path.display()
-    );
-
-    std::fs::remove_dir_all(&home).ok();
 }
 
 /// The composed home: `scan` and `diagnose` must both complete on it, and

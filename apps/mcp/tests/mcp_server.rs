@@ -679,74 +679,6 @@ async fn the_unpark_tool_puts_a_parked_skill_and_its_link_back_or_names_the_enve
     );
 }
 
-/// Flow: call the MCP `set_harness_enabled` tool twice for `gamma` - off,
-/// then on again - over a live home where Claude Code links the universal
-/// skill.
-/// Expectation: an `ok` envelope each time, `skillOverrides.gamma = "off"`
-/// in `~/.claude/settings.json` after the first call and gone after the
-/// second, with the link left in place throughout.
-/// A failure here means the tool reports success while the harness's own
-/// switch never moved, which is the whole point of the operation.
-#[tokio::test]
-async fn the_set_harness_enabled_tool_moves_the_harness_switch_or_names_the_envelope() {
-    let (_home_dir, home) = live_home();
-    let link_path = home.join(".claude/skills/gamma");
-    assert!(link_path.symlink_metadata().is_ok());
-
-    let (client, _) = connect(&[("SKILL_STUDIO_HOME", home.to_str().unwrap())]).await;
-    let disabled = call_tool(
-        &client,
-        "set_harness_enabled",
-        serde_json::json!({
-            "skill": "gamma",
-            "harness": "claude-code",
-            "enabled": false,
-        }),
-    )
-    .await;
-    assert_eq!(disabled["status"], "ok", "{disabled:?}");
-    let gamma_override = || {
-        std::fs::read_to_string(home.join(".claude/settings.json"))
-            .ok()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .map_or(serde_json::Value::Null, |v| {
-                v["skillOverrides"]["gamma"].clone()
-            })
-    };
-    assert_eq!(
-        gamma_override(),
-        "off",
-        "disabling did not write skillOverrides.gamma = off: {disabled:?}"
-    );
-    assert!(
-        link_path.symlink_metadata().is_ok(),
-        "disabling must leave the Claude Code link in place: {disabled:?}"
-    );
-
-    let enabled = call_tool(
-        &client,
-        "set_harness_enabled",
-        serde_json::json!({
-            "skill": "gamma",
-            "harness": "claude-code",
-            "enabled": true,
-        }),
-    )
-    .await;
-    client.cancel().await.ok();
-
-    assert_eq!(enabled["status"], "ok", "{enabled:?}");
-    assert_eq!(
-        gamma_override(),
-        serde_json::Value::Null,
-        "re-enabling did not remove skillOverrides.gamma: {enabled:?}"
-    );
-    assert!(
-        link_path.symlink_metadata().is_ok(),
-        "re-enabling must leave the Claude Code link in place: {enabled:?}"
-    );
-}
-
 /// Flow: call the MCP `outdated` tool over a live home holding one
 /// skills.sh-owned skill and one skill no ledger claims, with `PATH` emptied
 /// on the server process so it finds no `gh` and falls back to `NoGhLookup`.
@@ -1075,7 +1007,6 @@ const WRITE_TOOLS: &[&str] = &[
     "park",
     "split",
     "unpark",
-    "set_harness_enabled",
 ];
 
 /// Flow: list tools with the default environment.
