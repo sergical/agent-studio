@@ -796,7 +796,15 @@ fn install_and_link(
         let home_root = rt.scope.home.lexical.clone();
         let home_doc = home_document.as_mut().unwrap_or(&mut document);
         for (path, harness) in &real_folders {
-            let (id, replaced) = record_copy(fs, ctx, home_doc, req, path, harness.as_ref())?;
+            let (id, replaced) = record_copy(
+                fs,
+                ctx,
+                home_doc,
+                &req.scope,
+                &req.skill,
+                path,
+                harness.as_ref(),
+            )?;
             undo.push(&home_root, "copies", Some(&id), replaced.as_ref());
         }
     }
@@ -976,11 +984,12 @@ pub(crate) fn restore_registry(
 /// id, never by name. R2: a non-empty `content_hash` - the desktop's
 /// `CopyDeploymentRecord` doc says empty is legacy-only, and destructive
 /// mutations refuse it.
-fn record_copy(
+pub(crate) fn record_copy(
     fs: &dyn ScopeFs,
     ctx: &OpContext,
     home_doc: &mut serde_json::Map<String, serde_json::Value>,
-    req: &InstallRequest,
+    scope: &RootScope,
+    skill: &SkillName,
     path: &Path,
     harness: Option<&AgentId>,
 ) -> Result<(String, Option<serde_json::Value>), CoreError> {
@@ -991,7 +1000,7 @@ fn record_copy(
             crate::ops::harness_slot(harness),
         ),
     };
-    let deployment_id = copy_deployment_id(&req.scope, &req.skill, path, destination, &slot);
+    let deployment_id = copy_deployment_id(scope, skill, path, destination, &slot);
     let content_hash = crate::ops::skill_content_hash(fs, ctx, path)?;
     let copies = home_doc
         .entry("copies".to_string())
@@ -1002,12 +1011,12 @@ fn record_copy(
             deployment_id.clone(),
             serde_json::json!({
                 "deployment_id": deployment_id,
-                "name": req.skill.0,
+                "name": skill.0,
                 "path": path,
-                "scope": crate::ops::scope_label(&req.scope),
+                "scope": crate::ops::scope_label(scope),
                 "destination": destination,
                 "slot": slot,
-                "project_path": match &req.scope {
+                "project_path": match scope {
                     RootScope::Global => None,
                     RootScope::Project(p) => Some(p.0.clone()),
                 },

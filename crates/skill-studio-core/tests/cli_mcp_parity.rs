@@ -25,6 +25,11 @@ struct Exclusion {
 
 const EXCLUSIONS: &[Exclusion] = &[
     Exclusion {
+        name: "update_split_copies",
+        reason: "takes the new version's files from its caller, and no CLI or MCP surface \
+                  fetches a skill's files yet",
+    },
+    Exclusion {
         name: "skill_content_hash",
         reason: "a hashing helper `scan`/`diagnose` call internally, not a request/outcome op",
     },
