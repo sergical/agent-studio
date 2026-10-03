@@ -93,7 +93,9 @@ fn parking_a_skill_with_a_user_written_codex_disable_row_leaves_config_toml_byte
     let outcome = ops::park(&rt, &ctx(), &ParkRequest { deployment_id }).unwrap();
     assert_eq!(
         outcome.parked_path,
-        home.join(PARKED_ROOT_RELATIVE).join("gamma")
+        home.join(PARKED_ROOT_RELATIVE)
+            .join("universal")
+            .join("gamma")
     );
     assert_eq!(
         std::fs::read_to_string(&config_path).unwrap(),

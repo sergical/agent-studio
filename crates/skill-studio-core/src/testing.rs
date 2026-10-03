@@ -839,6 +839,7 @@ pub struct FailingFs {
     inner: Arc<dyn ScopeFs>,
     fail_next_write_atomic: AtomicBool,
     fail_next_rename: AtomicBool,
+    fail_next_rename_cross_device: AtomicBool,
     fail_next_remove_file: AtomicBool,
     /// `-1` means unlimited. Otherwise the number of `write_atomic` calls
     /// still allowed to succeed before every later call fails; see
@@ -891,6 +892,7 @@ impl FailingFs {
             inner,
             fail_next_write_atomic: AtomicBool::new(false),
             fail_next_rename: AtomicBool::new(false),
+            fail_next_rename_cross_device: AtomicBool::new(false),
             fail_next_remove_file: AtomicBool::new(false),
             write_atomic_budget: AtomicI64::new(-1),
             fail_next_create_dir: AtomicBool::new(false),
@@ -932,6 +934,13 @@ impl FailingFs {
     /// example park's link removal landing before the directory rename.
     pub fn fail_next_rename(&self) {
         self.fail_next_rename.store(true, Ordering::SeqCst);
+    }
+
+    /// The next `rename` call fails the way a move to another volume does
+    /// (`EXDEV`); later calls delegate normally again.
+    pub fn fail_next_rename_cross_device(&self) {
+        self.fail_next_rename_cross_device
+            .store(true, Ordering::SeqCst);
     }
 
     /// The next `remove_file` call returns an error instead of reaching
@@ -1169,6 +1178,12 @@ impl ScopeFs for FailingFs {
     ) -> std::io::Result<()> {
         if self.fail_next_rename.swap(false, Ordering::SeqCst) {
             return Err(std::io::Error::other("FailingFs: injected rename failure"));
+        }
+        if self
+            .fail_next_rename_cross_device
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(std::io::Error::from_raw_os_error(18));
         }
         self.inner.rename(guard, from, to)
     }

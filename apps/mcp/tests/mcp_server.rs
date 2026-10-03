@@ -811,7 +811,8 @@ async fn park_then_unpark_on_one_process_puts_the_skill_and_its_link_back() {
     .await;
     assert_eq!(park["status"], "ok", "{park:?}");
     assert!(
-        home.join(".agents/skills-parked/gamma/SKILL.md").is_file(),
+        home.join(".agents/skills-parked/universal/gamma/SKILL.md")
+            .is_file(),
         "park did not move gamma to the parked root: {park:?}"
     );
     assert!(
@@ -871,7 +872,9 @@ async fn restore_event_on_a_park_reports_unsupported() {
 
     assert_eq!(restore["status"], "error", "{restore:?}");
     assert_eq!(restore["errors"][0]["code"], "unsupported", "{restore:?}");
-    assert!(home.join(".agents/skills-parked/gamma/SKILL.md").is_file());
+    assert!(home
+        .join(".agents/skills-parked/universal/gamma/SKILL.md")
+        .is_file());
 }
 
 /// Flow: add a shared skill recorded as a fork, remove it, then call

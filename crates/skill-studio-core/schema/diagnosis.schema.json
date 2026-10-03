@@ -313,6 +313,17 @@
         "source_kind": {
           "description": "Provenance classification, per `apps/desktop`'s\n`provenance::classify_source_kind`.",
           "$ref": "#/$defs/SourceKind"
+        },
+        "parked_origin": {
+          "description": "For a parked copy, the root it came from and returns to: the scope\n(with the project path) and `Universal` or the agent's own root.\n`None` for a copy that is not parked.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RootRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [

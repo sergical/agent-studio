@@ -13,7 +13,7 @@
       "$ref": "#/$defs/DeploymentId"
     },
     "restored_path": {
-      "description": "Where the directory now lives, under the universal root.",
+      "description": "Where the directory now lives: the folder it was parked from.",
       "type": "string"
     }
   },

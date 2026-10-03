@@ -59,12 +59,39 @@ fn park_and_unpark_by_name_move_the_one_matching_copy() {
     let park = run(&home, &["park", "solo"]);
     assert_eq!(park.status.code(), Some(0), "{}", text(&park.stderr));
     assert!(!home.join(".agents/skills/solo").exists());
-    assert!(home.join(".agents/skills-parked/solo/SKILL.md").exists());
+    assert!(home
+        .join(".agents/skills-parked/universal/solo/SKILL.md")
+        .exists());
 
     let unpark = run(&home, &["unpark", "solo"]);
     assert_eq!(unpark.status.code(), Some(0), "{}", text(&unpark.stderr));
     assert!(home.join(".agents/skills/solo/SKILL.md").exists());
-    assert!(!home.join(".agents/skills-parked/solo").exists());
+    assert!(!home.join(".agents/skills-parked/universal/solo").exists());
+}
+
+/// Flow: `park foo` when the only copy is `~/.codex/skills/foo`, an agent's
+/// own folder.
+/// Expectation: exits 0 and the folder moves under `skills-parked/codex/`.
+/// A failure means a name never matches an agent-folder copy, which scans as
+/// an independent copy rather than the shared one.
+#[test]
+fn park_by_name_moves_a_copy_that_only_exists_in_the_codex_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap().join("home");
+    let codex_copy = home.join(".codex/skills/foo");
+    std::fs::create_dir_all(&codex_copy).unwrap();
+    std::fs::write(
+        codex_copy.join("SKILL.md"),
+        "---\nname: foo\ndescription: A test skill.\n---\nBody.\n",
+    )
+    .unwrap();
+
+    let park = run(&home, &["park", "foo"]);
+    assert_eq!(park.status.code(), Some(0), "{}", text(&park.stderr));
+    assert!(!codex_copy.exists());
+    assert!(home
+        .join(".agents/skills-parked/codex/foo/SKILL.md")
+        .exists());
 }
 
 /// Flow: `scan`, human output.
@@ -132,7 +159,9 @@ fn park_with_a_name_that_matches_two_copies_lists_them_and_asks_for_an_id() {
         .unwrap();
     let park = run(&home, &["park", "--id", home_id, "--project", project_arg]);
     assert_eq!(park.status.code(), Some(0), "{}", text(&park.stderr));
-    assert!(home.join(".agents/skills-parked/gamma/SKILL.md").exists());
+    assert!(home
+        .join(".agents/skills-parked/universal/gamma/SKILL.md")
+        .exists());
     assert!(project.join(".agents/skills/gamma").exists());
 }
 

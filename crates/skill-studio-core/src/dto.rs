@@ -234,6 +234,11 @@ pub struct DeploymentDto {
     /// Provenance classification, per `apps/desktop`'s
     /// `provenance::classify_source_kind`.
     pub source_kind: SourceKind,
+    /// For a parked copy, the root it came from and returns to: the scope
+    /// (with the project path) and `Universal` or the agent's own root.
+    /// `None` for a copy that is not parked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_origin: Option<RootRef>,
 }
 
 /// One skill with all of its deployments.
@@ -651,12 +656,34 @@ pub struct CommandHealth {
     pub last_error: Option<String>,
 }
 
-/// Request to park one universal deployment: remove its per-harness links
-/// and move its directory into the parked root.
+/// Request to park one real copy: remove its per-harness links and move its
+/// directory into the parked root, in the slot for where it came from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ParkRequest {
-    /// The universal deployment to park.
+    /// The copy to park: the Universal folder or an agent's own folder, at
+    /// global or project scope. Never a link or a plugin copy.
     pub deployment_id: DeploymentId,
+}
+
+/// Request for `park_check`: what to know before a park or a remove.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ParkCheckRequest {
+    /// The copy about to be parked or removed.
+    pub deployment_id: DeploymentId,
+}
+
+/// Result of `park_check`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ParkCheck {
+    /// True when the copy sits in a git work tree and git lists a file under
+    /// it, so moving or removing it shows as deleted files in that repo.
+    /// False when git is missing, the folder is not in a repo, or git does
+    /// not track it (untracked or ignored). `None` when the check could not
+    /// run: on macOS without the command line tools, `git` is a stub that
+    /// opens an install dialog, so it is not run.
+    pub git_tracked: Option<bool>,
+    /// The project the copy belongs to, when it is a project copy.
+    pub project: Option<PathBuf>,
 }
 
 /// Result of `park`.
@@ -685,7 +712,7 @@ pub struct UnparkOutcome {
     pub event_id: EventId,
     /// The deployment that was restored.
     pub deployment_id: DeploymentId,
-    /// Where the directory now lives, under the universal root.
+    /// Where the directory now lives: the folder it was parked from.
     pub restored_path: PathBuf,
 }
 

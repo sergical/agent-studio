@@ -38,6 +38,11 @@ const EXCLUSIONS: &[Exclusion] = &[
         reason: "the path normalization Codex applies before matching a row, shared with \
                   the desktop's scan overlay, not a request/outcome op",
     },
+    Exclusion {
+        name: "park_check",
+        reason: "a read-only question the desktop asks before its park/remove confirm; the CLI \
+                  and MCP park without a prompt, so they have nothing to warn before",
+    },
 ];
 
 /// An `ops` function whose surface spells it differently: the op's name,

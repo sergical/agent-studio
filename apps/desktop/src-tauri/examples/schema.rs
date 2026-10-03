@@ -10,8 +10,8 @@
 use schemars::generate::SchemaSettings;
 use schemars::JsonSchema;
 use skill_studio_core::dto::{
-    CommandHealth, DoctorReport, FixSkillOutcome, InstallPreferences, ParkOutcome, RemoveOutcome,
-    UnparkOutcome, UpdateAllOutcome, UpdateOutcome,
+    CommandHealth, DoctorReport, FixSkillOutcome, InstallPreferences, ParkCheck, ParkOutcome,
+    RemoveOutcome, UnparkOutcome, UpdateAllOutcome, UpdateOutcome,
 };
 use skill_studio_core::harness::HarnessReport;
 use skill_studio_core::skill_uses::{InvocationHeatmap, SkillInvocation, SkillTrigger};
@@ -74,6 +74,7 @@ struct WireTypes {
     harnesses_choice: HarnessesChoice,
     fix_skill_outcome: FixSkillOutcome,
     park_outcome: ParkOutcome,
+    park_check: ParkCheck,
     unpark_outcome: UnparkOutcome,
     split_outcome: skill_studio_core::dto::SplitOutcome,
     split_copy: skill_studio_core::dto::SplitCopy,

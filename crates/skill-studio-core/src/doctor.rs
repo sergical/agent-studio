@@ -224,15 +224,15 @@ pub fn check_lockfile_entry_has_folder(
 }
 
 /// Invariant 4: no folder is in two states at once - here, installed and
-/// parked simultaneously, which the lifecycle table (`park_skill`) says
+/// parked at the same place, which the lifecycle table (`park_skill`) says
 /// never happens once a park lands cleanly. Detect-only; there is no single
 /// safe automatic choice between the two states.
 ///
-/// Resolved through `inventory`'s own deployments rather than
-/// `fs.symlink_metadata` on the universal and parked roots directly: a
-/// skill installed only via a per-harness canonical copy (no universal-root
-/// entry) plus a parked folder is the same violation, and comparing only
-/// the two fixed paths missed it.
+/// "The same place" is the parked copy's origin root: a parked Codex copy
+/// beside a live Universal copy is two copies in two places, not a
+/// violation. Resolved through `inventory`'s own deployments rather than
+/// `fs.symlink_metadata` on fixed paths, so a per-harness or project origin
+/// is covered too.
 pub fn check_no_folder_in_two_states(
     inventory: &Inventory,
     skill_names: &[SkillName],
@@ -241,14 +241,18 @@ pub fn check_no_folder_in_two_states(
         .iter()
         .filter_map(|name| {
             let skill = inventory.skills.iter().find(|skill| &skill.name == name)?;
-            let parked = skill
+            let (parked, installed) = skill
                 .deployments
                 .iter()
-                .find(|deployment| matches!(deployment.root.kind, RootKind::Parked))?;
-            let installed = skill
-                .deployments
-                .iter()
-                .find(|deployment| !matches!(deployment.root.kind, RootKind::Parked))?;
+                .filter(|deployment| matches!(deployment.root.kind, RootKind::Parked))
+                .find_map(|parked| {
+                    let origin = parked.parked_origin.as_ref()?;
+                    let installed = skill
+                        .deployments
+                        .iter()
+                        .find(|deployment| &deployment.root == origin)?;
+                    Some((parked, installed))
+                })?;
             Some(DoctorViolation {
                 invariant: DoctorInvariant::NoFolderInTwoStates,
                 skill: Some(name.clone()),
@@ -530,13 +534,12 @@ mod tests {
     }
 
     #[test]
-    fn skill_parked_and_installed_via_a_harness_copy_is_flagged_or_names_the_missed_root() {
+    fn skill_parked_and_installed_at_its_origin_is_flagged_or_names_the_missed_root() {
         let name = SkillName("double-state".to_string());
         let fs: Arc<dyn ScopeFs> = Arc::new(
             FixtureBuilder::new()
-                .dir(&format!("{HOME}/{UNIVERSAL_SKILLS_RELATIVE}"))
                 .file(
-                    &format!("{HOME}/.claude/skills/double-state/SKILL.md"),
+                    &format!("{HOME}/{UNIVERSAL_SKILLS_RELATIVE}/double-state/SKILL.md"),
                     &skill_md("double-state"),
                 )
                 .file(
@@ -551,7 +554,7 @@ mod tests {
         assert_eq!(
             violations.len(),
             1,
-            "a per-harness canonical copy plus a parked folder must be caught: {violations:?}"
+            "a live copy at the parked copy's origin must be caught: {violations:?}"
         );
         assert_eq!(
             violations[0].invariant,
@@ -561,6 +564,30 @@ mod tests {
         let parked_dir = home().join(PARKED_RELATIVE).join(&name.0);
         fs.fsops_remove_file(&parked_dir.join("SKILL.md")).unwrap();
         fs.fsops_remove_dir(&parked_dir).unwrap();
+        assert!(check_no_folder_in_two_states(&inventory_for(&fs), &[name]).is_empty());
+    }
+
+    /// Flow: a Universal copy parked from `~/.agents/skills`, and a live
+    /// Claude Code copy of the same name. Expectation: no violation, the two
+    /// sit in different places. Failure: the check compares by name only and
+    /// flags a copy that was never parked from where the live one is.
+    #[test]
+    fn skill_parked_from_one_place_and_live_in_another_is_not_flagged() {
+        let name = SkillName("two-places".to_string());
+        let fs: Arc<dyn ScopeFs> = Arc::new(
+            FixtureBuilder::new()
+                .dir(&format!("{HOME}/{UNIVERSAL_SKILLS_RELATIVE}"))
+                .file(
+                    &format!("{HOME}/.claude/skills/two-places/SKILL.md"),
+                    &skill_md("two-places"),
+                )
+                .file(
+                    &format!("{HOME}/{PARKED_RELATIVE}/two-places/SKILL.md"),
+                    &skill_md("two-places"),
+                )
+                .build_fs(),
+        );
+
         assert!(check_no_folder_in_two_states(&inventory_for(&fs), &[name]).is_empty());
     }
 

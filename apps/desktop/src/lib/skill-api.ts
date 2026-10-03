@@ -25,6 +25,7 @@ import type {
   FrontmatterRepairPreview,
   InvocationConflictChoice,
   LocalEditsDto,
+  ParkCheck,
   GithubSkillListing,
   InstalledSkill,
   HarnessReport,
@@ -573,17 +574,29 @@ export async function getAddMethodDefaults(
 // ============================================================================
 
 /**
- * Park one Global Universal deployment: moves that folder to
- * `~/.agents/skills-parked/<name>`. Project and Per harness copies stay
- * independent. Refused when the target is not a Global Universal folder.
+ * Park one real copy: the Universal folder or an agent's own folder, global
+ * or in a project. The folder moves under `~/.agents/skills-parked/`, keyed by
+ * where it came from, and Unpark returns it there. Refused for a plugin copy,
+ * a link, or a copy that is already parked.
  */
 export async function parkSkill(target: LifecycleTarget): Promise<void> {
   return callCommand("park_skill", { target });
 }
 
 /**
- * Reverse `parkSkill` for the selected parked or Global Universal target.
- * Project copies are not unparked as a side effect.
+ * Whether git tracks the copy `target` names, so a confirm can warn that
+ * parking or removing it shows as deleted files in the repository. Read-only;
+ * never a reason to refuse.
+ *
+ * @public No caller until the park confirm in #388 reads it.
+ */
+export async function parkCheck(target: LifecycleTarget): Promise<ParkCheck> {
+  return callCommand("park_check", { target });
+}
+
+/**
+ * Reverse `parkSkill` for the selected parked copy: it returns to the folder
+ * it was parked from, and is refused when a copy already sits there.
  */
 export async function unparkSkill(target: LifecycleTarget): Promise<void> {
   return callCommand("unpark_skill", { target });

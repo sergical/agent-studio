@@ -1,9 +1,9 @@
 // ============================================================================
 // Skills Module - skill_park
-// "Park" moves a Global Universal skill's shared folder
-// (`~/.agents/skills/<name>`) to `~/.agents/skills-parked/<name>` and
-// removes a per-skill Claude Code symlink pointing at it, if any; `unpark`
-// reverses both. This is the desktop's first command wired onto
+// "Park" moves any real copy of a skill (the Universal folder, an agent's own
+// folder, global or in a project) under `~/.agents/skills-parked/`, keyed by
+// where it came from, and removes a per-skill Claude Code symlink pointing at
+// it, if any; `unpark` returns it to that origin and reverses both. This is the desktop's first command wired onto
 // `skill-studio-core`'s `ops` functions (see `core_runtime.rs`) rather than
 // its own `std::fs` calls: `park_skill`/`unpark_skill` are thin adapters
 // over `skill_studio_core::ops::park`/`ops::unpark`, the same functions the
@@ -23,7 +23,9 @@
 
 use std::path::Path;
 
-use skill_studio_core::dto::{ParkOutcome, ParkRequest, UnparkOutcome, UnparkRequest};
+use skill_studio_core::dto::{
+    ParkCheck, ParkCheckRequest, ParkOutcome, ParkRequest, UnparkOutcome, UnparkRequest,
+};
 use skill_studio_core::identity::{CorrelationId, DeploymentId};
 use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::OpContext;
@@ -106,6 +108,22 @@ pub async fn park_skill(
         let outcome = park_with_runtime(&home, &super::core_runtime::data_root(), deployment_id)?;
         emit_snapshot_for_names(&state_app, "park_skill", names);
         Ok(outcome)
+    })
+    .await
+}
+
+/// What to know before parking or removing one copy: whether git tracks it.
+/// Read-only; the confirm uses the answer to warn, and never blocks on it.
+#[tauri::command]
+pub async fn park_check(
+    target: LifecycleTarget,
+    app: tauri::AppHandle,
+) -> Result<ParkCheck, String> {
+    crate::timing_log::time_command_blocking(&app, "park_check", move || {
+        let deployment_id = deployment_id_from_target(&target, "Park check")?;
+        let rt = super::core_runtime::build_runtime_write()?;
+        let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
+        ops::park_check(&rt, &ctx, &ParkCheckRequest { deployment_id }).map_err(|e| e.message)
     })
     .await
 }

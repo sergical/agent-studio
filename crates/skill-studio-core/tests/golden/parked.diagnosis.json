@@ -57,7 +57,15 @@
             "folder_truncated": false,
             "in_git_repo": false,
             "studio_disabled": false,
-            "source_kind": "manual"
+            "source_kind": "manual",
+            "parked_origin": {
+              "scope": {
+                "scope": "global"
+              },
+              "kind": {
+                "kind": "universal"
+              }
+            }
           }
         ]
       }

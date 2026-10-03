@@ -399,7 +399,9 @@ fn cli_and_mcp_and_desktop_write_the_same_disk_state_for_park_or_names_the_diver
     // Code link, on every surface.
     for home in [home_cli, home_mcp, home_desktop] {
         assert!(!home.join(UNIVERSAL_ROOT_RELATIVE).join("gamma").exists());
-        assert!(home.join(".agents/skills-parked/gamma/SKILL.md").is_file());
+        assert!(home
+            .join(".agents/skills-parked/universal/gamma/SKILL.md")
+            .is_file());
         assert!(!home.join(CLAUDE_ROOT_RELATIVE).join("gamma").exists());
     }
 }
