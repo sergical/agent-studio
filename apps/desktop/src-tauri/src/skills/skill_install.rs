@@ -288,7 +288,6 @@ pub(crate) fn request_for_entry(
         method: batch.method,
         destination: batch.destination,
         agents: batch.agents.clone(),
-        disabled_harnesses: batch.disabled_harnesses.clone(),
         link_mode: batch.link_mode,
         scope: batch.scope,
         project_path: batch.project_path.clone(),
@@ -726,7 +725,6 @@ mod tests {
             method: AddMethod::Copy,
             destination: SkillDestination::Universal,
             agents: vec![],
-            disabled_harnesses: vec![],
             link_mode: skill_studio_core::dto::InstallLinkMode::Link,
             scope: InstallScope::Global,
             project_path: None,
@@ -753,7 +751,6 @@ mod tests {
             method: AddMethod::SkillsSh,
             destination: SkillDestination::Universal,
             agents: vec![],
-            disabled_harnesses: vec![],
             link_mode: skill_studio_core::dto::InstallLinkMode::Link,
             scope: InstallScope::Global,
             project_path: None,
@@ -908,7 +905,6 @@ mod tests {
             method: AddMethod::Copy,
             destination: SkillDestination::Universal,
             agents: vec![],
-            disabled_harnesses: vec![],
             link_mode: skill_studio_core::dto::InstallLinkMode::Link,
             scope: InstallScope::Global,
             project_path: None,
@@ -1179,40 +1175,6 @@ mod tests {
             .await
             .unwrap_or_else(|e| panic!("retry after trust should have installed, or names the field it still refused: {e}"));
         assert_eq!(result.name, "visual-recap");
-    }
-
-    /// `add_skill_with_disabled_harnesses_leaves_agent_settings_untouched_or_names_the_file_it_wrote`:
-    /// Flow: a global Copy install lists `claude-code` and `cursor` in
-    /// `disabled_harnesses`. Expectation: the skill lands, there is no warning,
-    /// and `~/.claude/settings.json` is never written - Skill Studio does not
-    /// switch a skill off in an agent's own config. A failure names the file
-    /// the install wrote.
-    #[tokio::test]
-    async fn add_skill_with_disabled_harnesses_leaves_agent_settings_untouched_or_names_the_file_it_wrote(
-    ) {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let source_dir = tmp.path().join("source");
-        std::fs::create_dir_all(&home).unwrap();
-        super::super::test_support::write_skill(&source_dir, "find-bugs");
-
-        let rt = test_runtime(&home);
-        let mut request = copy_request(&source_dir, "find-bugs");
-        request.agents = vec![AgentId::ClaudeCode];
-        request.disabled_harnesses = vec![AgentId::ClaudeCode, AgentId::Cursor];
-
-        let result = add_skill_with_runtime(move || Ok(rt), request, never_github())
-            .await
-            .unwrap();
-
-        assert_eq!(result.warning, None);
-        assert!(home.join(".agents/skills/find-bugs").exists());
-        let settings = home.join(".claude/settings.json");
-        assert!(
-            !settings.exists(),
-            "the install wrote an agent setting: {}",
-            std::fs::read_to_string(&settings).unwrap_or_default()
-        );
     }
 
     // Review item 1: the deleted `skill_add.rs`'s four local-Copy-source

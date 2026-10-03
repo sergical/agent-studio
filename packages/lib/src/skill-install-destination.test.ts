@@ -4,7 +4,6 @@ import {
   harnessesKeptWithoutUniversal,
   installDestinationError,
   installDestinationFields,
-  installDisabledHarnesses,
   installHarness,
   installHarnessLockReason,
   installHarnessLocked,
@@ -58,19 +57,16 @@ describe("Destination rows", () => {
 });
 
 describe("Universal ticked: locked rows", () => {
-  const lockedAt = (scope: "global" | "project", claudeReadsShared: boolean) =>
-    ALL.filter((id) => installHarnessLocked(id, claudeReadsShared, scope, true));
+  const lockedAt = (claudeReadsShared: boolean) =>
+    ALL.filter((id) => installHarnessLocked(id, claudeReadsShared, true));
 
-  it("add skill, global: locks Cursor, pi and Grok Build, else an unticked box would hide nothing", () => {
-    expect(lockedAt("global", false)).toEqual(["pi", "cursor", "grok-build"]);
+  it("add skill: locks every harness that reads the shared folder, else an unticked box would hide nothing", () => {
+    expect(lockedAt(false)).toEqual(["codex", "open-code", "pi", "cursor", "grok-build"]);
   });
 
-  it("add skill, global: also locks Claude Code when its folder points at the shared folder, else the box promises a link it cannot make", () => {
-    expect(lockedAt("global", true)).toEqual(["claude-code", "pi", "cursor", "grok-build"]);
-  });
-
-  it("add skill, project: also locks Codex and OpenCode, else an unticked box offers a per-project off that only exists globally", () => {
-    expect(lockedAt("project", false)).toEqual([
+  it("add skill: also locks Claude Code when its folder points at the shared folder, else the box promises a link it cannot make", () => {
+    expect(lockedAt(true)).toEqual([
+      "claude-code",
       "codex",
       "open-code",
       "pi",
@@ -80,12 +76,8 @@ describe("Universal ticked: locked rows", () => {
   });
 
   it("add skill: locks nothing once Universal is unticked, else a harness cannot get its own copy", () => {
-    for (const scope of ["global", "project"] as const) {
-      for (const claudeReadsShared of [false, true]) {
-        expect(
-          ALL.filter((id) => installHarnessLocked(id, claudeReadsShared, scope, false)),
-        ).toEqual([]);
-      }
+    for (const claudeReadsShared of [false, true]) {
+      expect(ALL.filter((id) => installHarnessLocked(id, claudeReadsShared, false))).toEqual([]);
     }
   });
 
@@ -94,7 +86,7 @@ describe("Universal ticked: locked rows", () => {
       for (const claudeReadsShared of [false, true]) {
         for (const id of ALL) {
           expect(installHarnessLockReason(id, claudeReadsShared, scope, true) !== null).toBe(
-            installHarnessLocked(id, claudeReadsShared, scope, true),
+            installHarnessLocked(id, claudeReadsShared, true),
           );
         }
       }
@@ -102,56 +94,41 @@ describe("Universal ticked: locked rows", () => {
     expect(installHarnessLockReason("cursor", false, "global", true)).toBe(
       "Cursor reads ~/.agents/skills and can't hide one skill.",
     );
+    expect(installHarnessLockReason("codex", false, "global", true)).toBe(
+      "Codex reads ~/.agents/skills and can't hide one skill.",
+    );
     expect(installHarnessLockReason("codex", false, "global", false)).toBeNull();
   });
 });
 
 describe("Universal ticked: ticks", () => {
   it("add skill: ticks every offered harness before the user picks, else the default hides a skill from a harness", () => {
-    expect(chosenInstallHarnesses(ALL, null, false, "global", true)).toEqual(ALL);
+    expect(chosenInstallHarnesses(ALL, null, false, true)).toEqual(ALL);
   });
 
   it("add skill: keeps locked harnesses ticked after a pick, else Cursor drops out of the harness list", () => {
-    expect(chosenInstallHarnesses(ALL, ["claude-code"], false, "global", true)).toEqual([
+    expect(chosenInstallHarnesses(ALL, ["claude-code"], false, true)).toEqual([
       "claude-code",
+      "codex",
+      "open-code",
       "pi",
       "cursor",
       "grok-build",
     ]);
   });
-
-  it("add skill, project: keeps Codex ticked after the user unpicks it, else the install turns it off globally", () => {
-    expect(
-      chosenInstallHarnesses(
-        ["claude-code", "codex", "open-code"],
-        ["claude-code"],
-        false,
-        "project",
-        true,
-      ),
-    ).toEqual(["claude-code", "codex", "open-code"]);
-  });
 });
 
 describe("Universal unticked: ticks", () => {
-  it("add skill: keeps Claude Code, Codex and OpenCode ticks and clears Cursor, pi and Grok Build, else a harness gets a copy the user never asked for", () => {
-    expect(harnessesKeptWithoutUniversal(ALL)).toEqual(["claude-code", "codex", "open-code"]);
-    expect(harnessesKeptWithoutUniversal(["pi", "cursor", "grok-build"])).toEqual([]);
-  });
-
-  it("add skill: keeps a user's unticked Codex unticked, else unticking Universal re-adds a harness the user left out", () => {
-    expect(harnessesKeptWithoutUniversal(["claude-code", "open-code", "pi", "cursor"])).toEqual([
-      "claude-code",
-      "open-code",
-    ]);
+  it("add skill: keeps the Claude Code tick and clears every harness that reads the shared folder, else a harness gets a copy the user never asked for", () => {
+    expect(harnessesKeptWithoutUniversal(ALL)).toEqual(["claude-code"]);
+    expect(
+      harnessesKeptWithoutUniversal(["codex", "open-code", "pi", "cursor", "grok-build"]),
+    ).toEqual([]);
   });
 
   it("add skill: ticks only the picked harnesses, else a locked default leaks into the copy list", () => {
-    expect(chosenInstallHarnesses(ALL, null, true, "global", false)).toEqual([]);
-    expect(chosenInstallHarnesses(ALL, ["codex", "pi"], true, "project", false)).toEqual([
-      "codex",
-      "pi",
-    ]);
+    expect(chosenInstallHarnesses(ALL, null, true, false)).toEqual([]);
+    expect(chosenInstallHarnesses(ALL, ["codex", "pi"], true, false)).toEqual(["codex", "pi"]);
   });
 
   it("add skill: requires one ticked harness, else the install writes nothing", () => {
@@ -163,12 +140,10 @@ describe("Universal unticked: ticks", () => {
 
 describe("Install request", () => {
   it("add skill, Universal on: sends today's default agents, so pi and Grok Build, shown ticked, do not become link targets", () => {
-    const chosen = chosenInstallHarnesses(ALL, null, false, "global", true);
+    const chosen = chosenInstallHarnesses(ALL, null, false, true);
     expect(
       installDestinationFields({
-        offered: ALL,
         chosen,
-        scope: "global",
         method: "skills-sh",
         universal: true,
       }),
@@ -176,38 +151,15 @@ describe("Install request", () => {
       method: "skills-sh",
       destination: "universal",
       agents: ["claude-code", "codex", "open-code", "cursor"],
-      disabled_harnesses: [],
       link_mode: "link",
     });
   });
 
-  it("add skill, Universal on: writes an off switch for an offered Codex the user unticked, even when it was not detected", () => {
-    const offered = ["claude-code", "codex", "open-code"] as const;
-    const chosen = chosenInstallHarnesses(
-      offered,
-      ["claude-code", "open-code"],
-      false,
-      "global",
-      true,
-    );
-    expect(
-      installDestinationFields({
-        offered,
-        chosen,
-        scope: "global",
-        method: "copy",
-        universal: true,
-      }).disabled_harnesses,
-    ).toEqual(["codex"]);
-  });
-
   it("add skill, Universal off: sends per-harness Copy for the ticked harnesses only, else a copy lands in a folder the user left out", () => {
-    const chosen = chosenInstallHarnesses(ALL, ["codex", "pi"], false, "global", false);
+    const chosen = chosenInstallHarnesses(ALL, ["codex", "pi"], false, false);
     expect(
       installDestinationFields({
-        offered: ALL,
         chosen,
-        scope: "global",
         method: "skills-sh",
         universal: false,
       }),
@@ -215,7 +167,6 @@ describe("Install request", () => {
       method: "copy",
       destination: "per-harness",
       agents: ["codex", "pi"],
-      disabled_harnesses: [],
       link_mode: "copy",
     });
   });
@@ -238,27 +189,5 @@ describe("Method interplay", () => {
     expect(universalLockReason(["skills-sh", "dotagents", "copy"])).toBeNull();
     expect(universalLockReason(["copy"])).toBeNull();
     expect(universalLockReason([])).toBeNull();
-  });
-});
-
-describe("Off switches", () => {
-  it("add skill: turns the skill off only for offered harnesses with an off switch, else unchecking Codex does nothing", () => {
-    expect(
-      installDisabledHarnesses(
-        ["claude-code", "codex", "open-code", "pi"],
-        ["claude-code"],
-        "global",
-      ),
-    ).toEqual(["codex", "open-code"]);
-  });
-
-  it("add skill at project scope: turns nothing off, else a project install writes Codex and OpenCode's global off switch", () => {
-    expect(
-      installDisabledHarnesses(
-        ["claude-code", "codex", "open-code", "pi"],
-        ["claude-code"],
-        "project",
-      ),
-    ).toEqual([]);
   });
 });

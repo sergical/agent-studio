@@ -177,6 +177,7 @@ fn deployment_from_core(dto: &DeploymentDto) -> Deployment {
             None
         },
         disabled_readers: Vec::new(),
+        disabling_config_files: Vec::new(),
         codex_implicit_invocation: None,
         shared_via_whole_dir_link: dto.shared_via_whole_dir_link,
         spec_violations: dto.spec_violations.clone(),

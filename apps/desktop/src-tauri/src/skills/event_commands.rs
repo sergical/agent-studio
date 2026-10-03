@@ -121,8 +121,7 @@ pub async fn list_skill_events(
 /// Legacy desktop rows with no `backup_dir`, whose inverse only the
 /// desktop's own `EventStore::restore` can apply: their
 /// `InverseOp::RecreateSymlink`/`RemoveSymlink`/`MoveBack` uses the field
-/// name `"link"`, which the core's `events::parse_symlink_inverse` (field
-/// `"path"`) does not recognize, and `make_independent_copy` has its own
+/// name `"link"`, which the core's restore does not recognize, and `make_independent_copy` has its own
 /// bespoke restore path below. No core code writes any of these kinds, so
 /// there's no ambiguity to resolve by filesystem probe the way
 /// `repair_skill_frontmatter` needs - `distribute_from_shared` and

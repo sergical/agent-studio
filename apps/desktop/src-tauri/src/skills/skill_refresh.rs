@@ -1685,6 +1685,19 @@ pub(crate) fn apply_skill_snapshot_overlays(
         ))
     };
     let opencode_config_dir = opencode_config_root(home);
+    let config_file = |agent: &str, path: PathBuf| super::skill_dto::DisablingConfigFile {
+        agent: agent.to_string(),
+        path: path.to_string_lossy().into_owned(),
+    };
+    let codex_config_file = config_file(
+        "codex",
+        skill_studio_host::codex_home(home).join("config.toml"),
+    );
+    let opencode_config_file = config_file(
+        "open-code",
+        skill_studio_core::opencode_config::opencode_json_path(&opencode_config_dir),
+    );
+    let claude_config_file = config_file("claude-code", home.join(".claude").join("settings.json"));
     let opencode_rules =
         skill_studio_core::opencode_config::read_skill_rules(&real_fs, &opencode_config_dir);
     let claude_overrides =
@@ -1707,6 +1720,9 @@ pub(crate) fn apply_skill_snapshot_overlays(
                 if codex_disables(&deployment.path) {
                     deployment.disabled = true;
                     deployment.disabled_by = Some(super::skill_dto::DisabledBy::CodexConfig);
+                    deployment
+                        .disabling_config_files
+                        .push(codex_config_file.clone());
                 }
                 deployment.codex_implicit_invocation =
                     read_codex_allow_implicit_invocation(&PathBuf::from(&deployment.path));
@@ -1714,12 +1730,18 @@ pub(crate) fn apply_skill_snapshot_overlays(
                 if open_code_deployment_count == 1 && opencode_rules.is_denied(&skill.name) {
                     deployment.disabled = true;
                     deployment.disabled_by = Some(super::skill_dto::DisabledBy::OpencodePermission);
+                    deployment
+                        .disabling_config_files
+                        .push(opencode_config_file.clone());
                 }
             } else if deployment.agent == "Claude Code" {
                 if claude_off && deployment.plugin.is_none() {
                     deployment.disabled = true;
                     deployment.disabled_by =
                         Some(super::skill_dto::DisabledBy::ClaudeSkillOverrides);
+                    deployment
+                        .disabling_config_files
+                        .push(claude_config_file.clone());
                 }
             } else if deployment.agent == "shared" {
                 if deployment.scope == "global" && claude_cannot_see {
@@ -1727,9 +1749,15 @@ pub(crate) fn apply_skill_snapshot_overlays(
                 }
                 if codex_disables(&deployment.path) {
                     deployment.disabled_readers.push("codex".to_string());
+                    deployment
+                        .disabling_config_files
+                        .push(codex_config_file.clone());
                 }
                 if opencode_rules.is_denied(&skill.name) {
                     deployment.disabled_readers.push("open-code".to_string());
+                    deployment
+                        .disabling_config_files
+                        .push(opencode_config_file.clone());
                 }
             }
         }
