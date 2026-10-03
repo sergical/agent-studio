@@ -220,12 +220,12 @@ fn connection_error(access: &SkillsShAccess, e: &reqwest::Error) -> String {
 
 /// The connection-failure message for `Server` mode, pulled out as a pure
 /// function so tests can cover both branches without a real transport
-/// failure. `npm run dev:server` is only right for the local dev server
+/// failure. `pnpm run dev:server` is only right for the local dev server
 /// (loopback) - a release build's hosted default fails for reasons that
 /// advice can't fix, so it points at the network instead.
 fn server_unreachable_message(server_root: &str) -> String {
     if is_loopback_server_root(server_root) {
-        format!("Skill Studio server not reachable at {server_root}. Start it with `npm run dev:server`.")
+        format!("Skill Studio server not reachable at {server_root}. Start it with `pnpm run dev:server`.")
     } else {
         format!(
             "Skill Studio server at {server_root} is not reachable. Check your network connection."
@@ -524,11 +524,11 @@ mod tests {
     fn server_unreachable_message_names_the_local_dev_server_for_loopback_hosts() {
         assert_eq!(
             server_unreachable_message("http://127.0.0.1:8787"),
-            "Skill Studio server not reachable at http://127.0.0.1:8787. Start it with `npm run dev:server`."
+            "Skill Studio server not reachable at http://127.0.0.1:8787. Start it with `pnpm run dev:server`."
         );
         assert_eq!(
             server_unreachable_message("http://localhost:8787"),
-            "Skill Studio server not reachable at http://localhost:8787. Start it with `npm run dev:server`."
+            "Skill Studio server not reachable at http://localhost:8787. Start it with `pnpm run dev:server`."
         );
     }
 
