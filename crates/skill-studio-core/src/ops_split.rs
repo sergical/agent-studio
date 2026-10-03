@@ -6,7 +6,8 @@
 //! when Codex's config turned the Universal folder off (its rows are keyed by
 //! path). The op writes no other harness config and never
 //! touches `.skill-lock.json`, so `npx skills update` keeps pointing at a
-//! Universal copy that no longer exists.
+//! Universal copy that no longer exists. Each copy gets a `copies` registry
+//! row, which `ops::update_split_copies` reads to refresh them.
 
 use std::path::{Path, PathBuf};
 
@@ -290,6 +291,15 @@ fn split_body(
         .collect();
     let patch = crate::events::with_remove_copies(serde_json::json!({}), &written);
     let _ = session.store.patch_inverse(&session.guard, &id, patch);
+    record_split_copies(
+        rt,
+        ctx,
+        &session,
+        fs,
+        &deployment.root.scope,
+        &skill.name,
+        &copies,
+    )?;
     session
         .store
         .finish(&session.guard, &id, EventStatus::Done, None)?;
@@ -311,6 +321,34 @@ fn split_body(
         quarantine_path: quarantine_target,
         update_note: SPLIT_UPDATE_NOTE.to_string(),
     })
+}
+
+/// Records each copy in the home registry's `copies` map, the same row
+/// `install` writes for a per-harness copy, so `ops::update_split_copies`
+/// can find every copy of the skill later.
+fn record_split_copies(
+    rt: &Runtime,
+    ctx: &OpContext,
+    session: &MutationSession,
+    fs: &dyn ScopeFs,
+    scope: &RootScope,
+    skill: &crate::identity::SkillName,
+    copies: &[SplitCopy],
+) -> Result<(), CoreError> {
+    let home = &rt.scope.home.lexical;
+    let mut document = crate::ops_install::read_registry_document(fs, home)?;
+    for copy in copies {
+        crate::ops_install::record_copy(
+            fs,
+            ctx,
+            &mut document,
+            scope,
+            skill,
+            &copy.path,
+            Some(&copy.harness),
+        )?;
+    }
+    crate::ops_install::write_registry_document(&session.guard, fs, home, document)
 }
 
 /// Refuses a harness whose skills folder is itself a link into the

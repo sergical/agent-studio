@@ -81,6 +81,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 pub use error::{CoreError, ErrorCode, ErrorEntry};
 pub use ops::{OpStatus, Outcome, ResultEnvelope};
+pub use ops_update::{SplitCopiesOutcome, SplitCopiesUpdate};
 pub use ports::{OpContext, Ports, Runtime};
 pub use scope::{NormalizedScope, RuntimeScope, ScopeId};
 

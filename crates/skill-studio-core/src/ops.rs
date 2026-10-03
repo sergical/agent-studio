@@ -4894,7 +4894,7 @@ pub use crate::ops_doctor::doctor;
 pub use crate::ops_install::{install, install_preferences};
 pub use crate::ops_remove::{remove, sweep_quarantine};
 pub use crate::ops_split::split;
-pub use crate::ops_update::{update, update_all};
+pub use crate::ops_update::{update, update_all, update_split_copies};
 
 /// Moves a universal deployment's directory into the parked root.
 ///
