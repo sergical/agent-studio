@@ -29,7 +29,6 @@ import type {
   InstalledSkill,
   HarnessReport,
   HarnessesChoice,
-  HarnessVisibilityTarget,
   LifecycleTarget,
   InvocationPolicy,
   InvocationTarget,
@@ -635,28 +634,6 @@ export async function splitSkillTargets(
   harnesses: AgentId[],
 ): Promise<SplitCopy[]> {
   return callCommand("split_skill_targets", { skillName, projectPath, harnesses });
-}
-
-/**
- * Enable or disable one harness's own view of the selected deployment, via that harness's own
- * mechanism (Codex `config.toml`, OpenCode `opencode.json`, or - for Claude
- * Code - removing/restoring its per-skill symlink). Refused for harnesses
- * with no per-skill disable (pi, Cursor, Grok Build) and for Claude Code when
- * the skill is deployed via the whole-directory symlink.
- */
-export async function setHarnessEnabled(
-  target: LifecycleTarget,
-  agent: AgentId,
-  enabled: boolean,
-): Promise<void> {
-  if (!target.deployment_id) {
-    throw new Error("Agent visibility needs one exact folder");
-  }
-  const visibilityTarget: HarnessVisibilityTarget = {
-    deployment_id: target.deployment_id,
-    reader_agent: agent,
-  };
-  return callCommand("set_harness_enabled", { target: visibilityTarget, enabled });
 }
 
 /**

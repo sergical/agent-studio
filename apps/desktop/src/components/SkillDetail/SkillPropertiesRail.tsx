@@ -6,22 +6,16 @@
 // ledger model) so the rail and the card never disagree about the same skill.
 // ============================================================================
 
-import { useState } from "react";
 import type { ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Button, Popover, PopoverContent, PopoverTrigger } from "@skill-studio/ui";
 import { formatTokens } from "@skill-studio/lib";
-import type { AgentId, InstalledSkill } from "@skill-studio/lib";
-import { restoreMovedDeployment, setHarnessEnabled } from "../../lib/skill-api";
-import { useAppStore } from "../../store/appStore";
+import type { InstalledSkill } from "@skill-studio/lib";
 import { HarnessStack } from "../SkillList/HarnessStack";
 import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
-import { SwitchControl } from "../ui/SwitchControl";
 import { buildInstalledSkillSourceLedgerModel } from "./installed-skill-source-ledger-model";
-import { canOfferHarnessSwitchForRow, harnessSwitchOffTitle } from "./skill-location-helpers";
 import { buildScopeGroups, scopeGroupsHaveDrift } from "./skill-location-status";
-import type { AgentLocationRow } from "./skill-location-status";
-import { railHarnessEntries, readerToggleAction } from "./skill-properties-rail-model";
+import { railHarnessEntries } from "./skill-properties-rail-model";
 
 interface SkillPropertiesRailProps {
   skill: InstalledSkill;
@@ -57,13 +51,6 @@ function showLocations() {
 }
 
 export function SkillPropertiesRail({ skill }: SkillPropertiesRailProps) {
-  const addToast = useAppStore((state) => state.addToast);
-  const [announcement, setAnnouncement] = useState<{
-    kind: "status" | "alert";
-    text: string;
-  } | null>(null);
-  const [pendingHarness, setPendingHarness] = useState<AgentId | null>(null);
-
   const groups = buildScopeGroups(skill);
   const ledger = buildInstalledSkillSourceLedgerModel(skill);
   const hasDrift = scopeGroupsHaveDrift(groups);
@@ -73,44 +60,8 @@ export function SkillPropertiesRail({ skill }: SkillPropertiesRailProps) {
     reach.harnesses.filter((h) => h.reached).length + (reach.universal.present ? 1 : 0);
   const harnessEntries = railHarnessEntries(skill, groups);
 
-  const announceError = (title: string, message: string) => {
-    setAnnouncement({ kind: "alert", text: message });
-    addToast({ type: "error", title, message });
-  };
-
-  const toggleHarness = async (harness: AgentId, row: AgentLocationRow, enabled: boolean) => {
-    setPendingHarness(harness);
-    try {
-      const readerAction = readerToggleAction(row, enabled);
-      if (readerAction) {
-        await setHarnessEnabled(readerAction.target, readerAction.agent, readerAction.enabled);
-      } else if (row.deployment) {
-        if (row.deployment.disabled_by === "studio-moved") {
-          await restoreMovedDeployment({ deployment_id: row.deployment.id });
-        } else {
-          await setHarnessEnabled({ deployment_id: row.deployment.id }, harness, enabled);
-        }
-      }
-      setAnnouncement({ kind: "status", text: "Saved" });
-    } catch (err) {
-      announceError(
-        enabled ? "Couldn't enable" : "Couldn't disable",
-        err instanceof Error ? err.message : "Unknown error",
-      );
-    }
-    setPendingHarness(null);
-  };
-
   return (
     <aside aria-label="Properties" className="sticky top-5 flex min-w-0 flex-col gap-1 self-start">
-      <div
-        role={announcement?.kind === "alert" ? "alert" : "status"}
-        aria-live={announcement?.kind === "alert" ? "assertive" : "polite"}
-        className="sr-only"
-      >
-        {announcement?.text}
-      </div>
-
       <dl className="flex flex-col gap-1">
         <PropertyRow label="Location">
           <Button
@@ -144,18 +95,11 @@ export function SkillPropertiesRail({ skill }: SkillPropertiesRailProps) {
                 </p>
               ) : (
                 harnessEntries.map((h) => {
-                  const row = h.row;
-                  const offerSwitch = row != null && canOfferHarnessSwitchForRow(row);
+                  const note = h.row && !h.row.switchOn ? h.row.caption || "Off" : "";
                   return (
                     <div key={h.harness} className="flex h-7 items-center justify-between gap-2">
                       <span className="truncate text-small text-text-secondary">{h.label}</span>
-                      <SwitchControl
-                        checked={row?.switchOn ?? false}
-                        disabled={!offerSwitch || pendingHarness === h.harness}
-                        onCheckedChange={(next) => row && toggleHarness(h.harness, row, next)}
-                        ariaLabel={`Enabled for ${h.label}`}
-                        title={offerSwitch || !row ? undefined : harnessSwitchOffTitle(row)}
-                      />
+                      {note && <span className="text-caption text-text-tertiary">{note}</span>}
                     </div>
                   );
                 })

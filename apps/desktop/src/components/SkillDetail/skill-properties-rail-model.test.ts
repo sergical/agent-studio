@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import type { Deployment, InstalledSkill } from "@skill-studio/lib";
 import { buildScopeGroups } from "./skill-location-status";
-import { railHarnessEntries, readerToggleAction } from "./skill-properties-rail-model";
+import { railHarnessEntries } from "./skill-properties-rail-model";
 
 function universalOnlySkill(): InstalledSkill {
   const deployment: Deployment = {
@@ -61,7 +61,7 @@ function universalOnlySkill(): InstalledSkill {
 }
 
 describe("properties rail Harnesses popover", () => {
-  it("a Universal-only skill lists Codex and OpenCode switches and toggling Codex sends set-reader-enabled", () => {
+  it("a Universal-only skill lists Codex and OpenCode as reader rows with no switch, or names the entry that differs", () => {
     const skill = universalOnlySkill();
     const entries = railHarnessEntries(skill, buildScopeGroups(skill));
 
@@ -69,18 +69,7 @@ describe("properties rail Harnesses popover", () => {
       const entry = entries.find((e) => e.harness === harness);
       expect(entry, `the rail does not list ${harness} for a Universal-only skill`).toBeDefined();
       expect(entry!.row?.kind).toBe("reader");
-      expect(entry!.row?.hasSwitch, `the rail's ${harness} entry has no switch`).toBe(true);
+      expect(entry!.row?.hasSwitch, `the rail's ${harness} entry offers a switch`).toBe(false);
     }
-
-    const codexRow = entries.find((e) => e.harness === "codex")!.row!;
-    expect(
-      readerToggleAction(codexRow, false),
-      "toggling Codex off in the rail does not send set-reader-enabled for the Universal folder",
-    ).toEqual({
-      kind: "set-reader-enabled",
-      target: codexRow.lifecycleTarget,
-      agent: "codex",
-      enabled: false,
-    });
   });
 });

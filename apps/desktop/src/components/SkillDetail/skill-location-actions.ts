@@ -8,11 +8,7 @@
 // ============================================================================
 
 import { useState } from "react";
-import {
-  agentIdFromDeploymentLabel,
-  parseSkillSource,
-  toWireParsedSkillSource,
-} from "@skill-studio/lib";
+import { parseSkillSource, toWireParsedSkillSource } from "@skill-studio/lib";
 import type {
   AgentId,
   Deployment,
@@ -29,7 +25,6 @@ import {
   removeSkill,
   repairSkillLink,
   restoreMovedDeployment,
-  setHarnessEnabled,
   setPluginEnabled,
   setSkillsInvocation,
   unparkSkill,
@@ -40,8 +35,6 @@ import {
   lifecycleTargetForSkill,
 } from "../../lib/skill-lifecycle-target";
 import { useAppStore } from "../../store/appStore";
-import { canOfferHarnessSwitch } from "./skill-location-helpers";
-import { claudeCodeSwitchToast } from "./skill-claude-switch-note";
 import { hasUpstreamOwner } from "./skill-location-status";
 import type { InvocationFile, LocationAction } from "./skill-location-status";
 
@@ -191,35 +184,9 @@ export function useLocationActions(
           scopeLabel: action.scopeLabel,
         });
         return Promise.resolve(true);
-      case "set-enabled": {
-        const { deployment, enabled } = action;
-        const readerAgent = agentIdFromDeploymentLabel(deployment.agent);
-        // `park` is the off switch only for the Global Universal deployment - never this row's
-        // (see `canOfferHarnessSwitch`). Both the rail and the Locations card disable the
-        // control for any row that fails this check, so the rejection below is a
-        // defense-in-depth backstop, not the normal path.
-        return runWithErrorToast(
-          enabled ? "Couldn't enable" : "Couldn't disable",
-          () =>
-            deployment.disabled_by === "studio-moved"
-              ? restoreMovedDeployment({ deployment_id: deployment.id })
-              : readerAgent && readerAgent !== "shared" && canOfferHarnessSwitch(deployment)
-                ? setHarnessEnabled({ deployment_id: deployment.id }, readerAgent, enabled)
-                : Promise.reject(new Error("This copy has no off switch")),
-          () => {
-            if (readerAgent === "claude-code") addToast(claudeCodeSwitchToast(skill, enabled));
-          },
-        );
-      }
-      case "set-reader-enabled":
-        return runWithErrorToast(
-          action.enabled ? "Couldn't enable" : "Couldn't disable",
-          () => setHarnessEnabled(action.target, action.agent, action.enabled),
-          () => {
-            if (action.agent === "claude-code") {
-              addToast(claudeCodeSwitchToast(skill, action.enabled));
-            }
-          },
+      case "restore-moved":
+        return runWithErrorToast("Couldn't move back", () =>
+          restoreMovedDeployment({ deployment_id: action.deployment.id }),
         );
       case "set-plugin-enabled": {
         const { deployment, enabled } = action;

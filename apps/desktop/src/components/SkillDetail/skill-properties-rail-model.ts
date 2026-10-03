@@ -1,12 +1,12 @@
 // ============================================================================
 // Skill Studio - properties rail harness model
-// Which harnesses the rail's Harnesses popover lists, which location row each
-// switch drives, and the action a reader row's switch sends.
+// Which harnesses the rail's Harnesses popover lists, which location row stands for
+// each one.
 // ============================================================================
 
 import type { AgentId, InstalledSkill } from "@skill-studio/lib";
 import { DEFAULT_HARNESS_LIST, whereFacts } from "../SkillList/skill-row-state";
-import type { AgentLocationRow, LocationAction, ScopeGroup } from "./skill-location-status";
+import type { AgentLocationRow, ScopeGroup } from "./skill-location-status";
 
 interface RailHarnessEntry {
   harness: AgentId;
@@ -15,7 +15,7 @@ interface RailHarnessEntry {
 }
 
 function rowRank(row: AgentLocationRow, isGlobal: boolean): number {
-  return (isGlobal ? 0 : 2) + (row.hasSwitch ? 0 : 1);
+  return (isGlobal ? 0 : 1) + (row.kind === "reader" ? 0.5 : 0);
 }
 
 /** The Global row wins over a project row, so a project copy never drives the switch that stands for the Global state. */
@@ -40,12 +40,4 @@ export function railHarnessEntries(
     const row = rowForHarness(groups, h.harness);
     return h.reached || row ? [{ harness: h.harness, label: h.label, row }] : [];
   });
-}
-
-export function readerToggleAction(
-  row: AgentLocationRow,
-  enabled: boolean,
-): Extract<LocationAction, { kind: "set-reader-enabled" }> | null {
-  if (row.kind !== "reader") return null;
-  return { kind: "set-reader-enabled", target: row.lifecycleTarget, agent: row.harness, enabled };
 }

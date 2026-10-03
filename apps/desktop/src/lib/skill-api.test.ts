@@ -194,7 +194,6 @@ const EXPECTED_WRAPPER_COMMANDS = {
     command: "split_skill_targets",
     registeredInLibRs: true,
   },
-  setHarnessEnabled: { kind: "command", command: "set_harness_enabled", registeredInLibRs: true },
   restoreMovedDeployment: {
     kind: "command",
     command: "restore_moved_deployment",

@@ -163,7 +163,7 @@ describe("buildScopeGroups", () => {
     expect(row?.conditions[0].what).toBe("This copy differs from the Universal folder.");
   });
 
-  it("treats a whole-root link as a plain link row with a switch", () => {
+  it("treats a whole-root link as a plain link row with no agent switch", () => {
     const shared = fixtureDeployment();
     const claude = wholeFolderDeployment({
       agent: "Claude Code",
@@ -175,14 +175,17 @@ describe("buildScopeGroups", () => {
     const row = global.rows.find((r) => r.harness === "claude-code");
     expect(row?.kind).toBe("link");
     expect(row?.level).toBe(null);
-    expect(row?.hasSwitch).toBe(true);
+    expect(row?.hasSwitch).toBe(false);
     expect(row?.conditions).toHaveLength(0);
   });
 
   it.each([
-    ["codex-config", "Off for Codex — switched off in ~/.codex/config.toml."],
-    ["opencode-permission", "Off for OpenCode — denied in opencode.json."],
-    ["claude-skill-overrides", "Off for Claude Code — switched off in ~/.claude/settings.json."],
+    ["codex-config", "Hidden by Codex setting — switched off in ~/.codex/config.toml."],
+    ["opencode-permission", "Hidden by OpenCode setting — denied in opencode.json."],
+    [
+      "claude-skill-overrides",
+      "Hidden by Claude Code setting — switched off in ~/.claude/settings.json.",
+    ],
     ["claude-link-removed", "Off for Claude Code — the link under ~/.claude/skills was removed."],
     ["studio-moved", "Off for pi — moved into .skill-studio-disabled."],
   ] as const)("reports the %s off mode with its own sentence", (disabledBy, expectedWhat) => {
@@ -281,7 +284,7 @@ describe("buildScopeGroups", () => {
     expect(pi?.hasSwitch).toBe(false);
     expect(pi?.switchOn).toBe(true);
     const codex = global.rows.find((r) => r.harness === "codex");
-    expect(codex?.hasSwitch).toBe(true);
+    expect(codex?.hasSwitch).toBe(false);
   });
 
   it("keeps broken link errors on their own rows, not the folder", () => {
@@ -307,10 +310,9 @@ describe("buildScopeGroups", () => {
     expect(global.rows.find((r) => r.harness === "codex")?.level).toBe("error");
   });
 
-  it("rolls up to an all-off folder when every row is off but nothing errors", () => {
-    // The folder rollup only looks at readers - Claude Code and Codex have
-    // their own link deployments here, so only OpenCode (the one switchable
-    // reader left) needs to be off for the folder to roll up as all-off.
+  it("leaves_the_folder_dot_empty_when_only_agent_settings_hide_the_skill_or_names_the_dot_it_shows", () => {
+    // Agent settings are read-only here. Only the shared-folder switch or a
+    // park makes a folder all-off, so settings-hidden rows do not roll up.
     const shared = fixtureDeployment({ disabled_readers: ["open-code"] });
     const claude = fixtureDeployment({
       agent: "Claude Code",
@@ -330,11 +332,10 @@ describe("buildScopeGroups", () => {
     });
     const skill = fixtureSkill({ deployments: [shared, claude, codex] });
     const [global] = buildScopeGroups(skill);
-    expect(global.folderLevel).toBe("off");
-    expect(global.folderTip.startsWith("Off everywhere:")).toBe(true);
+    expect(global.folderLevel).toBe(null);
   });
 
-  it("keeps_the_claude_code_row_visible_and_switchable_while_skill_overrides_has_it_off_or_names_the_layout", () => {
+  it("keeps_the_claude_code_row_visible_with_a_caption_and_no_switch_while_skill_overrides_has_it_off_or_names_the_layout", () => {
     const universalPath = "/home/.agents/skills/find-bugs";
     const path = "/home/.claude/skills/find-bugs";
     const off = { disabled: true, disabled_by: "claude-skill-overrides" } as const;
@@ -353,38 +354,36 @@ describe("buildScopeGroups", () => {
       const row = global.rows.find((r) => r.harness === "claude-code");
       expect(row, `${layout}: the Claude Code row is gone while off`).toBeDefined();
       expect(row?.switchOn, `${layout}: the switch shows on`).toBe(false);
-      expect(row?.hasSwitch, `${layout}: the switch cannot turn it back on`).toBe(true);
+      expect(row?.hasSwitch, `${layout}: the row offers a switch that writes settings.json`).toBe(
+        false,
+      );
+      expect(row?.caption, `${layout}: the caption is missing`).toBe(
+        "Hidden by Claude Code setting",
+      );
       expect(
         row?.conditions.map((c) => c.what),
         `${layout}: the off sentence is missing`,
-      ).toContain("Off for Claude Code — switched off in ~/.claude/settings.json.");
+      ).toContain("Hidden by Claude Code setting — switched off in ~/.claude/settings.json.");
     }
   });
 
-  it("shows_a_not_linked_claude_code_row_for_a_universal_only_skill_whose_switch_links_it_or_names_what_is_missing", () => {
+  it("shows_a_not_linked_claude_code_row_for_a_universal_only_skill_with_no_switch_or_names_what_is_missing", () => {
     const shared = fixtureDeployment({ disabled_readers: ["claude-code"] });
     const [global] = buildScopeGroups(fixtureSkill({ deployments: [shared] }));
 
     const claudeRows = global.rows.filter((r) => r.harness === "claude-code");
     expect(claudeRows, "expected exactly one Claude Code row").toHaveLength(1);
     const [row] = claudeRows;
-    // A reader row's switch sends `set-reader-enabled` for its harness and
-    // lifecycle target (SkillLocationRow's LocationRowSwitch).
     expect(row).toMatchObject({
       kind: "reader",
-      hasSwitch: true,
+      hasSwitch: false,
       switchOn: false,
       level: "off",
-      lifecycleTarget: global.shared!.lifecycleTarget,
     });
     expect(row.conditions[0]?.status).toBe("Not linked");
-    const menu = rowMenu(row, global.label);
-    expect(menu.entries.map((entry) => entry.action)).toContainEqual({
-      kind: "set-reader-enabled",
-      target: global.shared!.lifecycleTarget,
-      agent: "claude-code",
-      enabled: true,
-    });
+    expect(rowMenu(row, global.label).entries.map((entry) => entry.action.kind)).toEqual([
+      "reveal",
+    ]);
   });
 
   it("shows_no_not_linked_row_when_a_whole_folder_link_already_gives_claude_code_the_skill_or_names_the_extra_row", () => {
@@ -448,7 +447,7 @@ describe("buildScopeGroups", () => {
     expect(siblingRows(project)).toHaveLength(1);
   });
 
-  it("locations_card_switch_is_disabled_for_a_copy_that_cannot_park_or_names_the_row", () => {
+  it("locations_card_offers_no_agent_switch_on_a_copy_row_or_names_the_row", () => {
     const shared = fixtureDeployment();
     const projectClaudeCopy = fixtureDeployment({
       id: "dep:v1/project/claude-code/find-bugs",
@@ -465,41 +464,14 @@ describe("buildScopeGroups", () => {
       is_symlink: false,
       path: "/home/.codex/skills/find-bugs",
     });
-    const skill = fixtureSkill({ deployments: [shared, projectClaudeCopy, globalCodex] });
-    const groups = buildScopeGroups(skill);
-    const global = groups.find((g) => g.isGlobal)!;
-    const project = groups.find((g) => !g.isGlobal)!;
-
-    // A project-scope Claude Code copy has no native per-skill disable and is
-    // not the Global Universal deployment, so the card must not offer a
-    // switch that only ends in the "This copy has no off switch" toast.
-    const copyRow = project.rows.find((row) => row.harness === "claude-code")!;
-    expect(copyRow.hasSwitch).toBe(false);
-    expect(copyRow.switchDisabledReason).toBe(
-      "This copy has no off switch; park the skill from the header instead",
+    const groups = buildScopeGroups(
+      fixtureSkill({ deployments: [shared, projectClaudeCopy, globalCodex] }),
     );
-
-    // A harness with a native per-skill disable (Codex, global scope) keeps
-    // its live switch.
-    const nativeRow = global.rows.find((row) => row.harness === "codex")!;
-    expect(nativeRow.hasSwitch).toBe(true);
-    expect(nativeRow.switchDisabledReason).toBeUndefined();
-
-    const markup = renderToStaticMarkup(
-      createElement(
-        TooltipProvider,
-        null,
-        createElement(SkillLocationRow, {
-          row: copyRow,
-          scopeLabel: project.label,
-          onAction: () => Promise.resolve(true),
-        }),
-      ),
-    );
-    expect(markup).toContain("disabled=");
-    expect(markup).toContain(
-      'aria-label="This copy has no off switch; park the skill from the header instead"',
-    );
+    for (const group of groups) {
+      for (const row of group.rows) {
+        expect(row.hasSwitch, `${group.label}: ${row.harnessLabel} offers a switch`).toBe(false);
+      }
+    }
   });
 });
 
@@ -581,7 +553,7 @@ describe("rowMenu", () => {
     });
     const [global] = buildScopeGroups(fixtureSkill({ deployments: [shared, claude] }));
 
-    for (const row of global.rows.filter((candidate) => candidate.hasSwitch)) {
+    for (const row of global.rows) {
       const menu = rowMenu(row, global.label);
       const labels = [...menu.entries, ...menu.danger].map((entry) => entry.label);
       expect(labels).not.toContain(`Disable for ${row.harnessLabel}`);
@@ -669,7 +641,7 @@ describe("rowMenu", () => {
     expect(menu.danger.map((e) => e.label)).toContain("Remove link");
   });
 
-  it("puts the mechanism hint under the enable action for an off row", () => {
+  it("offers_open_config_file_for_a_row_hidden_by_a_codex_setting_or_names_the_missing_entry", () => {
     const shared = fixtureDeployment();
     const codex = fixtureDeployment({
       agent: "Codex",
@@ -683,7 +655,7 @@ describe("rowMenu", () => {
     const [global] = buildScopeGroups(skill);
     const row = global.rows.find((r) => r.harness === "codex")!;
     const menu = rowMenu(row, global.label);
-    expect(menu.hint).toBe("Turns it back on in Codex's config.toml.");
+    expect(menu.entries.map((entry) => entry.label)).toContain("Open config.toml");
   });
 
   it("offers disable and uninstall for a Claude Code plugin row", () => {
