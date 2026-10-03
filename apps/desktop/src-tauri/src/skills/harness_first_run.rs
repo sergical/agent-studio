@@ -134,9 +134,7 @@ pub async fn save_harnesses_choice(
 /// can't be constructed outside a running app (see `detect_with_runtime`'s
 /// own split for the same reason). Takes the `WriteLease` itself, not just
 /// `home`, so a test can root it under a tempdir with
-/// `WriteLease::with_lease_root` instead of the real data root - matching
-/// `set_harness_enabled_with`'s own guard parameter in
-/// `skill_harness_disable.rs`. Takes `Consent` the same way, so the
+/// `WriteLease::with_lease_root` instead of the real data root. Takes `Consent` the same way, so the
 /// first-run screen's telemetry choice takes effect without a restart the
 /// same way Settings' toggle does. Takes `env_override` as a parameter,
 /// rather than reading `SKILL_STUDIO_TELEMETRY` itself, so a test can drive

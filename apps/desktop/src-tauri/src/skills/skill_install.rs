@@ -61,7 +61,7 @@ fn core_method(method: AddMethod) -> InstallMethod {
 
 /// `AgentId` (the desktop's catalog id) -> `skill_studio_core::identity::AgentId`
 /// (the op's harness newtype), by the catalog's own CLI name string - the
-/// same conversion `set_harness_enabled`'s desktop adapter already uses.
+/// same conversion the desktop's other core adapters use.
 fn core_harness(agent: AgentId) -> Result<skill_studio_core::identity::AgentId, String> {
     skill_studio_core::identity::AgentId::parse_harness(agent.cli_name()).map_err(|e| e.message)
 }
@@ -443,16 +443,12 @@ pub(crate) fn needs_trust_message(identity: &str) -> String {
     )
 }
 
-/// Turns the op's outcome into the sheet's `AddSkillResult`, running the
-/// `disabled_harnesses` follow-up `ops::install` does not own (decision 2,
-/// `launch-3-5c.md`): it runs after the op's own write succeeds, inside the
-/// same `spawn_blocking` task as the install itself. A follow-up failure
-/// becomes `warning`, not an error - the install already succeeded and the
-/// skill is on disk and usable.
+/// Turns the op's outcome into the sheet's `AddSkillResult`. Link and copy
+/// problems the op reports become `warning`, not an error - the install
+/// already succeeded and the skill is on disk and usable.
 ///
 /// `pub(crate)`: shared with `skill_add_operation.rs`'s batch worker.
 pub(crate) fn finish_install(
-    rt: &Runtime,
     request: &AddSkillRequest,
     outcome: InstallOutcome,
 ) -> InstallAdapterOutcome {
@@ -498,19 +494,6 @@ pub(crate) fn finish_install(
         }
     }
 
-    // Only global scope has a per-harness switch-off (Claude's
-    // `skillOverrides`, the Codex/OpenCode split): a project install turns
-    // nothing off, whatever the request lists.
-    let disabled_harnesses: &[AgentId] = match request.scope {
-        InstallScope::Global => &request.disabled_harnesses,
-        InstallScope::Project => &[],
-    };
-    for agent in disabled_harnesses {
-        if let Err(e) = disable_harness(rt, &skill.0, *agent, request.project_path.as_deref()) {
-            warnings.push(format!("{}: {e}", agent.cli_name()));
-        }
-    }
-
     let tool = match request.method {
         AddMethod::Copy => "copy",
         AddMethod::Dotagents => "dotagents",
@@ -523,30 +506,6 @@ pub(crate) fn finish_install(
         deployments_created,
         warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
     })
-}
-
-/// One `ops::set_harness_enabled(enabled: false)` call per
-/// `disabled_harnesses` entry - directly, not through the legacy
-/// `set_harness_enabled_with`/`set_new_universal_reader_enabled` dispatch
-/// `skill_harness_disable.rs`'s own command still uses for a user-driven
-/// toggle (decision 2).
-fn disable_harness(
-    rt: &Runtime,
-    skill: &str,
-    agent: AgentId,
-    project_path: Option<&str>,
-) -> Result<(), String> {
-    let harness = core_harness(agent)?;
-    let ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-    let req = skill_studio_core::dto::SetHarnessEnabledRequest {
-        skill: SkillName(skill.to_string()),
-        harness,
-        enabled: false,
-        project_path: project_path.map(PathBuf::from),
-    };
-    ops::set_harness_enabled(rt, &ctx, &req)
-        .map(|_| ())
-        .map_err(|e| e.message)
 }
 
 // Review item 11: `add_skill_runs_on_a_blocking_thread_...` only proved
@@ -575,7 +534,7 @@ pub(crate) fn set_install_one_thread_probe(
 
 /// One skill through `ops::install`: gather `Copy` files (if applicable,
 /// against a batch's shared `snapshot` when given), build the op's request,
-/// call `ops::install`, then run `finish_install`'s follow-ups. Shared by
+/// call `ops::install`, then run `finish_install`. Shared by
 /// `add_skill_with_runtime` below and `skill_add_operation.rs`'s single and
 /// batch workers, so there is exactly one place that calls `ops::install`.
 pub(crate) fn install_one(
@@ -614,7 +573,7 @@ pub(crate) fn install_one(
     let result = ops::install(rt, &ctx, &install_req);
     let envelope = ResultEnvelope::from_result(Operation::Install, &rt.scope, &ctx, result);
     let outcome = super::core_runtime::to_command_result(envelope)?;
-    Ok(finish_install(rt, request, outcome))
+    Ok(finish_install(request, outcome))
 }
 
 /// The GitHub-facing pair `Copy` needs, same shape `skill_add.rs`'s
@@ -1222,16 +1181,14 @@ mod tests {
         assert_eq!(result.name, "visual-recap");
     }
 
-    /// `add_skill_with_disabled_harnesses_ends_with_that_harness_switched_off_or_names_the_harness_still_enabled`
-    /// (review item 3): decision 2 (`launch-3-5c.md`) runs
-    /// `disabled_harnesses` as a follow-up after `ops::install`'s own write
-    /// succeeds, directly through `ops::set_harness_enabled`. Installs Claude
-    /// Code linked, then disabled, and checks the disk state
-    /// `set_harness_enabled` itself mutates (`skillOverrides` in
-    /// `~/.claude/settings.json`), not just that the call returned without an
-    /// error. The link stays: Claude Code's off switch no longer removes it.
+    /// `add_skill_with_disabled_harnesses_leaves_agent_settings_untouched_or_names_the_file_it_wrote`:
+    /// Flow: a global Copy install lists `claude-code` and `cursor` in
+    /// `disabled_harnesses`. Expectation: the skill lands, there is no warning,
+    /// and `~/.claude/settings.json` is never written - Skill Studio does not
+    /// switch a skill off in an agent's own config. A failure names the file
+    /// the install wrote.
     #[tokio::test]
-    async fn add_skill_with_disabled_harnesses_ends_with_that_harness_switched_off_or_names_the_harness_still_enabled(
+    async fn add_skill_with_disabled_harnesses_leaves_agent_settings_untouched_or_names_the_file_it_wrote(
     ) {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
@@ -1242,110 +1199,19 @@ mod tests {
         let rt = test_runtime(&home);
         let mut request = copy_request(&source_dir, "find-bugs");
         request.agents = vec![AgentId::ClaudeCode];
-        request.disabled_harnesses = vec![AgentId::ClaudeCode];
+        request.disabled_harnesses = vec![AgentId::ClaudeCode, AgentId::Cursor];
 
         let result = add_skill_with_runtime(move || Ok(rt), request, never_github())
             .await
             .unwrap();
 
-        assert_eq!(
-            result.warning, None,
-            "disabling claude-code right after install should not have failed"
-        );
-        let settings: serde_json::Value =
-            std::fs::read_to_string(home.join(".claude/settings.json"))
-                .ok()
-                .and_then(|text| serde_json::from_str(&text).ok())
-                .unwrap_or_default();
-        assert_eq!(
-            settings["skillOverrides"]["find-bugs"], "off",
-            "claude-code should end disabled in ~/.claude/settings.json, got {settings}"
-        );
-        let link = home.join(".claude/skills/find-bugs");
-        assert!(
-            link.symlink_metadata().is_ok(),
-            "switching claude-code off must keep {}",
-            link.display()
-        );
-    }
-
-    /// `project_install_ignores_disabled_harnesses_or_names_the_global_switch_it_wrote`:
-    /// Flow: a project-scope Copy install asks for `claude-code` in
-    /// `disabled_harnesses`, which only global scope supports (its switch is
-    /// `skillOverrides` in `~/.claude/settings.json`). Expectation: the install
-    /// succeeds with no warning, `~/.claude/settings.json` is never written,
-    /// and the skill stays on for every harness. A failure here means a
-    /// project install switched a skill off for the whole machine.
-    #[tokio::test]
-    async fn project_install_ignores_disabled_harnesses_or_names_the_global_switch_it_wrote() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let project = home.join("work/app");
-        let source_dir = tmp.path().join("source");
-        std::fs::create_dir_all(&project).unwrap();
-        super::super::test_support::write_skill(&source_dir, "find-bugs");
-
-        let rt = test_runtime(&home);
-        let mut request = copy_request(&source_dir, "find-bugs");
-        request.scope = InstallScope::Project;
-        request.project_path = Some(project.to_string_lossy().into_owned());
-        request.agents = vec![AgentId::ClaudeCode];
-        request.disabled_harnesses = vec![AgentId::ClaudeCode];
-
-        let result = add_skill_with_runtime(move || Ok(rt), request, never_github())
-            .await
-            .unwrap();
-
-        assert_eq!(
-            result.warning, None,
-            "a project install has no switch-off to warn about"
-        );
-        assert!(
-            project.join(".agents/skills/find-bugs").exists(),
-            "the project install must still land"
-        );
+        assert_eq!(result.warning, None);
+        assert!(home.join(".agents/skills/find-bugs").exists());
         let settings = home.join(".claude/settings.json");
         assert!(
             !settings.exists(),
-            "a project install must not write the global switch-off: {}",
+            "the install wrote an agent setting: {}",
             std::fs::read_to_string(&settings).unwrap_or_default()
-        );
-    }
-
-    /// `a_harness_that_cannot_be_disabled_becomes_a_warning_not_a_failed_install`
-    /// (review item 5): pi and Cursor have no per-skill switch
-    /// (`ops::set_harness_enabled` refuses them), so asking to disable either
-    /// at install time is a `finish_install` warning that points at Park, not
-    /// an install failure and not a silent success.
-    #[tokio::test]
-    async fn a_harness_that_cannot_be_disabled_becomes_a_warning_not_a_failed_install() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let source_dir = tmp.path().join("source");
-        std::fs::create_dir_all(&home).unwrap();
-        super::super::test_support::write_skill(&source_dir, "find-bugs");
-
-        let rt = test_runtime(&home);
-        let mut request = copy_request(&source_dir, "find-bugs");
-        request.disabled_harnesses = vec![AgentId::Cursor, AgentId::Pi];
-
-        let result = add_skill_with_runtime(move || Ok(rt), request, never_github())
-            .await
-            .unwrap();
-
-        assert!(home.join(".agents/skills/find-bugs").exists());
-        let warning = result
-            .warning
-            .expect("the install reported pi and Cursor as disabled, but neither has a switch");
-        for harness in ["cursor:", "pi:"] {
-            assert!(
-                warning.contains(harness),
-                "the warning does not name {harness} as not disabled: {warning}"
-            );
-        }
-        assert!(
-            warning.contains("Park the skill"),
-            "the warning does not point at Park as the off path: {warning}"
         );
     }
 

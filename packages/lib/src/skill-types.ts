@@ -44,7 +44,6 @@ export type {
   HarnessReport,
   HarnessDetection,
   HarnessesChoice,
-  HarnessVisibilityTarget,
   ImportResult,
   InstallResult,
   InstallPreferences,

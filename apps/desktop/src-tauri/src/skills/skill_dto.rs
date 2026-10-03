@@ -428,9 +428,8 @@ pub struct AddSkillRequest {
     pub method: AddMethod,
     pub destination: SkillDestination,
     pub agents: Vec<super::agents::AgentId>,
-    /// Harnesses to switch off for this skill right after a successful
-    /// install: readers of the Universal folder the install itself cannot
-    /// avoid reaching. Unused for Per harness Copy.
+    /// Ignored: Skill Studio no longer switches a skill off in an agent's own
+    /// config. Kept so a caller that still sends it deserializes.
     #[serde(default)]
     pub disabled_harnesses: Vec<super::agents::AgentId>,
     pub scope: InstallScope,
@@ -451,9 +450,8 @@ pub struct AddSkillsRequest {
     pub method: AddMethod,
     pub destination: SkillDestination,
     pub agents: Vec<super::agents::AgentId>,
-    /// Harnesses to switch off for this skill right after a successful
-    /// install: readers of the Universal folder the install itself cannot
-    /// avoid reaching. Unused for Per harness Copy.
+    /// Ignored: Skill Studio no longer switches a skill off in an agent's own
+    /// config. Kept so a caller that still sends it deserializes.
     #[serde(default)]
     pub disabled_harnesses: Vec<super::agents::AgentId>,
     pub scope: InstallScope,
@@ -480,11 +478,9 @@ pub struct AddSkillResult {
     pub tool: String,
     pub command: String,
     pub deployments_created: Vec<String>,
-    /// Set when the install itself succeeded but a follow-up step (turning
-    /// the skill off for a `disabled_harnesses` entry) failed - the skill is
-    /// on disk and usable, it just isn't disabled where it was asked to be.
-    /// The sheet shows this as a warning toast rather than treating the
-    /// whole request as failed.
+    /// Set when the install itself succeeded but a link or copy step had a
+    /// problem - the skill is on disk and usable. The sheet shows this as a
+    /// warning toast rather than treating the whole request as failed.
     #[serde(default)]
     pub warning: Option<String>,
 }
@@ -540,14 +536,6 @@ impl BulkTargetResult {
             })
             .collect()
     }
-}
-
-/// Exact deployment plus the harness whose visibility will change. Universal
-/// deployments are valid for readers that discover that scope directly.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct HarnessVisibilityTarget {
-    pub deployment_id: String,
-    pub reader_agent: super::agents::AgentId,
 }
 
 /// Installation result

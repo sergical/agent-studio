@@ -22,8 +22,8 @@ use skill_studio_lib::skills::github_skill_listing::GithubSkillListing;
 use skill_studio_lib::skills::harness_first_run::HarnessesChoice;
 use skill_studio_lib::skills::skill_dto::{
     AddSkillOutcome, AddSkillRequest, AddSkillResult, AddSkillsRequest, BulkTargetResult,
-    HarnessVisibilityTarget, InstallResult, LifecycleTarget, LocalEditsDto,
-    PaginatedSkillsResponse, SkillDetails, SkillEventDto, SkillsShAccessInfo,
+    InstallResult, LifecycleTarget, LocalEditsDto, PaginatedSkillsResponse, SkillDetails,
+    SkillEventDto, SkillsShAccessInfo,
 };
 use skill_studio_lib::skills::skill_fork::PullResult;
 use skill_studio_lib::skills::skill_fork_registry::{ForkRecord, PackMember};
@@ -45,7 +45,6 @@ struct WireTypes {
     skill_details: SkillDetails,
     skills_sh_access_info: SkillsShAccessInfo,
     install_result: InstallResult,
-    harness_visibility_target: HarnessVisibilityTarget,
     add_skill_request: AddSkillRequest,
     add_skills_request: AddSkillsRequest,
     add_skill_outcome: AddSkillOutcome,

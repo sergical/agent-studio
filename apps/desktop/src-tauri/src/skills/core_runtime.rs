@@ -52,7 +52,7 @@ pub fn history_db_path(data_root: &Path) -> PathBuf {
 /// spawner, rooted at the host's home directory. Every desktop command that
 /// calls a core `ops` function that opens a `MutationSession` (park, unpark,
 /// update, and every write to come) takes its `Runtime` from here. The
-/// spawner (unused by park/unpark/`set_harness_enabled`) is what lets
+/// spawner (unused by park/unpark) is what lets
 /// `ops::update`'s `Dotagents`/`SkillsSh` methods shell out to `npx` - the
 /// same `RealProcessSpawner` the CLI's own `build_runtime_write` wires in
 /// `apps/cli/src/main.rs`.
@@ -62,12 +62,8 @@ pub fn build_runtime_write() -> Result<Runtime, String> {
 }
 
 /// [`build_runtime_write`], but rooted at `home` and `data_root` given
-/// directly rather than read from the host. `set_harness_enabled_with`
-/// (Codex's `[[skills.config]]` write) takes this so it stays testable
-/// against a tempdir `home`, the way it was before that write moved onto
-/// `ops::set_codex_skill_disabled_with` - the real command still calls
-/// `build_runtime_write` above, which resolves `home` and `data_root` from
-/// the host exactly as it did before this function existed. `pub` (not
+/// directly rather than read from the host, so a test can root it under a
+/// tempdir `home`. `pub` (not
 /// `pub(crate)`) so `tests/fix_parity.rs` can build the desktop side of its
 /// parity check with the desktop adapter's own runtime constructor instead
 /// of a hand-mirrored copy of it.

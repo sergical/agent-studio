@@ -6,7 +6,7 @@
 //! Desktop Activity and Undo must read the *shared* core history database
 //! (`core_runtime::history_db_path`) instead of a separate,
 //! desktop-only `events.sqlite3` (issue #263): every core `ops` mutation
-//! (park, unpark, install, remove, `set_harness_enabled`) has to show up in
+//! (park, unpark, install, remove) has to show up in
 //! `EventStore::list` (what `list_skill_events` reads), and undoing it has
 //! to dispatch to whichever side (`EventStore::restore` or
 //! `ops::restore_event`) actually understands that event's inverse shape
@@ -25,12 +25,10 @@ use std::sync::{Arc, Mutex};
 
 use skill_studio_core::dto::{
     FixSkillRequest, InstallFile, InstallMethod, InstallOutcome, InstallRequest, ScanRequest,
-    SetHarnessEnabledRequest, UnparkRequest,
+    UnparkRequest,
 };
 use skill_studio_core::harness::HarnessCatalog;
-use skill_studio_core::identity::{
-    AgentId, CorrelationId, DeploymentId, RootKind, RootScope, SkillName,
-};
+use skill_studio_core::identity::{CorrelationId, DeploymentId, RootKind, RootScope, SkillName};
 use skill_studio_core::ops::{self, Operation, ResultEnvelope};
 use skill_studio_core::ports::{
     CancelToken, OpContext, Ports, ProcessOutput, ProcessSpawner, ProcessSpec, Runtime,
@@ -294,7 +292,7 @@ fn desktop_remove_of_a_skills_sh_skill_appears_in_history_and_undo_restores_fold
 }
 
 // ---------------------------------------------------------------------
-// (b) Table test: park, unpark, `set_harness_enabled`, and install each
+// (b) Table test: park, unpark, and install each
 // appear in Activity; park then Undo restores the skill.
 // ---------------------------------------------------------------------
 
@@ -313,8 +311,7 @@ fn parkable_skill(home: &Path, skill: &str) {
 }
 
 #[test]
-fn park_unpark_harness_toggle_and_install_each_appear_in_history_and_park_undo_restores_the_skill()
-{
+fn park_unpark_and_install_each_appear_in_history_and_park_undo_restores_the_skill() {
     let home = unique_temp_dir("undo_table_test");
     std::fs::create_dir_all(&home).unwrap();
     let data_root = data_root_for(&home);
@@ -360,28 +357,6 @@ fn park_unpark_harness_toggle_and_install_each_appear_in_history_and_park_undo_r
         "parked skill must be off the universal root"
     );
 
-    // set_harness_enabled on a third skill (Claude Code's global switch).
-    let toggle_skill = "zeta-toggle";
-    parkable_skill(&home, toggle_skill);
-    let toggle_ctx = OpContext::uncancellable(CorrelationId(ulid::Ulid::new().to_string()));
-    let toggle_result = ops::set_harness_enabled(
-        &rt,
-        &toggle_ctx,
-        &SetHarnessEnabledRequest {
-            skill: SkillName(toggle_skill.to_string()),
-            harness: AgentId::parse(AgentId::CLAUDE_CODE).unwrap(),
-            enabled: false,
-            project_path: None,
-        },
-    );
-    let toggle_outcome = to_command_result(ResultEnvelope::from_result(
-        Operation::SetHarnessEnabled,
-        &rt.scope,
-        &toggle_ctx,
-        toggle_result,
-    ))
-    .unwrap();
-
     // `Park` deliberately carries no generic inverse (see `ops::park`'s own
     // doc comment): its "Undo" in the real desktop UI is the dedicated
     // `unpark_skill` command, not `restore_skill_event`. Drive that same
@@ -412,7 +387,6 @@ fn park_unpark_harness_toggle_and_install_each_appear_in_history_and_park_undo_r
         ("install", &install_outcome_id(&event_id)),
         ("park", &park_outcome.event_id.0),
         ("unpark", &unpark_outcome.event_id.0),
-        ("set_harness_enabled", &toggle_outcome.event_id.0),
     ] {
         let rows = store.list(200, None).unwrap();
         assert!(

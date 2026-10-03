@@ -728,14 +728,6 @@ export interface InstallResult {
   command: string | null;
 }
 /**
- * Exact deployment plus the harness whose visibility will change. Universal
- * deployments are valid for readers that discover that scope directly.
- */
-export interface HarnessVisibilityTarget {
-  deployment_id: string;
-  reader_agent: AgentId;
-}
-/**
  * `add_skill`'s request - see `AddSkillSheet`.
  */
 export interface AddSkillRequest {
@@ -744,9 +736,8 @@ export interface AddSkillRequest {
   destination: SkillDestination;
   agents: AgentId[];
   /**
-   * Harnesses to switch off for this skill right after a successful
-   * install: readers of the Universal folder the install itself cannot
-   * avoid reaching. Unused for Per harness Copy.
+   * Ignored: Skill Studio no longer switches a skill off in an agent's own
+   * config. Kept so a caller that still sends it deserializes.
    */
   disabled_harnesses: AgentId[];
   scope: InstallScope;
@@ -784,9 +775,8 @@ export interface AddSkillsRequest {
   destination: SkillDestination;
   agents: AgentId[];
   /**
-   * Harnesses to switch off for this skill right after a successful
-   * install: readers of the Universal folder the install itself cannot
-   * avoid reaching. Unused for Per harness Copy.
+   * Ignored: Skill Studio no longer switches a skill off in an agent's own
+   * config. Kept so a caller that still sends it deserializes.
    */
   disabled_harnesses: AgentId[];
   scope: InstallScope;
@@ -823,11 +813,9 @@ export interface AddSkillResult {
   command: string;
   deployments_created: string[];
   /**
-   * Set when the install itself succeeded but a follow-up step (turning
-   * the skill off for a `disabled_harnesses` entry) failed - the skill is
-   * on disk and usable, it just isn't disabled where it was asked to be.
-   * The sheet shows this as a warning toast rather than treating the
-   * whole request as failed.
+   * Set when the install itself succeeded but a link or copy step had a
+   * problem - the skill is on disk and usable. The sheet shows this as a
+   * warning toast rather than treating the whole request as failed.
    */
   warning: string | null;
 }
