@@ -678,8 +678,10 @@ pub struct ParkCheck {
     /// True when the copy sits in a git work tree and git lists a file under
     /// it, so moving or removing it shows as deleted files in that repo.
     /// False when git is missing, the folder is not in a repo, or git does
-    /// not track it (untracked or ignored).
-    pub git_tracked: bool,
+    /// not track it (untracked or ignored). `None` when the check could not
+    /// run: on macOS without the command line tools, `git` is a stub that
+    /// opens an install dialog, so it is not run.
+    pub git_tracked: Option<bool>,
     /// The project the copy belongs to, when it is a project copy.
     pub project: Option<PathBuf>,
 }

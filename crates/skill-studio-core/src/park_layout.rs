@@ -24,6 +24,11 @@ use crate::identity::{RootKind, RootRef, RootScope};
 pub(crate) const PARKED_PROJECTS_DIR: &str = "projects";
 /// File, inside a project's parked directory, naming the project.
 pub(crate) const PROJECT_ORIGIN_MARKER: &str = ".origin";
+/// Directory, inside a slot, with one file per parked skill. Each file holds
+/// the skills folder that copy came from, as the catalog spells it
+/// (`.config/opencode/skill`), for an unpark that finds no journal row. The
+/// scan skips dot-prefixed names, so it never reads this as a skill.
+pub(crate) const COPY_ORIGIN_DIR: &str = ".origin";
 const UNIVERSAL_SLOT: &str = "universal";
 
 /// The slot directory for an origin root kind, or `None` for a kind that

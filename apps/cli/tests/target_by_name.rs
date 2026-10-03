@@ -69,6 +69,31 @@ fn park_and_unpark_by_name_move_the_one_matching_copy() {
     assert!(!home.join(".agents/skills-parked/universal/solo").exists());
 }
 
+/// Flow: `park foo` when the only copy is `~/.codex/skills/foo`, an agent's
+/// own folder.
+/// Expectation: exits 0 and the folder moves under `skills-parked/codex/`.
+/// A failure means a name never matches an agent-folder copy, which scans as
+/// an independent copy rather than the shared one.
+#[test]
+fn park_by_name_moves_a_copy_that_only_exists_in_the_codex_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap().join("home");
+    let codex_copy = home.join(".codex/skills/foo");
+    std::fs::create_dir_all(&codex_copy).unwrap();
+    std::fs::write(
+        codex_copy.join("SKILL.md"),
+        "---\nname: foo\ndescription: A test skill.\n---\nBody.\n",
+    )
+    .unwrap();
+
+    let park = run(&home, &["park", "foo"]);
+    assert_eq!(park.status.code(), Some(0), "{}", text(&park.stderr));
+    assert!(!codex_copy.exists());
+    assert!(home
+        .join(".agents/skills-parked/codex/foo/SKILL.md")
+        .exists());
+}
+
 /// Flow: `scan`, human output.
 /// Expectation: each copy's line carries `id <id>`.
 /// A failure means a user has no way to find the id `--id` needs.

@@ -1631,7 +1631,11 @@ fn parked_scan_targets(rt: &Runtime) -> Vec<ScanTarget> {
                 continue;
             };
             let path = dir.join(slot);
-            if fs.symlink_metadata(&path).is_err() {
+            // A folder that holds a `SKILL.md` is an old flat copy of a skill
+            // named like the slot, not a slot.
+            if fs.symlink_metadata(&path).is_err()
+                || fs.symlink_metadata(&path.join("SKILL.md")).is_ok()
+            {
                 continue;
             }
             if let Ok(origin) = RootRef::new(scope.clone(), kind) {
@@ -4973,6 +4977,31 @@ pub(crate) fn find_all_links<'a>(
         .collect()
 }
 
+/// Per-harness symlinks that resolve to `target`'s folder but scan as
+/// `Independent`, because the folder is an agent's own
+/// (`~/.claude/skills/foo -> ~/.codex/skills/foo`), not the Universal root.
+/// [`find_all_links`] only sees links into the Universal root.
+fn find_independent_links<'a>(
+    skill: &'a InstalledSkillDto,
+    target: &DeploymentDto,
+    fs: &dyn ScopeFs,
+) -> Vec<&'a DeploymentDto> {
+    let Ok(canonical_target) = fs.canonicalize(&target.path) else {
+        return Vec::new();
+    };
+    skill
+        .deployments
+        .iter()
+        .filter(|d| {
+            d.id != target.id
+                && d.is_symlink
+                && d.backing == BackingRelationship::Independent
+                && !d.shared_via_whole_dir_link
+                && d.link_target.as_deref() == Some(canonical_target.as_path())
+        })
+        .collect()
+}
+
 pub use crate::ops_doctor::doctor;
 pub use crate::ops_install::{install, install_preferences};
 pub use crate::ops_remove::{remove, sweep_quarantine};
@@ -5013,6 +5042,7 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
     let fs = rt.ports.fs.as_ref();
     let links: Vec<PathBuf> = find_all_links(&skill, &deployment.path, fs)
         .into_iter()
+        .chain(find_independent_links(&skill, &deployment, fs))
         .map(|d| d.path.clone())
         .collect();
     let scoped_links = links
@@ -5051,10 +5081,13 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
                     .at(&deployment.path)
             })?;
     let parked_dir = slot_dir.join(&skill.name.0);
-    let legacy_flat_dir = parked_root.join(&skill.name.0);
+    // Only a folder with a `SKILL.md` is a legacy flat copy; a folder without
+    // one may be a slot that happens to share this skill's name.
     let legacy_flat_taken = origin.kind == RootKind::Universal
         && origin.scope == RootScope::Global
-        && fs.symlink_metadata(&legacy_flat_dir).is_ok();
+        && fs
+            .symlink_metadata(&parked_root.join(&skill.name.0).join("SKILL.md"))
+            .is_ok();
     if fs.symlink_metadata(&parked_dir).is_ok() || legacy_flat_taken {
         return Err(CoreError::new(
             ErrorCode::InvalidRequest,
@@ -5062,6 +5095,21 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
         )
         .at(&parked_dir));
     }
+    // A legacy flat copy named like this slot would swallow the new copy:
+    // move it to `universal/<name>` first.
+    if let Some(top_level) = slot_dir
+        .strip_prefix(&parked_root)
+        .ok()
+        .and_then(|relative| relative.components().next())
+    {
+        migrate_legacy_flat_copy(
+            rt,
+            &mut session,
+            &parked_root,
+            &top_level.as_os_str().to_string_lossy(),
+        )?;
+    }
+    let origin_root_relative = origin_root_relative(rt, &origin, &deployment.path);
     let scope_label = scope_label(&deployment.root.scope).to_string();
     let project_path = match &deployment.root.scope {
         RootScope::Global => None,
@@ -5090,33 +5138,46 @@ fn park_body(rt: &Runtime, ctx: &OpContext, req: &ParkRequest) -> Result<ParkOut
     };
     session.store.record(&session.guard, &id, &draft)?;
 
+    // What this attempt created, so a failed move leaves no empty key folder.
+    let mut created_dirs: Vec<PathBuf> = Vec::new();
+    let mut written_files: Vec<PathBuf> = Vec::new();
     let write_result = (|| -> Result<(), CoreError> {
         for (link, scoped_link) in links.iter().zip(&scoped_links) {
             fs.remove_file(&session.guard, scoped_link)
                 .map_err(|e| CoreError::io(link, e))?;
         }
         let parent = parked_dir.parent().unwrap_or(&parked_dir).to_path_buf();
-        ensure_dir_all(rt, &session, fs, &parent)?;
+        created_dirs.extend(ensure_dir_all_tracked(rt, &session, fs, &parent)?);
+        // `undo_on_failure` is false for a marker other parked copies share.
+        let mut write_marker =
+            |marker: PathBuf, text: &str, undo_on_failure: bool| -> Result<(), CoreError> {
+                let scoped_marker = crate::ports::confine(&rt.scope, fs, &marker)?;
+                fs.write_atomic(&session.guard, &scoped_marker, text.as_bytes())
+                    .map_err(|e| CoreError::io(&marker, e))?;
+                if undo_on_failure {
+                    written_files.push(marker);
+                }
+                Ok(())
+            };
         if let (RootScope::Project(project), Some(key)) = (&origin.scope, &project_key) {
-            let marker = parked_root
+            let key_dir = parked_root
                 .join(crate::park_layout::PARKED_PROJECTS_DIR)
-                .join(key)
-                .join(crate::park_layout::PROJECT_ORIGIN_MARKER);
-            let scoped_marker = crate::ports::confine(&rt.scope, fs, &marker)?;
-            fs.write_atomic(
-                &session.guard,
-                &scoped_marker,
-                project.0.to_string_lossy().as_bytes(),
-            )
-            .map_err(|e| CoreError::io(&marker, e))?;
+                .join(key);
+            write_marker(
+                key_dir.join(crate::park_layout::PROJECT_ORIGIN_MARKER),
+                &project.0.to_string_lossy(),
+                created_dirs.contains(&key_dir),
+            )?;
         }
-        let scoped_from = crate::ports::confine(&rt.scope, fs, &deployment.path)?;
-        let scoped_to = crate::ports::confine(&rt.scope, fs, &parked_dir)?;
-        fs.rename(&session.guard, &scoped_from, &scoped_to)
-            .map_err(|e| CoreError::io(&deployment.path, e))?;
-        Ok(())
+        if let Some(relative) = &origin_root_relative {
+            let marker_dir = slot_dir.join(crate::park_layout::COPY_ORIGIN_DIR);
+            created_dirs.extend(ensure_dir_all_tracked(rt, &session, fs, &marker_dir)?);
+            write_marker(marker_dir.join(&skill.name.0), relative, true)?;
+        }
+        crate::park_move::move_dir(rt, &session, &deployment.path, &parked_dir)
     })();
     if let Err(e) = write_result {
+        remove_park_scaffolding(rt, &session, &written_files, &created_dirs);
         // While the folder is still at its own path, the links that came
         // down are the only change left to undo.
         if fs.symlink_metadata(&deployment.path).is_ok() {
@@ -5228,18 +5289,10 @@ fn unpark_body(
 
     let step_start = clock.monotonic();
     let fs = rt.ports.fs.as_ref();
-    let restored_dir = recorded_origin_dir(park_row.as_ref(), &skill.name)
-        .or_else(|| {
-            let origin = deployment.parked_origin.as_ref()?;
-            Some(origin_skills_dir(rt, origin)?.join(&skill.name.0))
-        })
-        .ok_or_else(|| {
-            CoreError::new(
-                ErrorCode::Unsupported,
-                "this parked copy does not say where it came from",
-            )
-            .at(&deployment.path)
-        })?;
+    let restored_dir = match recorded_origin_dir(park_row.as_ref(), &skill.name) {
+        Some(dir) => dir,
+        None => unrecorded_origin_dir(rt, &deployment, &skill.name)?,
+    };
     if fs.symlink_metadata(&restored_dir).is_ok() {
         return Err(CoreError::new(
             ErrorCode::InvalidRequest,
@@ -5279,10 +5332,15 @@ fn unpark_body(
     let scoped_parent = crate::ports::confine(&rt.scope, fs, &parent)?;
     fs.create_dir_all(&session.guard, &scoped_parent)
         .map_err(|e| CoreError::io(&parent, e))?;
-    let scoped_from = crate::ports::confine(&rt.scope, fs, &deployment.path)?;
-    let scoped_to = crate::ports::confine(&rt.scope, fs, &restored_dir)?;
-    fs.rename(&session.guard, &scoped_from, &scoped_to)
-        .map_err(|e| CoreError::io(&deployment.path, e))?;
+    crate::park_move::move_dir(rt, &session, &deployment.path, &restored_dir)?;
+    if let Some(parent) = deployment.path.parent() {
+        let marker = parent
+            .join(crate::park_layout::COPY_ORIGIN_DIR)
+            .join(&skill.name.0);
+        if let Ok(scoped) = crate::ports::confine(&rt.scope, fs, &marker) {
+            let _ = fs.remove_file(&session.guard, &scoped);
+        }
+    }
     for link_path in &links {
         let relative_target = recorded_targets
             .get(link_path.to_string_lossy().as_ref())
@@ -5328,31 +5386,198 @@ fn recorded_origin_dir(
     (from.is_absolute() && from.file_name().is_some_and(|n| n == name.0.as_str())).then_some(from)
 }
 
-/// The skills folder `origin` names: the Universal root or an agent's own
-/// root, at global or project scope.
-fn origin_skills_dir(rt: &Runtime, origin: &RootRef) -> Option<PathBuf> {
+/// The skills folders `origin` can name, each with the path the catalog spells
+/// it by (`.config/opencode/skill`): the Universal root, or an agent's own
+/// roots, at global or project scope. An agent can have more than one.
+fn origin_roots(rt: &Runtime, origin: &RootRef) -> Vec<(String, PathBuf)> {
     let (level, universal_base) = match &origin.scope {
         RootScope::Global => (ScopeLevel::Global, rt.scope.home.lexical.clone()),
         RootScope::Project(project) => (ScopeLevel::Project, project.0.clone()),
     };
-    let RootKind::Harness(id) = &origin.kind else {
-        return (origin.kind == RootKind::Universal)
-            .then(|| universal_base.join(UNIVERSAL_ROOT_RELATIVE));
+    match &origin.kind {
+        RootKind::Universal => vec![(
+            UNIVERSAL_ROOT_RELATIVE.to_string(),
+            universal_base.join(UNIVERSAL_ROOT_RELATIVE),
+        )],
+        RootKind::Harness(id) => rt
+            .ports
+            .catalog
+            .facts
+            .iter()
+            .filter(|facts| &facts.id == id)
+            .flat_map(|facts| &facts.roots)
+            .filter(|spec| spec.role == RootRole::Own && spec.level == level)
+            .map(|spec| {
+                let path = match &origin.scope {
+                    RootScope::Global => rt.scope.global_root_path(Path::new(&spec.relative_path)),
+                    RootScope::Project(project) => project.0.join(&spec.relative_path),
+                };
+                (spec.relative_path.clone(), path)
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The catalog spelling of the folder `copy_parent` is, among `origin`'s
+/// roots. `None` when it matches none of them.
+fn origin_root_relative(rt: &Runtime, origin: &RootRef, copy_parent: &Path) -> Option<String> {
+    let fs = rt.ports.fs.as_ref();
+    let parent = copy_parent.parent()?;
+    let roots = origin_roots(rt, origin);
+    let canonical_parent = fs.canonicalize(parent).ok();
+    roots
+        .into_iter()
+        .find(|(_, path)| {
+            path == parent
+                || canonical_parent
+                    .as_ref()
+                    .is_some_and(|canonical| fs.canonicalize(path).ok().as_ref() == Some(canonical))
+        })
+        .map(|(relative, _)| relative)
+}
+
+/// Where a parked copy with no journal row returns to: the folder its
+/// `.origin` marker names, or the origin's first root for a copy parked
+/// before markers existed.
+///
+/// The marker is only a key into the catalog's roots; it never supplies a
+/// path. A project copy returns only into a project the scope covers.
+fn unrecorded_origin_dir(
+    rt: &Runtime,
+    deployment: &DeploymentDto,
+    name: &SkillName,
+) -> Result<PathBuf, CoreError> {
+    let fs = rt.ports.fs.as_ref();
+    let refuse =
+        |message: &str| Err(CoreError::new(ErrorCode::Unsupported, message).at(&deployment.path));
+    let Some(origin) = deployment.parked_origin.as_ref() else {
+        return refuse("this parked copy does not say where it came from");
     };
-    let root_spec = rt
-        .ports
-        .catalog
-        .facts
-        .iter()
-        .filter(|facts| &facts.id == id)
-        .flat_map(|facts| &facts.roots)
-        .find(|spec| spec.role == RootRole::Own && spec.level == level)?;
-    Some(match &origin.scope {
-        RootScope::Global => rt
-            .scope
-            .global_root_path(Path::new(&root_spec.relative_path)),
-        RootScope::Project(project) => project.0.join(&root_spec.relative_path),
-    })
+    if let RootScope::Project(project) = &origin.scope {
+        let known = rt.scope.projects.iter().any(|root| {
+            root.lexical == project.0
+                || fs
+                    .canonicalize(&project.0)
+                    .is_ok_and(|canonical| canonical == root.canonical)
+        });
+        if !known {
+            return refuse(
+                "this copy came from a project that is not in the scope, so it is not restored there",
+            );
+        }
+    }
+    let roots = origin_roots(rt, origin);
+    let marker = deployment
+        .path
+        .parent()
+        .map(|slot| slot.join(crate::park_layout::COPY_ORIGIN_DIR).join(&name.0));
+    let recorded = marker
+        .and_then(|marker| fs.read_capped(&marker, 1024).ok())
+        .and_then(|bytes| String::from_utf8(bytes).ok());
+    let dir = match recorded {
+        Some(text) => roots
+            .into_iter()
+            .find(|(relative, _)| relative == text.trim())
+            .map(|(_, path)| path),
+        None => roots.into_iter().next().map(|(_, path)| path),
+    };
+    match dir {
+        Some(dir) => Ok(dir.join(&name.0)),
+        None => refuse(
+            "the record of where this copy came from names a folder Skill Studio does not manage",
+        ),
+    }
+}
+
+/// Moves an old flat parked copy of a skill named `top_level` (the name of a
+/// slot folder) to `universal/<top_level>`, so the slot folder holds only
+/// slot content. Does nothing when `top_level` holds no `SKILL.md`. Journaled
+/// as a park of the Universal copy it came from, so unpark still returns it
+/// there.
+fn migrate_legacy_flat_copy(
+    rt: &Runtime,
+    session: &mut crate::ports::MutationSession,
+    parked_root: &Path,
+    top_level: &str,
+) -> Result<(), CoreError> {
+    let fs = rt.ports.fs.as_ref();
+    let legacy = parked_root.join(top_level);
+    if fs.symlink_metadata(&legacy.join("SKILL.md")).is_err() {
+        return Ok(());
+    }
+    let destination = parked_root.join("universal").join(top_level);
+    if fs.symlink_metadata(&destination).is_ok() {
+        return Err(CoreError::new(
+            ErrorCode::InvalidRequest,
+            "an old parked copy named like this folder is in the way, and its new place is taken",
+        )
+        .at(&legacy));
+    }
+    let origin = RootRef {
+        scope: RootScope::Global,
+        kind: RootKind::Universal,
+    };
+    let id = rt.ports.ids.next_event_id();
+    let draft = crate::events::EventDraft {
+        kind: crate::events::EventKind::Park,
+        skill: SkillName(top_level.to_string()),
+        harness: None,
+        scope: Some(scope_label(&origin.scope).to_string()),
+        project_path: None,
+        payload: serde_json::json!({
+            "from": rt.scope.home.lexical.join(UNIVERSAL_ROOT_RELATIVE).join(top_level),
+            "to": destination,
+            "origin": origin,
+            "migrated_from": legacy,
+            "links": Vec::<PathBuf>::new(),
+            "link_targets": serde_json::Map::new(),
+        }),
+        inverse: None,
+        backup_dir: None,
+    };
+    session.store.record(&session.guard, &id, &draft)?;
+
+    // Through a sibling name: a skill named `universal` would otherwise move
+    // into itself.
+    let holding = parked_root.join(format!(".legacy-{}", crate::fsops::unique_suffix()));
+    let result = crate::park_move::move_dir(rt, &*session, &legacy, &holding).and_then(|()| {
+        let parent = destination.parent().unwrap_or(&destination).to_path_buf();
+        ensure_dir_all(rt, &*session, fs, &parent)?;
+        crate::park_move::move_dir(rt, &*session, &holding, &destination)
+    });
+    let status = if result.is_ok() {
+        crate::events::EventStatus::Done
+    } else {
+        if fs.symlink_metadata(&holding).is_ok() && fs.symlink_metadata(&legacy).is_err() {
+            let _ = crate::park_move::move_dir(rt, &*session, &holding, &legacy);
+        }
+        crate::events::EventStatus::Failed
+    };
+    let _ = session.store.finish(&session.guard, &id, status, None);
+    result
+}
+
+/// Undoes what a failed park created: the markers it wrote, then the
+/// directories it made, innermost first. Best effort; a directory that is not
+/// empty stays.
+fn remove_park_scaffolding(
+    rt: &Runtime,
+    session: &crate::ports::MutationSession,
+    files: &[PathBuf],
+    dirs: &[PathBuf],
+) {
+    let fs = rt.ports.fs.as_ref();
+    for file in files {
+        if let Ok(scoped) = crate::ports::confine(&rt.scope, fs, file) {
+            let _ = fs.remove_file(&session.guard, &scoped);
+        }
+    }
+    for dir in dirs.iter().rev() {
+        if crate::ports::confine(&rt.scope, fs, dir).is_ok() {
+            let _ = fs.fsops_remove_dir(dir);
+        }
+    }
 }
 
 /// Refuses a copy `park` cannot move, with the reason a person can act on.
@@ -5415,22 +5640,42 @@ pub fn park_check(
         RootScope::Global => None,
         RootScope::Project(project) => Some(project.0.clone()),
     };
-    let git_tracked =
-        deployment.parked_origin.is_none() && git_tracks_folder(rt, ctx, &deployment.path);
+    let git_tracked = if deployment.parked_origin.is_some() {
+        Some(false)
+    } else {
+        git_tracks_folder(rt, ctx, &deployment.path)
+    };
     Ok(ParkCheck {
         git_tracked,
         project,
     })
 }
 
-/// True when `folder` is in a git work tree and `git ls-files` lists a file
-/// under it (or the folder itself, for a tracked symlink).
-fn git_tracks_folder(rt: &Runtime, ctx: &OpContext, folder: &Path) -> bool {
+/// Whether `folder` is in a git work tree and `git ls-files` lists a file
+/// under it (or the folder itself, for a tracked symlink). `None` when git
+/// cannot be run safely: on macOS without the command line tools,
+/// `/usr/bin/git` is a stub that opens an install dialog.
+fn git_tracks_folder(rt: &Runtime, ctx: &OpContext, folder: &Path) -> Option<bool> {
     let Some(spawner) = rt.ports.spawner.as_ref() else {
-        return false;
+        return Some(false);
     };
+    if cfg!(target_os = "macos") {
+        let probe = ProcessSpec {
+            program: "xcode-select".to_string(),
+            args: vec!["-p".to_string()],
+            cwd: None,
+            env: Vec::new(),
+            timeout_ms: 5_000,
+        };
+        let tools_installed = spawner
+            .run(&probe, ctx.cancel.as_ref())
+            .is_ok_and(|output| output.status == Some(0));
+        if !tools_installed {
+            return None;
+        }
+    }
     let (Some(parent), Some(name)) = (folder.parent(), folder.file_name()) else {
-        return false;
+        return Some(false);
     };
     let spec = ProcessSpec {
         program: "git".to_string(),
@@ -5447,9 +5692,11 @@ fn git_tracks_folder(rt: &Runtime, ctx: &OpContext, folder: &Path) -> bool {
         )],
         timeout_ms: 10_000,
     };
-    spawner
-        .run(&spec, ctx.cancel.as_ref())
-        .is_ok_and(|output| output.status == Some(0) && !output.stdout.trim().is_empty())
+    Some(
+        spawner
+            .run(&spec, ctx.cancel.as_ref())
+            .is_ok_and(|output| output.status == Some(0) && !output.stdout.trim().is_empty()),
+    )
 }
 
 /// The link paths a `park` row removed. Rows written before `links` existed
@@ -5481,6 +5728,16 @@ pub(crate) fn ensure_dir_all(
     fs: &dyn ScopeFs,
     dir: &Path,
 ) -> Result<(), CoreError> {
+    ensure_dir_all_tracked(rt, session, fs, dir).map(|_| ())
+}
+
+/// [`ensure_dir_all`], returning the directories it created, outermost first.
+pub(crate) fn ensure_dir_all_tracked(
+    rt: &Runtime,
+    session: &crate::ports::MutationSession,
+    fs: &dyn ScopeFs,
+    dir: &Path,
+) -> Result<Vec<PathBuf>, CoreError> {
     let mut missing = Vec::new();
     let mut current = dir.to_path_buf();
     while fs.symlink_metadata(&current).is_err() {
@@ -5490,12 +5747,13 @@ pub(crate) fn ensure_dir_all(
             _ => break,
         }
     }
-    for path in missing.into_iter().rev() {
-        let scoped = crate::ports::confine(&rt.scope, fs, &path)?;
+    missing.reverse();
+    for path in &missing {
+        let scoped = crate::ports::confine(&rt.scope, fs, path)?;
         fs.create_dir_all(&session.guard, &scoped)
-            .map_err(|e| CoreError::io(&path, e))?;
+            .map_err(|e| CoreError::io(path, e))?;
     }
-    Ok(())
+    Ok(missing)
 }
 
 #[cfg(test)]

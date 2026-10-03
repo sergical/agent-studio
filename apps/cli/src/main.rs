@@ -1573,10 +1573,15 @@ impl TargetKind {
         use skill_studio_core::identity::{BackingRelationship, RootKind};
         match self {
             TargetKind::Park => {
+                // `refuse_unparkable`'s rule: a real folder, not a link, not a
+                // plugin copy. An agent's own folder scans as `Independent`.
+                let is_agent_symlink =
+                    deployment.is_symlink && deployment.root.kind != RootKind::Universal;
                 matches!(
                     deployment.root.kind,
                     RootKind::Universal | RootKind::Harness(_)
-                ) && deployment.backing == BackingRelationship::Canonical
+                ) && deployment.backing != BackingRelationship::LinkedTo
+                    && !is_agent_symlink
                     && deployment.plugin.is_none()
             }
             TargetKind::Remove => {
