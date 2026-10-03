@@ -17,6 +17,11 @@ type ResolvedType = {
 	readonly substitutions: TypeSubstitutionEnvironment;
 };
 
+type KeyedValue = {
+	readonly value: ResolvedType;
+	readonly keyKind: string;
+};
+
 const UNRESOLVED_TYPE_PARAMETER = Symbol("unresolved type parameter");
 
 type TypeSubstitution = ResolvedType | typeof UNRESOLVED_TYPE_PARAMETER;
@@ -116,6 +121,12 @@ function unwrapTransparentType(type: ESTree.TSType): ESTree.TSType {
 		current = current.typeAnnotation;
 	}
 	return current;
+}
+
+function indexSignatureKeyKind(member: ESTree.TSIndexSignature): string {
+	const parameter = member.parameters[0];
+	if (parameter === undefined) return "";
+	return unwrapTransparentType(parameter.typeAnnotation.typeAnnotation).type;
 }
 
 function isNeverType(type: ESTree.TSType): boolean {
@@ -542,13 +553,18 @@ function dictionaryValueTypes(
 	substitutions: TypeSubstitutionEnvironment,
 	resolvingAliases: ReadonlySet<string>,
 	resolvingInterfaces: ReadonlySet<string>,
-): readonly ResolvedType[] {
+): readonly KeyedValue[] {
 	const unwrapped = unwrapTransparentType(type);
 
 	if (unwrapped.type === "TSTypeLiteral") {
-		return unwrapped.members.flatMap((member): readonly ResolvedType[] =>
+		return unwrapped.members.flatMap((member): readonly KeyedValue[] =>
 			member.type === "TSIndexSignature" && member.typeAnnotation !== null
-				? [{ type: member.typeAnnotation.typeAnnotation, substitutions }]
+				? [
+						{
+							value: { type: member.typeAnnotation.typeAnnotation, substitutions },
+							keyKind: indexSignatureKeyKind(member),
+						},
+					]
 				: [],
 		);
 	}
@@ -558,7 +574,12 @@ function dictionaryValueTypes(
 		valueSubstitutions.set(unwrapped.key.name, UNRESOLVED_TYPE_PARAMETER);
 		return unwrapped.typeAnnotation === null
 			? []
-			: [{ type: unwrapped.typeAnnotation, substitutions: valueSubstitutions }];
+			: [
+					{
+						value: { type: unwrapped.typeAnnotation, substitutions: valueSubstitutions },
+						keyKind: unwrapTransparentType(unwrapped.constraint).type,
+					},
+				];
 	}
 
 	if (unwrapped.type !== "TSTypeReference") return [];
@@ -581,7 +602,7 @@ function namedDictionaryValueTypes(
 	substitutions: TypeSubstitutionEnvironment,
 	resolvingAliases: ReadonlySet<string>,
 	resolvingInterfaces: ReadonlySet<string>,
-): readonly ResolvedType[] {
+): readonly KeyedValue[] {
 	const substitution = substitutions.get(name);
 	if (substitution !== undefined) {
 		if (substitution === UNRESOLVED_TYPE_PARAMETER) return [];
@@ -608,8 +629,15 @@ function namedDictionaryValueTypes(
 	}
 
 	if (name === "Record" && isBuiltIn(name, environment)) {
+		const key = typeArguments?.params[0] ?? null;
 		const value = typeArguments?.params[1] ?? null;
-		return value === null ? [] : [{ type: value, substitutions }];
+		if (value === null) return [];
+		return [
+			{
+				value: { type: value, substitutions },
+				keyKind: key === null ? "" : unwrapTransparentType(key).type,
+			},
+		];
 	}
 
 	if ((name === "Pick" || name === "Omit") && isBuiltIn(name, environment)) {
@@ -665,13 +693,13 @@ function interfaceDictionaryValueTypes(
 	substitutions: TypeSubstitutionEnvironment,
 	resolvingAliases: ReadonlySet<string>,
 	resolvingInterfaces: ReadonlySet<string>,
-): readonly ResolvedType[] {
+): readonly KeyedValue[] {
 	if (resolvingInterfaces.has(name)) return [];
 	const nextResolvingInterfaces = new Set(resolvingInterfaces);
 	nextResolvingInterfaces.add(name);
 	const defaultArguments = mergedInterfaceTypeParameterDefaults(declarations);
 
-	return declarations.flatMap((declaration): readonly ResolvedType[] => {
+	return declarations.flatMap((declaration): readonly KeyedValue[] => {
 		const nextSubstitutions = typeParameterSubstitutions(
 			declaration.typeParameters,
 			typeArguments,
@@ -679,12 +707,21 @@ function interfaceDictionaryValueTypes(
 			defaultArguments,
 		);
 		if (nextSubstitutions === null) return [];
-		const directValueTypes = declaration.body.body.flatMap((member): readonly ResolvedType[] =>
-			member.type === "TSIndexSignature"
-				? [{ type: member.typeAnnotation.typeAnnotation, substitutions: nextSubstitutions }]
-				: [],
+		const directValueTypes: readonly KeyedValue[] = declaration.body.body.flatMap(
+			(member): readonly KeyedValue[] =>
+				member.type === "TSIndexSignature"
+					? [
+							{
+								value: { type: member.typeAnnotation.typeAnnotation, substitutions: nextSubstitutions },
+								keyKind: indexSignatureKeyKind(member),
+							},
+						]
+					: [],
 		);
-		const inheritedValueTypes = declaration.extends.flatMap((heritage): readonly ResolvedType[] => {
+		const directKeyKinds = new Set(
+			directValueTypes.map((entry) => entry.keyKind).filter((kind) => kind !== ""),
+		);
+		const inheritedValueTypes = declaration.extends.flatMap((heritage): readonly KeyedValue[] => {
 			if (heritage.expression.type !== "Identifier") return [];
 			return namedDictionaryValueTypes(
 				heritage.expression.name,
@@ -693,7 +730,7 @@ function interfaceDictionaryValueTypes(
 				nextSubstitutions,
 				resolvingAliases,
 				nextResolvingInterfaces,
-			);
+			).filter((entry) => !directKeyKinds.has(entry.keyKind));
 		});
 		return [...directValueTypes, ...inheritedValueTypes];
 	});
@@ -716,7 +753,7 @@ export function classifyUnsafeDictionary(
 	type: ESTree.TSType,
 	environment: TypeEnvironment,
 ): UnsafeDictionary | null {
-	for (const valueType of dictionaryValueTypes(
+	for (const entry of dictionaryValueTypes(
 		type,
 		environment,
 		lexicalTypeParameterSubstitutions(type),
@@ -724,9 +761,9 @@ export function classifyUnsafeDictionary(
 		new Set(),
 	)) {
 		const unsafeValue = unsafeDirectValue(
-			valueType.type,
+			entry.value.type,
 			environment,
-			valueType.substitutions,
+			entry.value.substitutions,
 			new Set(),
 		);
 		if (unsafeValue !== null) return { kind: "unsafe-dictionary", unsafeValue };
