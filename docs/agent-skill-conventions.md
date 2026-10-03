@@ -43,21 +43,21 @@ Cursor: blocked at login; Grok Build: not installed.
 `specViolationSeverity` in `packages/lib/src/skill-health.ts` encodes this (error, warning, note).
 Re-check it when an agent changes.
 
-## Invocation control and disable, per agent
+## Invocation control and per-agent off settings
 
 Claude Code, Codex, OpenCode and pi auto-invoke a skill by default when its
 description matches the task. Grok Build's model-side control is not verified
 yet (see the "unknown" cell below). [Skill uses](#skill-uses) lists
 how each harness records a typed command and a model call.
 
-| Agent       | Explicit invocation | Restrict model auto-invoke                                                                     | Disable a skill (keep on disk)                                                                            |
-| ----------- | ------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Claude Code | `/name [args]`      | frontmatter `disable-model-invocation: true` (user only); `user-invocable: false` (model only) | no native per-skill switch → Skill Studio removes its per-skill symlink, or parks it globally (see below) |
-| Codex       | `$name`, `/skills`  | sidecar `agents/openai.yaml` → `policy.allow_implicit_invocation: false`                       | `~/.codex/config.toml` → `[[skills.config]] path = "…/SKILL.md" enabled = false`                          |
-| OpenCode    | `/name`             | `permission.skill` in `opencode.json`: per-name pattern `allow` / `deny` / `ask`               | same: `"name": "deny"` (wildcards allowed, e.g. `internal-*`)                                             |
-| pi          | `/skill:name`       | frontmatter `disable-model-invocation: true`                                                   | no per-skill disable → Skill Studio parks the folder globally                                             |
-| Cursor      | `/name`             | frontmatter `disable-model-invocation: true`                                                   | no per-skill disable → Skill Studio parks the folder globally                                             |
-| Grok Build  | `/name`             | unknown                                                                                        | no per-skill disable → Skill Studio parks the folder globally                                             |
+| Agent       | Explicit invocation | Restrict model auto-invoke                                                                     | Agent setting that hides a skill (Skill Studio reads it)                         |
+| ----------- | ------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Claude Code | `/name [args]`      | frontmatter `disable-model-invocation: true` (user only); `user-invocable: false` (model only) | `~/.claude/settings.json` → `skillOverrides: {"<name>": "off"}`                  |
+| Codex       | `$name`, `/skills`  | sidecar `agents/openai.yaml` → `policy.allow_implicit_invocation: false`                       | `~/.codex/config.toml` → `[[skills.config]] path = "…/SKILL.md" enabled = false` |
+| OpenCode    | `/name`             | `permission.skill` in `opencode.json`: per-name pattern `allow` / `deny` / `ask`               | same: `"name": "deny"` (wildcards allowed, e.g. `internal-*`)                    |
+| pi          | `/skill:name`       | frontmatter `disable-model-invocation: true`                                                   | none                                                                             |
+| Cursor      | `/name`             | frontmatter `disable-model-invocation: true`                                                   | none                                                                             |
+| Grok Build  | `/name`             | unknown                                                                                        | none                                                                             |
 
 Sources: https://code.claude.com/docs/en/skills · https://developers.openai.com/codex/skills ·
 https://opencode.ai/docs/skills/ · https://opencode.ai/v2/docs/skills/ · https://pi.dev/docs/latest/skills ·
@@ -111,27 +111,23 @@ parked one, the parked copy is simply discarded; otherwise it's moved to
 `~/.agents/skills-trash/<name>-<timestamp>` rather than silently overwriting
 either copy.
 
-### Per-harness disable (one harness at a time)
+### Agent settings that hide a skill (read only)
 
-Separately from parking, a single harness can be turned off for one skill
-while every other harness keeps seeing it, via that harness's own mechanism:
+Park is the only way Skill Studio turns a skill off. It never writes an
+agent's own config file. It does read these settings and shows them on the
+skill page as "Hidden by <agent> setting", with an "Open" action for the file:
 
+- **Claude Code**: `~/.claude/settings.json` → `skillOverrides.<name> = "off"`.
 - **Codex**: `~/.codex/config.toml` → `[[skills.config]] path = "…/SKILL.md" enabled = false`,
-  matched by the skill's canonical SKILL.md path. Skill Studio edits this with
-  `toml_edit`, preserving all other content and comments byte-for-byte.
+  matched by the skill's canonical SKILL.md path. Park and unpark leave this
+  file byte-identical.
 - **OpenCode**: `~/.config/opencode/opencode.json` → `permission.skill.<name-or-glob> = "deny"`.
-  Skill Studio refuses to parse or write `opencode.jsonc`; a project with only
-  that file is reported as unreadable rather than risking a write that drops
-  comments.
-- **Claude Code**: has no native per-skill switch, so Skill Studio tracks it in
-  the registry's own `harness_disabled: {name: {"claude-code": {link_target}}}`
-  map, and disables by removing (then later restoring) the skill's per-skill
-  symlink under `~/.claude/skills/<name>`. This only works when the skill is
-  deployed via that per-skill symlink; a skill deployed through the whole-directory
-  `~/.claude/skills → ~/.agents/skills` symlink has no per-skill link to remove.
-- **pi, Cursor, Grok Build**: no per-skill disable. These agents read the
-  Universal folder directly, so the only way to disable a skill for them is to
-  park it (above), which disables it for every harness.
+- **pi, Cursor, Grok Build**: no per-skill setting. Park is the only off.
+
+A skill a setting hides stays hidden after unpark: edit the file to change it.
+Older builds also wrote these files and, for Claude Code, removed the per-skill
+link. Scans still report those leftovers (`disabled_by`), and the journal still
+loads their events.
 
 ## Discovery paths
 
