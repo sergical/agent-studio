@@ -1,4 +1,4 @@
-// Pins plan.md section 7's lint set as it's wired into `npm run check` and
+// Pins plan.md section 7's lint set as it's wired into `pnpm run check` and
 // `.oxlintrc.json`: knip (dead-code detection), the no-restricted-imports
 // layering rule, and the vitest test step. A future edit that drops one of
 // these from the check pipeline fails here by naming exactly what's
@@ -20,8 +20,8 @@ function readRootPackageJsonScripts(): Readonly<Record<string, string>> {
 	return parsed.scripts ?? {};
 }
 
-describe("npm run check runs knip, no-restricted-imports, and vitest, or names the missing step", () => {
-	it("npm_run_check_runs_knip_no_restricted_imports_and_vitest_or_names_the_missing_step", () => {
+describe("pnpm run check runs knip, no-restricted-imports, and vitest, or names the missing step", () => {
+	it("pnpm_run_check_runs_knip_no_restricted_imports_and_vitest_or_names_the_missing_step", () => {
 		const scripts = readRootPackageJsonScripts();
 		const checkScript = scripts.check;
 		expect(checkScript, "root package.json has no \"check\" script").toBeDefined();
@@ -32,7 +32,7 @@ describe("npm run check runs knip, no-restricted-imports, and vitest, or names t
 		}
 		// The vitest gate is the root "test" script; "typecheck" and
 		// "types:check" also contain the substring, so match the step itself.
-		if (!/(^|&&)\s*npm run test(\s*(&&|$))/.test(checkScript ?? "")) {
+		if (!/(^|&&)\s*pnpm run test(\s*(&&|$))/.test(checkScript ?? "")) {
 			missing.push('"check" does not run the vitest test step');
 		}
 

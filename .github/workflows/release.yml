@@ -29,7 +29,7 @@ jobs:
         # apps/desktop/src-tauri/src/skills/api.rs). Unset or blank, the
         # build falls back to the `http://127.0.0.1:8787` local-dev URL with
         # no error, so every shipped discovery call fails and the app tells
-        # users to run `npm run dev:server` - a fail-silent path on the
+        # users to run `pnpm run dev:server` - a fail-silent path on the
         # product's core journey, at the moment the artifact goes public.
         # Fail before the build rather than publish a binary pointed at
         # localhost. See also the sibling hard fail for the Apple signing
@@ -104,11 +104,12 @@ jobs:
           toolchain: 1.92.0
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Compute the release version
         # A pre-release tag's base version (e.g. "0.1.0" from
         # "v0.1.0-rc.1") is what CHANGELOG.md and the committed

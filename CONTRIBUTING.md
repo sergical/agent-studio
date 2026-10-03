@@ -5,14 +5,15 @@ Thank you for your interest in this project.
 ## Prerequisites
 
 - Node.js `^22.18.0` or `>=24.11.0` (see `engines` in `package.json`)
+- pnpm 11 (pinned in `packageManager` in `package.json`)
 - Rust `1.92.0` with `rustfmt` and `clippy` (see `.github/workflows/rust.yml`)
 - Tauri CLI prerequisites: https://tauri.app/start/prerequisites/
 
 ## Setup
 
 ```bash
-npm install
-npm run tauri dev
+pnpm install
+pnpm run tauri dev
 ```
 
 ## Local gate
@@ -20,7 +21,7 @@ npm run tauri dev
 Before you open a pull request, run the full gate:
 
 ```bash
-npm run check
+pnpm run check
 ```
 
 For a small change, the scoped commands below are faster. Run the ones that
@@ -28,9 +29,9 @@ match what you touched:
 
 ```bash
 # TypeScript / frontend
-npm run typecheck
-npm run lint
-npm run format:check
+pnpm run typecheck
+pnpm run lint
+pnpm run format:check
 
 # Rust
 cargo fmt --all --check

@@ -6,7 +6,7 @@ since skills.sh keys aren't per-account and the app can't ship one.
 ## Run
 
 ```bash
-npm run dev:server   # from the repo root
+pnpm run dev:server   # from the repo root
 ```
 
 The key lives in the repo-root `.env` as `SKILLS_SH_API_KEY` (not committed).

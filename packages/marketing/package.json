@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit",
     "remotion:capture": "node scripts/capture-walkthroughs.mjs",
     "remotion:render": "node scripts/render-walkthroughs.mjs",
-    "deploy": "node scripts/check-npm-release.mjs && npm run build && wrangler deploy"
+    "deploy": "node scripts/check-npm-release.mjs && pnpm run build && wrangler deploy"
   },
   "dependencies": {
     "@paper-design/shaders-react": "0.0.81",

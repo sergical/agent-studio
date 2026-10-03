@@ -3,32 +3,28 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "type": "module",
   "scripts": {
-    "dev": "npm run dev -w skill-studio",
-    "dev:marketing": "npm run dev -w @skill-studio/marketing",
-    "dev:server": "npm run dev -w @skill-studio/server",
-    "build": "npm run build -w skill-studio",
-    "build:marketing": "npm run build -w @skill-studio/marketing",
-    "preview": "npm run preview -w skill-studio",
-    "tauri": "npm run tauri -w skill-studio --",
-    "typecheck": "npm run typecheck -w skill-studio",
-    "typecheck:marketing": "npm run typecheck -w @skill-studio/marketing",
+    "dev": "pnpm --filter skill-studio run dev",
+    "dev:marketing": "pnpm --filter @skill-studio/marketing run dev",
+    "dev:server": "pnpm --filter @skill-studio/server run dev",
+    "build": "pnpm --filter skill-studio run build",
+    "build:marketing": "pnpm --filter @skill-studio/marketing run build",
+    "preview": "pnpm --filter skill-studio run preview",
+    "tauri": "pnpm --filter skill-studio run tauri",
+    "typecheck": "pnpm --filter skill-studio run typecheck",
+    "typecheck:marketing": "pnpm --filter @skill-studio/marketing run typecheck",
     "lint": "oxlint . --deny-warnings",
     "lint:fix": "oxlint --fix .",
     "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "fmt:rust": "cd apps/desktop/src-tauri && cargo fmt",
-    "test": "npm run test:anti-slop && npm run test:lint-set && npm run test -w skill-studio && npm run test -w @skill-studio/lib && npm run test -w @skill-studio/server && npm run test -w @skill-studio/marketing",
+    "test": "pnpm run test:anti-slop && pnpm run test:lint-set && pnpm --filter skill-studio run test && pnpm --filter @skill-studio/lib run test && pnpm --filter @skill-studio/server run test && pnpm --filter @skill-studio/marketing run test",
     "test:anti-slop": "vitest run tools/oxlint/anti-slop/shared/dictionary-types.integration.test.ts tools/oxlint/anti-slop/shared/no-internal-vocabulary.integration.test.ts",
     "test:lint-set": "vitest run tools/oxlint/anti-slop/shared/lint-set-policy.integration.test.ts",
     "knip": "knip",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run doctor && npm run knip && npm run test && npm run types:check -w skill-studio && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm run doctor && pnpm run knip && pnpm run test && pnpm --filter skill-studio run types:check && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
     "doctor": "react-doctor apps/desktop -y --no-score --no-supply-chain --blocking warning"
   },
   "devDependencies": {
@@ -38,15 +34,12 @@
     "oxfmt": "^0.65.0",
     "oxlint": "^1.80.0",
     "react-doctor": "^0.9.12",
+    "typescript": "6.0.3",
     "vitest": "^4.1.11",
     "zod": "4.4.3"
   },
   "engines": {
     "node": "^22.18.0 || >=24.11.0"
   },
-  "allowScripts": {
-    "esbuild@0.28.1": true,
-    "esbuild@0.28.2": true,
-    "fsevents@2.3.3": true
-  }
+  "packageManager": "pnpm@11.1.3"
 }

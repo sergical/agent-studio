@@ -1,6 +1,6 @@
 // ============================================================================
 // Skill Studio - Server
-// The Node entry point (`npm run dev:server`) for the skills.sh proxy: builds
+// The Node entry point (`pnpm run dev:server`) for the skills.sh proxy: builds
 // `createSkillsProxyApp` with no rate limiter and no cache (local dev has no
 // public abuse surface to guard against) and serves it with
 // `@hono/node-server`. See `src/worker.ts` for the public Cloudflare Workers
@@ -26,7 +26,7 @@ export function requireApiKey(env: NodeJS.ProcessEnv): string {
   const key = env.SKILLS_SH_API_KEY?.trim();
   if (!key) {
     throw new Error(
-      "SKILLS_SH_API_KEY is not set. Add it to the repo-root .env, then run `npm run dev:server`.",
+      "SKILLS_SH_API_KEY is not set. Add it to the repo-root .env, then run `pnpm run dev:server`.",
     );
   }
   return key;
