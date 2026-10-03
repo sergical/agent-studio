@@ -254,7 +254,7 @@ Rust (`cargo test`, colocated `#[cfg(test)]`, ALWAYS temp dirs / temp HOME
    keeps its link absent; a user-created real dir in the root is left
    untouched.
 
-Frontend: `npm run check` (typecheck + lint + fmt + clippy + cargo test)
+Frontend: `pnpm run check` (typecheck + lint + fmt + clippy + cargo test)
 is the acceptance gate. Manual smoke in the debug bundle: disable a
 harness link from an expanded shared group, see the History row, restore
 it, confirm the symlink is back.

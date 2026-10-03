@@ -33,6 +33,7 @@ The app features a dark theme with a sidebar navigation and Monaco editor integr
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) (^22.18 or >=24.11 — required by the Vite 8 / Babel 8 toolchain)
+- [pnpm](https://pnpm.io/) 11 (pinned in `packageManager` in `package.json`; enable with `corepack enable`)
 - [Rust](https://rustup.rs/)
 - [Tauri CLI](https://tauri.app/start/prerequisites/)
 
@@ -40,13 +41,13 @@ The app features a dark theme with a sidebar navigation and Monaco editor integr
 
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Run in development mode
-npm run tauri dev
+pnpm run tauri dev
 
 # Build for production
-npm run tauri build
+pnpm run tauri build
 ```
 
 ### Fixture launch mode
@@ -57,7 +58,7 @@ mutation stays inside the fixture, so you can develop and demo against a
 known skill layout without touching your actual `~/.claude`, `~/.codex`, etc.
 
 ```bash
-SKILL_STUDIO_FIXTURE=/path/to/fixture-home npm run tauri dev
+SKILL_STUDIO_FIXTURE=/path/to/fixture-home pnpm run tauri dev
 ```
 
 See `docs/spec-core-primitives.md` section 11.5 for the manual fixture-mode

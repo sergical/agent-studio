@@ -23,22 +23,22 @@ Skill Studio is a Tauri 2.x desktop application to manage, sync, and test agent 
 
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Development mode (starts Vite + Tauri)
-npm run tauri dev
+pnpm run tauri dev
 
 # Build for production
-npm run tauri build
+pnpm run tauri build
 
 # Frontend only (Vite dev server)
-npm run dev
+pnpm run dev
 
 # Type check + build frontend
-npm run build
+pnpm run build
 
 # Preview built frontend
-npm run preview
+pnpm run preview
 ```
 
 ### Rust Commands
@@ -104,7 +104,7 @@ own `target/` filled 155 GB of the user's disk. These rules are firm:
   the session ends with its work pushed, run `git worktree remove <path>`. If
   the worktree has uncommitted changes, keep it, delete its `target/` and
   `node_modules/`, and tell the user it is still there.
-- **No stray copies.** Do not clone the repo or run `npm ci` in `.scratch/`, the
+- **No stray copies.** Do not clone the repo or run `pnpm install` in `.scratch/`, the
   scratchpad or `/tmp` unless the task needs it, and delete the copy in the same
   session.
 - **Check before you report.** Before the final message of a session that
@@ -115,21 +115,21 @@ own `target/` filled 155 GB of the user's disk. These rules are firm:
 
 ```bash
 # Type check only (no emit)
-npm run typecheck
+pnpm run typecheck
 
 # Lint (oxlint)
-npm run lint
-npm run lint:fix
+pnpm run lint
+pnpm run lint:fix
 
 # Format (oxfmt)
-npm run format
-npm run format:check
+pnpm run format
+pnpm run format:check
 
 # React health check (react-doctor)
-npm run doctor
+pnpm run doctor
 
 # Full gate: typecheck + lint + format:check + doctor + knip + test + types:check + cargo fmt --all --check + clippy --workspace --all-targets -D warnings + cargo test --workspace (CI also runs cargo machete and cargo deny check)
-npm run check
+pnpm run check
 ```
 
 ## Tech Stack
