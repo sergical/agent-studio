@@ -48,6 +48,7 @@ const TIDY_ROWS = Math.max(...TIDY_COLUMNS.map((column) => column.length));
 const TIDY_GAP = 12;
 const ROW_GAP = 10;
 const MASCOT_LIFT = -4;
+const HINT_GAP = 16;
 // Messy offsets shrink with the stage below its full 860px width. Pure CSS, so the
 // prerendered pile already fits before any script runs.
 const STAGE_UNIT = "min(1px, 100cqw / 860)";
@@ -62,6 +63,7 @@ const stateLabel = {
 
 interface StageMetrics {
   stageWidth: number;
+  stageHeight: number;
   mascotWidth: number;
   mascotHeight: number;
   chipWidth: number;
@@ -72,12 +74,15 @@ interface TidyLayout {
   // translateX anchor in %: -100 pins a chip's right edge to x, 0 its left edge.
   chips: Map<string, { x: number; y: number; anchor: number }>;
   mascotY: number;
+  // Pulls the summary up under the tidied content; the stage keeps the pile's height.
+  hintY: number;
 }
 
 function measureStage(stage: HTMLElement, mascot: HTMLElement): StageMetrics {
   const kept = Array.from(stage.querySelectorAll<HTMLElement>("[data-kept]"));
   return {
     stageWidth: stage.clientWidth,
+    stageHeight: stage.clientHeight,
     mascotWidth: mascot.offsetWidth,
     mascotHeight: mascot.offsetHeight,
     chipWidth: Math.max(...kept.map((chip) => chip.offsetWidth)),
@@ -92,9 +97,12 @@ function tidyLayout(metrics: StageMetrics): TidyLayout {
   const besideMascot =
     metrics.stageWidth / 2 >= metrics.mascotWidth / 2 + TIDY_GAP + metrics.chipWidth;
   const top = -(metrics.mascotHeight + TIDY_GAP + TIDY_ROWS * rowStep - ROW_GAP) / 2;
+  const mascotY = besideMascot ? MASCOT_LIFT : top + metrics.mascotHeight / 2;
+  const contentBottom = besideMascot ? mascotY + metrics.mascotHeight / 2 : -top;
   const layout: TidyLayout = {
     chips: new Map(),
-    mascotY: besideMascot ? MASCOT_LIFT : top + metrics.mascotHeight / 2,
+    mascotY,
+    hintY: Math.min(0, contentBottom + HINT_GAP - metrics.stageHeight / 2),
   };
   TIDY_COLUMNS.forEach((column, index) => {
     const side = index === 0 ? -1 : 1;
@@ -195,8 +203,11 @@ export function MascotStage() {
           />
         </button>
       </div>
-      <p {...stylex.props(styles.hint)} aria-live="polite">
-        {tidy ? `${TIDY_SUMMARY} Press the mascot to undo.` : "Press the mascot to tidy up."}
+      <p
+        {...stylex.props(styles.hint, tidy && layout && styles.hintLift(layout.hintY))}
+        aria-live="polite"
+      >
+        {tidy ? TIDY_SUMMARY : null}
       </p>
     </div>
   );
@@ -225,14 +236,24 @@ const styles = stylex.create({
     position: "relative",
     transition: `transform 700ms ${settle}`,
     WebkitTapHighlightColor: "transparent",
+    // A gradient, not a drop-shadow filter: Safari clips a descendant's filter
+    // overflow to the layer it promotes for the transform transition.
+    "::before": {
+      backgroundImage: "radial-gradient(closest-side, oklch(0.45 0.2 293 / .4), transparent)",
+      content: '""',
+      inset: "-20% -30% -40%",
+      pointerEvents: "none",
+      position: "absolute",
+      transform: "translateY(12%)",
+    },
     ":focus-visible": { outline: `2px solid ${siteTokens.text}`, outlineOffset: 4 },
     "@media (prefers-reduced-motion: reduce)": { transition: "none" },
   },
   mascotLift: (y: number) => ({ transform: `translateY(${y}px)` }),
   mascot: {
     display: "block",
-    filter: "drop-shadow(0 24px 40px oklch(0.45 0.2 293 / .45))",
     height: "auto",
+    position: "relative",
     transition: `transform 500ms ${settle}`,
     width: 168,
     "@media (hover: hover) and (pointer: fine)": {
@@ -295,5 +316,8 @@ const styles = stylex.create({
     fontSize: 13,
     margin: "6px 0 0",
     minHeight: 20,
+    transition: `transform 700ms ${settle}`,
+    "@media (prefers-reduced-motion: reduce)": { transition: "none" },
   },
+  hintLift: (y: number) => ({ transform: `translateY(${y}px)` }),
 });
