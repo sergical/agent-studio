@@ -196,7 +196,7 @@ export function MascotStage() {
         </button>
       </div>
       <p {...stylex.props(styles.hint)} aria-live="polite">
-        {tidy ? `${TIDY_SUMMARY} Press the mascot to undo.` : "Press the mascot to tidy up."}
+        {tidy ? TIDY_SUMMARY : null}
       </p>
     </div>
   );
